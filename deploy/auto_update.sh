@@ -67,6 +67,15 @@ if ! "$APP/venv/bin/python" -m compileall -q "$STAGE" >/dev/null; then
     exit 1
 fi
 
+# Caption fonts used by the review variants (style.FONTS). Best effort: a missing font
+# just falls back to DejaVu Sans, so this never blocks a deploy.
+for pkg in fonts-montserrat fonts-roboto fonts-liberation; do
+    if ! dpkg -s "$pkg" >/dev/null 2>&1; then
+        log "installing $pkg"
+        DEBIAN_FRONTEND=noninteractive apt-get install -y -q "$pkg" >/dev/null 2>&1 || log "could not install $pkg (skipped)"
+    fi
+done
+
 if [ "$REQ_CHANGED" = 1 ]; then
     log "requirements.txt changed, updating venv"
     "$APP/venv/bin/pip" install --quiet -r "$REPO/requirements.txt"

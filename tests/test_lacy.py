@@ -383,12 +383,11 @@ def test_review_card_has_approve_command_and_checklist():
     assert up["embeds"][0]["url"] == "https://youtube.com/shorts/abc"
 
 
-@pytest.mark.parametrize("outcome,auto,expect", [
-    ("ready", False, "review"), ("failed", False, "status"), ("skipped", False, None),
-    ("ready", True, "uploaded"),
-])
-def test_worker_routes_results(tmp_path, monkeypatch, outcome, auto, expect):
-    lm = L.LacyMode({"lacy": {"enabled": True, "auto_upload": auto}}, tmp_path)
+@pytest.mark.parametrize("outcome,expect", [("review", None), ("failed", "status"), ("skipped", None)])
+def test_worker_routes_results(tmp_path, monkeypatch, outcome, expect):
+    # LACY_AUTO_UPLOAD is ignored now: the worker only renders; approval happens in Discord
+    lm = L.LacyMode({"lacy": {"enabled": True, "auto_upload": True}}, tmp_path)
+    assert lm.cfg["auto_upload"] is False
     job = L.new_job({"onset": T, "score": 7.0, "clip_start": T - 30, "clip_end": T + 15,
                      "programme": "Lacy"}, {"category": "Grand Theft Auto VI"}, lm.cfg)
     job["ready_at"] = 0
@@ -398,19 +397,15 @@ def test_worker_routes_results(tmp_path, monkeypatch, outcome, auto, expect):
     async def fake_run(*args, timeout=3600):
         ran.append(args[0])
         j = lm.jobs.load(job["id"])
-        j["status"] = outcome if args[0] == "render" else "uploaded"
+        j["status"] = outcome
         lm.jobs.save(j)
         return 0, ""
     monkeypatch.setattr(lm, "_run", fake_run)
     got = []
 
-    async def rec(kind):
-        async def f(j, *a):
-            got.append((kind, j["status"]))
-        return f
+    async def status(j):
+        got.append(("status", j["status"]))
 
-    async def go():
-        await lm._process(job["id"], None, await rec("review"), await rec("uploaded"), await rec("status"))
-    asyncio.run(go())
+    asyncio.run(lm._process(job["id"], None, status))
     assert [k for k, _ in got] == ([expect] if expect else [])
-    assert ran == (["render", "approve"] if auto else ["render"])
+    assert ran == ["render"]

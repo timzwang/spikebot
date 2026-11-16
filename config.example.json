@@ -27,7 +27,6 @@
     "channel": "lacy",
     "allowed_categories": ["Grand Theft Auto V", "Grand Theft Auto VI"],
     "max_uploads_per_day": 3,
-    "auto_upload": false,
     "facecam": {"x": 0.0, "y": 0.0, "w": 0.25, "h": 0.30},
     "privacy": "public",
     "whisper_model": "base",
@@ -51,6 +50,16 @@
     "posts_csv": "logs/instagram_posts.csv",
     "tiktok_dir": "exports/tiktok",
     "tiktok_keep_days": 14
+  },
+
+  "review": {
+    "expire_hours": 48,
+    "youtube_max_per_day": 6,
+    "windows": {"youtube": ["07:00-23:00"], "instagram": ["08:00-22:30"]},
+    "modes": {
+      "lacy": {"auto": ["youtube", "instagram"]},
+      "tokyo_girl": {"auto": []}
+    }
   },
 
   "videos": {

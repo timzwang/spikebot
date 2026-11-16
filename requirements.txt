@@ -5,3 +5,7 @@ yt-dlp>=2026.10.26
 faster-whisper>=1.1,<2
 # Tokyo Girl mode only: big edits go to a private bucket with a signed link (imported lazily)
 google-cloud-storage>=2.14,<4
+# Discord approval bot (#ready-to-post buttons, /style, /preset, #inspiration)
+discord.py>=2.5,<3
+# #inspiration style analysis (shot detection + OpenCV motion); run in a subprocess
+scenedetect[opencv-headless]>=0.6.4,<0.7

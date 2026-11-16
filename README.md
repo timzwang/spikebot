@@ -120,33 +120,25 @@ Rewards). Off by default. It only ever touches `twitch.tv/lacy`.
    includes `#Lacy #Shorts`.
 6. Thumbnail is a frame from that clip (near the chat peak). It's compared with every
    earlier thumbnail and a different frame is picked if it looks too similar.
-7. Posts a **review card with a small preview video** to #moments. Watch it, check for
-   story spoilers/cutscenes (Rockstar policy), then on the server:
+7. Renders **3 variants (A/B/C)** with different colour grade, pacing (clip length and jump
+   cuts), text style and hook/title, and posts them in #ready-to-post for approval (see
+   "Approval in Discord" below). Check for story spoilers/cutscenes (Rockstar policy) before
+   approving. **Nothing is uploaded until you press Approve** (`LACY_AUTO_UPLOAD` is ignored).
 
-```bash
-cd /opt/spikebot && sudo -u spikebot venv/bin/python -m spikebot.lacy approve 20261119-061502
-cd /opt/spikebot && sudo -u spikebot venv/bin/python -m spikebot.lacy reject 20261119-061502
-cd /opt/spikebot && sudo -u spikebot venv/bin/python -m spikebot.lacy list
-```
-
-`approve` uploads to YouTube (refused once `LACY_MAX_UPLOADS_PER_DAY` uploads have
-happened that UK day), sets the thumbnail and appends a row to
-`/opt/spikebot/logs/lacy_submissions.csv` (`uploaded_uk, youtube_url, title, ...`) ready to
-paste into Content Rewards. With `LACY_AUTO_UPLOAD=true` approval is skipped (still capped).
-**Every Lacy Short goes on all three platforms.** YouTube is automatic, and so is Instagram
-once it's set up (see "Instagram Reels" below). The file is also copied to
-`/opt/spikebot/exports/tiktok/` with a TikTok caption `.txt` beside it. The full-quality
-file then arrives in #ready-to-post (see "Finished videos on your phone") with the captions
-still to post by hand and a ready-made command. Post it, then log the links so the CSV has
-all three for Content Rewards (once Instagram auto-posts, only `--tiktok` is needed):
+On approval the bot uploads to YouTube (inside the posting window, max
+`LACY_MAX_UPLOADS_PER_DAY` a UK day; extra approvals queue for the next slot), sets the
+thumbnail, posts the Instagram Reel (if set up), appends a row to
+`/opt/spikebot/logs/lacy_submissions.csv` for Content Rewards, and puts the TikTok file +
+caption in #tiktok-queue with the `lacy posted` command. Live links are replied in the clip's
+thread. After posting on TikTok, log the link so the CSV has all three platforms:
 
 ```bash
 cd /opt/spikebot && sudo -u spikebot venv/bin/python -m spikebot.lacy posted 20261119-061502 \
-  --tiktok https://www.tiktok.com/@gta6.clipped/video/... --instagram https://www.instagram.com/reel/...
+  --tiktok https://www.tiktok.com/@gta6.clipped/video/...
 ```
 
-The CSV gains `tiktok_url` and `instagram_url` columns (older files are upgraded in place).
-`lacy list` shows `NOT YET ON: TikTok, Instagram` for any Short still missing a platform.
+The CSV has `tiktok_url` and `instagram_url` columns (older files are upgraded in place).
+`lacy list` shows `NOT YET ON: TikTok` for any Short still missing a platform.
 
 **Setup**
 
@@ -176,12 +168,14 @@ cd /opt/spikebot && sudo -u spikebot venv/bin/python -m spikebot.lacy layout cli
 Notes: YouTube only shows custom thumbnails once the channel is phone-verified; until then
 the upload still works and the review card says the thumbnail wasn't set. A Google Cloud
 project that hasn't passed YouTube's API audit can only upload **private** videos (#25).
-Clips live in `data/lacy/jobs/<id>/`; video files are deleted after upload or reject.
+Clips live in `data/lacy/jobs/<id>/`; the cut segment is kept while the clip is in review
+(Redo/Feedback re-render from it) and deleted once it is posted, rejected or expired.
 The Whisper model (~150 MB) downloads on the first render.
 
 ## Instagram Reels (auto-post) and the TikTok folder
 
-After each Lacy Short is on YouTube (`approve`, or auto-upload):
+After you approve a clip in Discord (see "Approval in Discord"), for Lacy Shorts and any mode
+set to auto-post Instagram:
 
 1. **TikTok:** the file is copied unchanged to `exports/tiktok/lacy_<id>.mp4` with
    `lacy_<id>.txt` (caption) beside it. Upload by hand, then log it with `lacy posted ID --tiktok URL`.
@@ -194,8 +188,8 @@ After each Lacy Short is on YouTube (`approve`, or auto-upload):
    - the caption uses a **different hook from the YouTube title** (`HOOKS` in
      `spikebot/instagram.py`, same banned-word rules as titles) plus GTA hashtags
      (`#GTA6 #GTAVI #GrandTheftAuto6 #GTA6Clips #Lacy ...`; GTA V clips get `#GTA5` ones);
-   - **max 3 Reels a UK day** (`IG_MAX_REELS_PER_DAY`). Over the cap, the Reel waits and the
-     bot posts it in the next hour that the cap allows. A failed post is retried hourly, up
+   - **max 3 Reels a UK day** (`IG_MAX_REELS_PER_DAY`) inside the Instagram posting window.
+     Over the cap, the Reel waits and the bot posts it when the cap and window allow. A failed post is retried hourly, up
      to 3 tries, with an alert in #status;
    - each attempt is logged to `logs/instagram_posts.csv`
      (`posted_uk, status, job_id, mode, instagram_url, media_id, hook, error`) and the Reel
@@ -275,8 +269,10 @@ TikTok: <hook> Song: Tokyo Girl by @Passive #GTA6
 The `<hook>` is the story's hook plus its question, e.g. "Leonida looks insane. Which spot
 are you visiting first?".
 
-**On your phone**: each edit is posted to Discord #ready-to-post with both captions (see
-"Finished videos on your phone" below).
+**On your phone**: each edit arrives in #ready-to-post as **3 variants** (different story/hook,
+cut speed, grade, text style) for approval (see "Approval in Discord"). Approved edits go to
+#tiktok-queue with both captions and are copied to `exports/tokyo_girl/`. They stay silent:
+add the official sound in the app.
 
 **When**: `spikebot-tokyo-girl.timer` runs at 06:47 UK and tops up to `per_day` edits for
 that UK day (running it again the same day does nothing). The auto-update installs the
@@ -328,14 +324,118 @@ gcloud compute scp --recurse "YOUR_VM:/opt/spikebot/exports/tokyo_girl/$(date +%
 Before posting: watch it once (check nothing looks like a story spoiler), add the Tokyo
 Girl sound in the app, paste the matching caption line from the `.txt`.
 
-## Finished videos on your phone (#ready-to-post)
+## Approval in Discord (#ready-to-post bot)
 
-Every finished video from every mode goes to one Discord channel, labelled with the mode:
+Every clip from every mode (Lacy, Tokyo Girl, and the stream-clip editor later) waits for
+your approval. **Nothing is posted anywhere until you press Approve.**
+
+**What you see in #ready-to-post**: one message per clip with **3 preview videos A/B/C**.
+Each card shows the YouTube title, Instagram and TikTok captions (long-press to copy) and its
+style: colour grade, pace, text (font/size/position/colour), transition and hook type.
+A is the look you approve most, B is built on one of your most-approved #inspiration
+presets (rotating), C is **🧪 experimental** (settings it has tried least) so you keep
+seeing new ideas. A thread opens under each clip for everything that follows.
+
+| Button | What happens |
+|---|---|
+| **Approve A/B/C** | That version is posted: YouTube Shorts + Instagram Reels automatically (posting windows and daily caps; queued if needed), TikTok file + caption to #tiktok-queue. Live links are replied in the thread. |
+| **Redo** | 3 new variants (avoiding the looks you just saw). |
+| **Reject** | Dropped; files deleted. |
+| **Feedback** | Pick a variant, type notes, it is re-rendered and posted in the thread for approval. Understood: bigger/smaller text, text higher/lower/middle, faster/slower, more/less colour, more/less contrast, warmer/cooler, a colour (yellow, green, blue, red, pink), a font (montserrat, roboto, narrow, dejavu), no flashes / add zoom / add flash, end with a CTA / a question, and `hook: new wording` (or the new hook in quotes). Anything else is logged and the reply says what wasn't understood. |
+| **Edit caption** | Change the YouTube title and IG/TikTok captions before approving (Lacy rules still checked). The burned-in hook only changes via Feedback `hook: ...`. |
+
+Unapproved clips **expire 48 hours** after their latest round (buttons grey out, files deleted).
+
+Posting rules (`config.json` `"review"` block): windows `07:00-23:00` YouTube and
+`08:00-22:30` Instagram (UK time), `youtube_max_per_day` 6 (all modes; Lacy also keeps its own
+cap), Instagram cap `IG_MAX_REELS_PER_DAY`. Failed uploads retry 3 times, then #status is told.
+Tokyo Girl edits are **silent**, so all three platforms go to #tiktok-queue by default (add the
+official Tokyo Girl sound in each app). To auto-post them anyway set
+`"review": {"modes": {"tokyo_girl": {"auto": ["youtube", "instagram"]}}}`.
+
+**Learning**: every approve / reject / redo / feedback / caption edit goes to
+`data/style_profile.json`. `/style` shows what variant A uses now per mode, the approval
+counts, recurring feedback and presets ranked by approvals. Pin a setting with
+`/style setting:font value:montserrat` (all variants then use it); `value:auto` unpins.
+
+**Set up the bot (once, ~10 minutes)**
+
+1. https://discord.com/developers/applications > **New Application**, name it e.g.
+   `GTA6 Clipped Review`, accept the terms, **Create**.
+2. **Bot** tab: **Reset Token** > **Copy** and paste it into `/opt/spikebot/.env` as
+   `DISCORD_BOT_TOKEN=...` (never in chat or git). On the same page turn **on** "Message
+   Content Intent" (needed to read links in #inspiration) and turn **off** "Public Bot".
+3. **OAuth2** tab > **OAuth2 URL Generator**: tick scopes `bot` and `applications.commands`,
+   then bot permissions View Channels, Send Messages, Send Messages in Threads, Create Public
+   Threads, Embed Links, Attach Files, Read Message History, Use Application Commands. Open the
+   generated URL, pick your server, **Authorize**. (Same thing as a link:
+   `https://discord.com/oauth2/authorize?client_id=APPLICATION_ID&scope=bot+applications.commands&permissions=311385246720`,
+   with the Application ID from the General Information tab.)
+4. In Discord create channels `#ready-to-post` (already there), `#tiktok-queue` and
+   `#inspiration`. If they are private, add the bot to each (channel > Edit > Permissions).
+5. User Settings > Advanced > **Developer Mode** on. Then right-click to **Copy ID** of each
+   channel, the server, and yourself, and add to `/opt/spikebot/.env`:
+
+```bash
+DISCORD_BOT_TOKEN=...
+DISCORD_REVIEW_CHANNEL_ID=...       # #ready-to-post
+DISCORD_TIKTOK_CHANNEL_ID=...       # #tiktok-queue
+DISCORD_INSPIRATION_CHANNEL_ID=...  # #inspiration
+DISCORD_GUILD_ID=...                # the server (slash commands appear instantly)
+DISCORD_APPROVER_IDS=...            # your user id (only you can press buttons)
+```
+
+6. `sudo systemctl restart spikebot`. `--check` shows "Discord approval bot: token set" and the
+   channel ids. The bot comes online and `/style` and `/preset` appear when you type `/`.
+
+Without a token, clips still render and wait in `data/review/`; nothing posts. Fallback
+commands on the server (only while the bot is off, so nothing posts twice):
+
+```bash
+cd /opt/spikebot && sudo -u spikebot venv/bin/python -m spikebot.review list
+cd /opt/spikebot && sudo -u spikebot venv/bin/python -m spikebot.review approve lacy-20261119-061502 B
+cd /opt/spikebot && sudo -u spikebot venv/bin/python -m spikebot.review publish
+```
+
+## #inspiration: copy the style of Shorts you like
+
+Post a TikTok / Instagram / YouTube link, or upload the video, in #inspiration. Optional notes
+in the same message: `copy: pacing, colour` (parts: pacing, colour, text, transitions, hook,
+structure, music-sync; default all) and `name: night-drive`. The bot opens a thread, measures
+the style and replies with a breakdown and a thumbnail strip, and saves the preset to
+`data/presets/<name>.json`. If a link can't be downloaded (Instagram often needs a login) it
+asks you to upload the file in the thread instead.
+
+It measures **style only** and never reuses their footage, audio or words: the video is
+deleted straight after the analysis and the preset holds numbers (average shot length, cuts on
+the beat, grade, text size/position/colour, hook *type* such as POV/question, hook length,
+where the payoff lands, ending type, zoom/shake/flash).
+
+- `/preset list` · `/preset show name` · `/preset rename name new_name` · `/preset delete name`
+- `/preset edit name setting value`: e.g. `pace fast`, `saturation 1.3`, `text_px 96`,
+  `position middle`, `ending cta`, `copy pacing,colour`
+- `/preset combine new_name pacing:A colour:B text:C ...`: parts from different presets
+- `/preset apply name [variant]` inside a clip's thread re-renders that clip with the preset
+  and posts it for approval
+- Variant B of every new clip uses your most-approved presets in rotation; approvals and
+  rejections per preset are tracked in `style_profile.json` (`/style` shows the ranking).
+
+Text measurement uses OCR (easyocr), which needs PyTorch (~1 GB disk), so it is optional.
+Without it everything else is measured and the breakdown says text was skipped. To add it:
+
+```bash
+cd /opt/spikebot && sudo -u spikebot venv/bin/pip install -r /home/YOU/spikebot/requirements-ocr.txt
+```
+
+## Big files and the Google Cloud Storage bucket
+
+The approval bot attaches files up to the server's Discord limit (10 MB unboosted). Bigger
+TikTok-queue files (and previews, if three don't fit) go to your private bucket and Discord
+gets a 7-day download link. The old webhook delivery below is only used when review is
+switched off (`REVIEW_ENABLED=false`) or for `lacy deliver` on old clips:
 
 - **Tokyo Girl**: each edit, with the IG and TikTok captions.
-- **Lacy**: each Short once it's on YouTube (after `approve`, or automatically with
-  auto-upload), with the Instagram link if it was auto-posted, the captions still to post by
-  hand and the `lacy posted` command, so the same file goes on all three platforms.
+- **Lacy**: each Short once it's on YouTube, with the captions still to post by hand.
 
 Text to copy is in code blocks (long-press to copy). The video is **never re-encoded or
 compressed**; you get the exact file the server made:

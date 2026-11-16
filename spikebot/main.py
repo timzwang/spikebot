@@ -25,6 +25,7 @@ from curl_cffi.requests import AsyncSession
 from . import instagram as ig_
 from . import lacy as lacy_
 from . import messages as msg_
+from . import review as rv_
 from . import status as st_
 from .detector import DetectorConfig, Spike, SpikeDetector
 from .sources import (TwitchHelix, kick_channel_info, kick_stream_state, kick_stream_vod,
@@ -169,6 +170,16 @@ class Bot:
                 log.warning("Lacy mode is on but Twitch keys are missing: no Lacy clips"
                             " (the GTA category can't be checked)")
 
+        # Review queue + Discord approval bot (spikebot/review.py, spikebot/discord_bot.py)
+        self.review_bot = None
+        rcfg = rv_.settings(cfg)
+        if rcfg["enabled"] and rcfg["token"] and config_path:
+            from .discord_bot import ReviewBot
+            self.review_bot = ReviewBot(cfg, config_path, self.notifier)
+        elif rcfg["enabled"]:
+            log.warning("DISCORD_BOT_TOKEN not set: clips wait in data/review until the bot is set up"
+                        " (python -m spikebot.review list)")
+
         # Instagram Reels: token refresh + Reels waiting for the daily cap (spikebot/instagram.py)
         self.ig = None
         if config_path:
@@ -312,21 +323,6 @@ class Bot:
         await post_discord(url, msg_.moment(rec, self.names.get(key, rec["channel"])))
 
     # ---- Lacy mode ---------------------------------------------------------
-    async def lacy_review(self, job: dict, preview: Path) -> None:
-        payload = msg_.lacy_review(job, self.lacy_uploads_today(), self.lacy.cfg["max_uploads_per_day"])
-        log.info("lacy: %s", msg_.plain(payload))
-        url = self.cfg.get("discord_webhook_url")
-        if url and preview.exists() and preview.stat().st_size < 9_500_000:
-            await post_discord_file(url, payload, preview)
-        elif url:
-            await post_discord(url, payload)
-
-    async def lacy_uploaded(self, job: dict) -> None:
-        payload = msg_.lacy_uploaded(job)
-        log.info("lacy: %s", msg_.plain(payload))
-        if self.cfg.get("discord_webhook_url"):
-            await post_discord(self.cfg["discord_webhook_url"], payload)
-
     async def lacy_failed(self, job: dict) -> None:
         await self.notifier.send("lacy_failed", f"🎬 Lacy clip `{job['id']}` failed:"
                                  f" {msg_.escape(job.get('reason') or 'unknown error')}",
@@ -504,8 +500,9 @@ class Bot:
         await self.startup_alert()
         extra = []
         if self.lacy:
-            extra.append(self.lacy.worker(self.helix, self.lacy_review, self.lacy_uploaded,
-                                          self.lacy_failed))
+            extra.append(self.lacy.worker(self.helix, self.lacy_failed))
+        if self.review_bot:
+            extra.append(self.review_bot.run_forever())
         if self.ig:
             extra.append(self.instagram_loop())
         await asyncio.gather(self.ticker(), self.poll_state(), self.status_loop(),
@@ -534,8 +531,8 @@ class Bot:
         if self.lacy:
             lc = self.lacy.cfg
             print(f"  Lacy mode ON: twitch/{lc['channel']}, categories {lc['allowed_categories']},"
-                  f" uploads today {self.lacy_uploads_today()}/{lc['max_uploads_per_day']},"
-                  f" auto_upload={lc['auto_upload']}")
+                  f" uploads today {self.lacy_uploads_today()}/{lc['max_uploads_per_day']}"
+                  " (every clip needs your approval in Discord)")
             print(f"    ffmpeg: {'OK' if shutil.which('ffmpeg') else 'MISSING (apt install ffmpeg)'}")
             print(f"    yt-dlp: {'OK' if _has('yt_dlp') else 'MISSING (pip install -r requirements.txt)'}")
             print(f"    faster-whisper: {'OK' if _has('faster_whisper') else 'MISSING (pip install -r requirements.txt)'}")
@@ -554,6 +551,20 @@ class Bot:
                   "  (full check: python -m spikebot.instagram check)")
         else:
             print("  Instagram auto-post off (IG_USER_ID not set)")
+        rc = rv_.settings(self.cfg)
+        print(f"  Discord approval bot: {'token set' if rc['token'] else 'OFF (DISCORD_BOT_TOKEN missing)'};"
+              f" #ready-to-post {rc['channel_id'] or 'NOT SET'}, #tiktok-queue {rc['tiktok_channel_id'] or 'NOT SET'},"
+              f" #inspiration {rc['inspiration_channel_id'] or 'NOT SET'}")
+        print(f"    discord.py: {'OK' if _has('discord') else 'MISSING (pip install -r requirements.txt)'};"
+              f" PySceneDetect: {'OK' if _has('scenedetect') else 'MISSING'};"
+              f" easyocr: {'OK' if _has('easyocr') else 'not installed (optional, see README)'}")
+        rc = rv_.settings(self.cfg)
+        print(f"  Discord approval bot: {'token set' if rc['token'] else 'OFF (DISCORD_BOT_TOKEN missing)'};"
+              f" #ready-to-post {rc['channel_id'] or 'NOT SET'}, #tiktok-queue {rc['tiktok_channel_id'] or 'NOT SET'},"
+              f" #inspiration {rc['inspiration_channel_id'] or 'NOT SET'}")
+        print(f"    discord.py: {'OK' if _has('discord') else 'MISSING (pip install -r requirements.txt)'};"
+              f" PySceneDetect: {'OK' if _has('scenedetect') else 'MISSING'};"
+              f" easyocr: {'OK' if _has('easyocr') else 'not installed (optional, see README)'}")
         free = st_.disk_free_share(self.data_dir)
         print(f"  disk free: {free:.0%} (status alert below {st_.DISK_MIN_FREE:.0%})")
         preview = msg_.plain(self.summary_message(time.time())).replace(" | ", "\n")
@@ -562,8 +573,8 @@ class Bot:
                  ("status_webhook_url", "#status", "Spike bot connection test: status alerts are working."),
                  ("summary_webhook_url", "#daily-summary",
                   "Spike bot connection test: the daily summary will post here at 22:00 UK time."),
-                 ("videos_webhook_url", "#ready-to-post",
-                  "Spike bot connection test: finished videos (Tokyo Girl, Lacy) will post here.")]
+                 ("videos_webhook_url", "#ready-to-post (old webhook)",
+                  "Spike bot connection test: the approval bot now posts clips here.")]
         if not self.cfg.get("videos_webhook_url") and self.cfg.get("tokyo_girl_webhook_url"):
             self.cfg["videos_webhook_url"] = self.cfg["tokyo_girl_webhook_url"]  # old name
         print()
@@ -584,7 +595,14 @@ ENV_KEYS = {"TWITCH_CLIENT_ID": "twitch_client_id",
             "TWITCH_CLIENT_SECRET": "twitch_client_secret",
             "LACY_MODE": "lacy_mode",
             "LACY_MAX_UPLOADS_PER_DAY": "lacy_max_uploads_per_day",
-            "LACY_AUTO_UPLOAD": "lacy_auto_upload",
+            "LACY_AUTO_UPLOAD": "lacy_auto_upload",  # ignored now: every clip needs approval
+            "DISCORD_BOT_TOKEN": "discord_bot_token",
+            "DISCORD_REVIEW_CHANNEL_ID": "discord_channel_id",
+            "DISCORD_TIKTOK_CHANNEL_ID": "discord_tiktok_channel_id",
+            "DISCORD_INSPIRATION_CHANNEL_ID": "discord_inspiration_channel_id",
+            "DISCORD_GUILD_ID": "discord_guild_id",
+            "DISCORD_APPROVER_IDS": "discord_approver_ids",
+            "REVIEW_ENABLED": "review_enabled",
             "TOKYO_GIRL_MODE": "tokyo_girl_mode",
             "TOKYO_GIRL_PER_DAY": "tokyo_girl_per_day",
             "VIDEOS_GCS_BUCKET": "videos_gcs_bucket",

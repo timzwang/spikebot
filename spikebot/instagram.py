@@ -404,11 +404,12 @@ def hook_ok(hook: str, youtube_title: str) -> bool:
             and hook.strip().lower() != (youtube_title or "").strip().lower())
 
 
-def pick_hook(job: dict, used: set[str], rng: random.Random | None = None) -> str:
-    """A hook for the clip's mood, not the YouTube title, not used recently."""
+def pick_hook(job: dict, used: set[str], rng: random.Random | None = None,
+              tone: str | None = None) -> str:
+    """A hook for the clip's mood (or `tone`), not the YouTube title, not used recently."""
     from .lacy import mood
     rng = rng or random.Random(job.get("id"))
-    m = mood(job.get("vibe") or [])
+    m = tone if tone in HOOKS else mood(job.get("vibe") or [])
     first, rest = HOOKS[m][:], [h for k, hs in HOOKS.items() if k != m for h in hs]
     rng.shuffle(first)
     rng.shuffle(rest)

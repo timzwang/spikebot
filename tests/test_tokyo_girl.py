@@ -204,6 +204,7 @@ def test_page_media_parsing():
 # ---- daily quota ----------------------------------------------------------------------
 def test_daily_tops_up_to_per_day(tmp_path, monkeypatch):
     s = cfg(tmp_path, per_day=2)
+    s["review"] = False  # old flow: straight to exports (review mode is tested in test_review_modes.py)
     shots = [img_shot(f"c{i}.jpg", ["city", "cars", "couple"]) for i in range(30)]
     monkeypatch.setattr(TG.Library, "shots", lambda self, entries=None: shots)
     monkeypatch.setattr(TG, "fetch", lambda lcfg: None)

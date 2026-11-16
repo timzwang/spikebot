@@ -26,7 +26,8 @@ git_ rev-parse --git-dir >/dev/null 2>&1 \
 
 echo "==> Installing system packages"
 apt-get update -y
-apt-get install -y python3 python3-venv python3-pip ffmpeg git fonts-dejavu-core
+apt-get install -y python3 python3-venv python3-pip ffmpeg git fonts-dejavu-core \
+    fonts-montserrat fonts-roboto fonts-liberation
 
 echo "==> Creating service user and $APP"
 id -u spikebot >/dev/null 2>&1 || useradd --system --home "$APP" --shell /usr/sbin/nologin spikebot

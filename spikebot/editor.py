@@ -67,12 +67,14 @@ def fetch_segment(vod_url: str, start_s: float, duration_s: float, out: Path) ->
 
 def probe(path: Path) -> dict:
     """Width, height and duration of a video."""
-    p = run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
-             "stream=width,height:format=duration", "-of", "json", str(path)], timeout=60)
+    p = run(["ffprobe", "-v", "error", "-show_entries",
+             "stream=codec_type,width,height:format=duration", "-of", "json", str(path)], timeout=60)
     j = json.loads(p.stdout)
-    s = (j.get("streams") or [{}])[0]
+    streams = j.get("streams") or []
+    s = next((x for x in streams if x.get("codec_type") == "video"), {})
     return {"width": int(s.get("width", 0)), "height": int(s.get("height", 0)),
-            "duration": float((j.get("format") or {}).get("duration") or 0)}
+            "duration": float((j.get("format") or {}).get("duration") or 0),
+            "audio": any(x.get("codec_type") == "audio" for x in streams)}
 
 
 # --------------------------------------------------------------------------
@@ -85,10 +87,10 @@ class Layout:
     game: tuple[int, int, int, int]   # gameplay crop w, h, x, y in the source
     game_h: int                       # gameplay height in the output
 
-    def filter(self) -> str:
+    def filter(self, src: str = "[0:v]") -> str:
         cw, ch, cx, cy = self.cam
         gw, gh, gx, gy = self.game
-        return (f"[0:v]split=2[a][b];"
+        return (f"{src}split=2[a][b];"
                 f"[a]crop={cw}:{ch}:{cx}:{cy},scale={OUT_W}:{self.cam_h},setsar=1[cam];"
                 f"[b]crop={gw}:{gh}:{gx}:{gy},scale={OUT_W}:{self.game_h},setsar=1[game];"
                 f"[cam][game]vstack=inputs=2,fps=30")
@@ -202,11 +204,43 @@ def group_words(words: list[Word], max_words: int = 3, max_gap: float = 0.6) -> 
     return groups
 
 
+def caption_margin(position: str, cam_h: int, size: int, text_y: float | None = None) -> int:
+    """MarginV (bottom-aligned) for the word captions. Kept out of the bottom 320 px
+    (TikTok/Reels/Shorts buttons) and clear of the facecam + two-line hook box
+    (room for a two-line caption below it)."""
+    top_limit = OUT_H - cam_h - 300 - 2 * size     # caption block starts >= 300 px under the cam
+    if text_y is not None:
+        m = OUT_H * (1 - float(text_y)) - size
+    elif position == "high":
+        m = top_limit
+    elif position == "middle":
+        m = OUT_H - (cam_h + OUT_H) / 2 - size
+    else:
+        m = 420
+    return int(max(320, min(m, top_limit)))
+
+
+END_TEXT = {"question": "Would you have done the same?", "cta": "Follow for daily Lacy GTA clips"}
+
+
 def build_ass(words: list[Word], hook: str, duration: float, cam_h: int,
-              watermark: str | None = None) -> str:
-    """Captions file: the hook/title line under the facecam for the whole clip, and
-    word-by-word captions (current word in yellow) over the gameplay.
+              watermark: str | None = None, style: dict | None = None) -> str:
+    """Captions file: the hook/title line under the facecam, and word-by-word
+    captions (current word highlighted) over the gameplay.
+    `style` is style.resolve() output (font, size, position, colours, words per
+    caption, hook length, end card); None = the original look.
     `watermark` is an optional corner text; Lacy mode always passes None."""
+    r = style or {}
+    font = r.get("font") or FONT
+    scale = float(r.get("scale") or 1.0)
+    cap = int(r.get("text_px") or 84 * scale)
+    hook_px = int(58 * scale)
+    outline = int(r["outline"]) if r.get("outline") is not None else 7
+    shadow = int(r["shadow"]) if r.get("shadow") is not None else 2
+    from .style import ass_colour
+    main = ass_colour(r.get("text_colour") or "#FFFFFF")
+    hi = ass_colour(r.get("highlight") or "#FFFF00")[4:]  # BBGGRR for inline \\c&H..&
+    margin = caption_margin(r.get("position") or "low", cam_h, cap, r.get("text_y"))
     head = f"""[Script Info]
 ScriptType: v4.00+
 PlayResX: {OUT_W}
@@ -216,26 +250,86 @@ ScaledBorderAndShadow: yes
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Hook,{FONT},58,&H00FFFFFF,&H00FFFFFF,&H00000000,&H64000000,-1,0,0,0,100,100,0,0,3,14,0,8,60,60,{cam_h + 36},1
-Style: Cap,{FONT},84,&H00FFFFFF,&H00FFFFFF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,7,2,2,70,70,420,1
+Style: Hook,{font},{hook_px},&H00FFFFFF,&H00FFFFFF,&H00000000,&H64000000,-1,0,0,0,100,100,0,0,3,14,0,8,60,60,{cam_h + 36},1
+Style: Cap,{font},{cap},{main},{main},&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,{outline},{shadow},2,70,70,{margin},1
+Style: End,{font},{int(72 * scale)},&H00FFFFFF,&H00FFFFFF,&H30000000,&H30000000,-1,0,0,0,100,100,0,0,3,20,0,5,80,80,0,1
 Style: Mark,{FONT},36,&H80FFFFFF,&H80FFFFFF,&H80000000,&H00000000,-1,0,0,0,100,100,0,0,1,2,0,3,30,30,30,1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 """
     end = ass_time(duration)
-    lines = [f"Dialogue: 1,{ass_time(0)},{end},Hook,,0,0,0,,{ass_escape(hook)}"]
+    hook_end = ass_time(min(duration, float(r["hook_s"]))) if r.get("hook_s") else end
+    lines = [f"Dialogue: 1,{ass_time(0)},{hook_end},Hook,,0,0,0,,{ass_escape(hook)}"]
     if watermark:
         lines.append(f"Dialogue: 1,{ass_time(0)},{end},Mark,,0,0,0,,{ass_escape(watermark)}")
-    for g in group_words(words):
+    ending = END_TEXT.get(r.get("ending") or "")
+    end_at = max(0.0, duration - 2.5) if ending else duration
+    if ending:
+        lines.append(f"Dialogue: 2,{ass_time(end_at)},{end},End,,0,0,0,,{ass_escape(ending)}")
+    for g in group_words(words, max_words=int((r.get("pace") or {}).get("words") or 3)):
         texts = [ass_escape(w.text.strip().upper()) for w in g]
         for i, w in enumerate(g):
+            if w.start >= end_at:
+                break
             stop = g[i + 1].start if i + 1 < len(g) else max(w.end, w.start + 0.3)
-            shown = " ".join(f"{{\\c&H00FFFF&}}{t}{{\\c&HFFFFFF&}}" if j == i else t
+            shown = " ".join(f"{{\\c&H{hi}&}}{t}{{\\c&H{main[4:]}&}}" if j == i else t
                              for j, t in enumerate(texts))
-            lines.append(f"Dialogue: 0,{ass_time(w.start)},{ass_time(min(stop, duration))},"
+            lines.append(f"Dialogue: 0,{ass_time(w.start)},{ass_time(min(stop, end_at))},"
                          f"Cap,,0,0,0,,{shown}")
     return head + "\n".join(lines) + "\n"
+
+
+# --------------------------------------------------------------------------
+# Pacing: which parts of the segment to keep (window around the peak + jump cuts)
+# --------------------------------------------------------------------------
+def keep_segments(words: list[Word], duration: float, window_s: float, peak: float | None,
+                  max_gap_s: float | None, payoff: float | None = None,
+                  pad: float = 0.25, peak_keep: float = 3.0) -> list[tuple[float, float]]:
+    """[(start, end)] of the source to keep, in order.
+    1. A window of `window_s` placed so the chat peak lands at `payoff` of the way
+       through (default 55%).
+    2. With `max_gap_s`, silences longer than that are cut out (jump cuts), but the
+       few seconds around the peak are always kept: the reaction may be laughter
+       that has no words."""
+    payoff = 0.55 if payoff is None else float(payoff)
+    window_s = min(window_s, duration)
+    if peak is None:
+        peak = duration * 0.55
+    start = min(max(0.0, peak - window_s * payoff), max(0.0, duration - window_s))
+    end = min(duration, start + window_s)
+    if not max_gap_s:
+        return [(round(start, 3), round(end, 3))]
+    spans = [(max(start, w.start - pad), min(end, w.end + pad)) for w in words
+             if w.end > start and w.start < end]
+    spans.append((max(start, peak - peak_keep), min(end, peak + peak_keep)))
+    spans.sort()
+    merged: list[list[float]] = []
+    for a, b in spans:
+        if b <= a:
+            continue
+        if merged and a - merged[-1][1] <= max_gap_s:
+            merged[-1][1] = max(merged[-1][1], b)
+        else:
+            merged.append([a, b])
+    out = [(round(a, 3), round(b, 3)) for a, b in merged if b - a >= 0.4]
+    return out or [(round(start, 3), round(end, 3))]
+
+
+def remap_words(words: list[Word], segments: list[tuple[float, float]]) -> list[Word]:
+    """Word timings on the cut timeline (words outside the kept parts are dropped)."""
+    out = []
+    offset = 0.0
+    for a, b in segments:
+        for w in words:
+            if a <= w.start < b:
+                out.append(Word(round(offset + w.start - a, 3), round(offset + min(w.end, b) - a, 3), w.text))
+        offset += b - a
+    return out
+
+
+def cut_length(segments: list[tuple[float, float]]) -> float:
+    return sum(b - a for a, b in segments)
 
 
 # --------------------------------------------------------------------------
@@ -251,6 +345,55 @@ def render(src: Path, out: Path, lay: Layout, ass_file: Path | None) -> Path:
          "-c:v", "libx264", "-preset", "veryfast", "-crf", "21", "-pix_fmt", "yuv420p",
          "-c:a", "aac", "-b:a", "160k", "-ar", "48000", "-movflags", "+faststart",
          str(out.resolve())], timeout=1800, cwd=(ass_file or out).parent)
+    return out
+
+
+def render_variant(src: Path, out: Path, lay: Layout, ass_file: Path | None, src_w: int, src_h: int,
+                   segments: list[tuple[float, float]], grade: str = "", transition: str = "cut",
+                   audio: bool = True) -> Path:
+    """One review variant: keep `segments` of the source (jump cuts), optional
+    zoom punch-in on every other segment or a white flash at each cut, then the
+    facecam layout, colour grade and captions."""
+    parts, labels = [], []
+    for i, (a, b) in enumerate(segments):
+        v = f"[0:v]trim=start={a:.3f}:end={b:.3f},setpts=PTS-STARTPTS"
+        if transition == "zoom" and i % 2 == 1:
+            v += f",scale={even(src_w * 1.12)}:{even(src_h * 1.12)},crop={src_w}:{src_h}"
+        if transition == "flash" and i > 0:
+            v += ",fade=t=in:st=0:d=0.12:color=white"
+        parts.append(v + f"[sv{i}]")
+        labels.append(f"[sv{i}]")
+        if audio:
+            parts.append(f"[0:a]atrim=start={a:.3f}:end={b:.3f},asetpts=PTS-STARTPTS[sa{i}]")
+            labels.append(f"[sa{i}]")
+    n = len(segments)
+    parts.append("".join(labels) + f"concat=n={n}:v=1:a={1 if audio else 0}[cv]" + ("[ca]" if audio else ""))
+    vf = lay.filter("[cv]")
+    if grade:
+        vf += "," + grade
+    if ass_file is not None:
+        vf += f",ass={ass_file.name}"
+    graph = ";".join(parts) + ";" + vf + "[v]"
+    run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-i", str(src.resolve()),
+         "-filter_complex", graph, "-map", "[v]", *(["-map", "[ca]"] if audio else []),
+         "-c:v", "libx264", "-preset", "veryfast", "-crf", "21", "-pix_fmt", "yuv420p",
+         *(["-c:a", "aac", "-b:a", "160k", "-ar", "48000"] if audio else []),
+         "-movflags", "+faststart", str(out.resolve())], timeout=1800, cwd=(ass_file or out).parent)
+    return out
+
+
+def preview(src: Path, out: Path, max_bytes: int, duration: float | None = None) -> Path:
+    """540x960 copy squeezed under max_bytes (three of them go in one Discord message)."""
+    duration = duration or probe(src)["duration"] or 60.0
+    total_kbps = max_bytes * 8 * 0.88 / 1000 / max(duration, 1.0)
+    has_audio = probe(src).get("audio")
+    a_kbps = 48 if has_audio else 0
+    v_kbps = max(120, int(total_kbps - a_kbps))
+    run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-i", str(src),
+         "-vf", "scale=540:960", "-c:v", "libx264", "-preset", "veryfast", "-b:v", f"{v_kbps}k",
+         "-maxrate", f"{int(v_kbps * 1.2)}k", "-bufsize", f"{v_kbps * 2}k",
+         *(["-c:a", "aac", "-b:a", f"{a_kbps}k", "-ac", "1"] if has_audio else ["-an"]),
+         "-movflags", "+faststart", str(out)], timeout=900)
     return out
 
 

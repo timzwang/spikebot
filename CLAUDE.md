@@ -15,8 +15,11 @@ revenue on a budget of about £20/month. Give all times in UK time.
 - Rockstar policy: no isolated cutscenes, endings, story spoilers or leaked footage.
 - Every Short must add original value (captions, hook, context). Never raw re-uploads,
   so it stays within YouTube's reused content rules.
-- Never commit or print secrets (Discord webhook, Twitch secret, Google OAuth JSON,
-  `gcs-key.json`, Instagram access token).
+- Never commit or print secrets (Discord webhook, Discord bot token, Twitch secret, Google
+  OAuth JSON, `gcs-key.json`, Instagram access token).
+- Nothing is published to YouTube/Instagram/TikTok without Tim's Approve in Discord.
+- #inspiration downloads other creators' Shorts **only to measure style**: delete the file
+  right after analysis, never reuse their footage, audio or wording.
 
 ## Task tracker
 
@@ -33,9 +36,9 @@ per phase).
 - **Editor:** vertical 1080x1920, word-level captions, programme watermark/hashtags (Lacy mode
   already has a Lacy-only version in `editor.py`/`lacy.py`),
   optional AI voiceover hook.
-- **Review queue:** Tim approves each clip.
-- **Uploader:** YouTube, plus the same edit to TikTok and Reels (Lacy: YouTube + Reels are
-  automatic, TikTok is a manual upload from `exports/tiktok/`).
+- **Stream-clip editor** for the other programme channels: plug it into the review queue
+  with a `ReviewAdapter` (see `review.adapter_for`), like Lacy and Tokyo Girl.
+- (Done: review queue + Discord approval bot, uploader with windows/caps, #inspiration presets.)
 
 ## Deadlines
 
@@ -65,9 +68,13 @@ It posts to four Discord webhooks, which must stay separate:
 | `discord_webhook_url` | #moments | Clip moments only (`candidate` spikes) |
 | `status_webhook_url` | #status | Bot health: start/restart, streamer live/offline (with category), chat down >5 min and reconnected, Kick 4001 key error, disk <20% free |
 | `summary_webhook_url` | #daily-summary | 22:00 UK daily summary: moments per streamer + top 3 by score (last 24h) |
-| `videos_webhook_url` | #ready-to-post | Every finished video (Tokyo Girl edits, uploaded Lacy Shorts), labelled by mode: original file attached, or a GCS download link if too big. Old name `tokyo_girl_webhook_url` still read |
+| `videos_webhook_url` | #ready-to-post | Legacy only (review off / `lacy deliver`): finished file attached, or a GCS link. Old name `tokyo_girl_webhook_url` still read |
 
 An empty field disables that channel; the message is still logged.
+
+**The Discord approval bot** (discord.py, `DISCORD_BOT_TOKEN`) owns #ready-to-post,
+#tiktok-queue and #inspiration (channel ids `DISCORD_*_CHANNEL_ID`, `DISCORD_GUILD_ID`,
+`DISCORD_APPROVER_IDS`). **Nothing is published without Tim pressing Approve.**
 
 `README.md` is the user-facing guide (install, config fields, useful commands). Keep
 it in sync when behaviour or config changes.
@@ -119,15 +126,20 @@ it in sync when behaviour or config changes.
   `data/lacy/jobs/<id>/job.json`. `LacyMode.worker()` waits `vod_delay_s`, looks up the VOD
   and runs `python -m spikebot.lacy render ID` as a subprocess (`render_job`: hard guards
   for channel/programme/category, cut segment, BRB/away/camera-off skip, English-only
-  Whisper check, render, preview, unique thumbnail). A review card + preview goes to
-  #moments; `python -m spikebot.lacy approve ID` runs `upload_job` (daily cap from the CSV,
-  title/hashtag checks, YouTube upload, thumbnail, append to `logs/lacy_submissions.csv`).
+  Whisper check, then a review item with 3 variants via `lacy.ReviewAdapter`; the segment and
+  `words.json` are kept for re-renders until the item closes). Job status `review`. Approval
+  and upload happen through the review queue (auto-upload removed). The old single-render
+  path (`review_store=None`) and `lacy approve ID` / `upload_job` remain for old `ready` jobs.
   Titles come from `TITLES` and must pass `title_ok` (contains Lacy, no `BANNED` words,
   English). Never add a watermark/logo in Lacy mode (`build_ass(watermark=None)`).
-- `spikebot/editor.py`: ffmpeg/yt-dlp helpers used only by Lacy mode: `fetch_segment` (only
-  the clip range of a VOD), `layout` (facecam stacked over gameplay for the whole clip),
-  `away_reason`, `build_ass` (word captions), `render`, `review_copy`, `pick_thumbnail`
-  (dHash vs. `data/lacy/thumbnails.json`), `transcribe` (faster-whisper, lazy import).
+- `spikebot/editor.py`: ffmpeg/yt-dlp helpers: `fetch_segment` (only the clip range of a
+  VOD), `layout` (facecam stacked over gameplay for the whole clip), `away_reason`,
+  `build_ass(style=)` (word captions, font/size/position/colours, hook length, end card;
+  `caption_margin` keeps clear of the hook box and the bottom 320 px), `keep_segments` /
+  `remap_words` (window around the peak at the payoff point + jump cuts, peak always kept),
+  `render_variant` (trim/concat, zoom punch or white flash per cut, grade, captions),
+  `preview` (size-budgeted), `render`, `review_copy`, `pick_thumbnail` (dHash vs.
+  `data/lacy/thumbnails.json`), `transcribe` (faster-whisper, lazy import).
 - `spikebot/youtube.py`: YouTube Data API upload (resumable), `set_thumbnail`, and the
   one-time `python -m spikebot.youtube auth --env .env` that saves `YOUTUBE_REFRESH_TOKEN`.
 - `tests/test_lacy.py`: Lacy config/env, GTA filter, titles, CSV + daily cap, layout,
@@ -145,8 +157,10 @@ it in sync when behaviour or config changes.
   on-screen text (last card is always a question; date windows relative to launch).
   Output `exports/tokyo_girl/*.mp4` + `.txt` (IG/TikTok captions from `caption_ig` /
   `caption_tiktok`). No logos/watermarks. State in `data/tokyo_girl/state.json`.
-  `deliver` (after each export; `deliver_pending` retries for 3 days) sends it to
-  #ready-to-post via `delivery.send`.
+  With review on (default) `daily` makes `per_day` review items (`make_review`, 3 variants:
+  own story/hook kind, `PACE_PATTERNS`, grade, text style, transition `flash`/`zoom`/`cut`);
+  approved edits are copied to `exports/tokyo_girl/`. With review off the old `make` +
+  `deliver` (webhook) path runs.
 - `spikebot/delivery.py`: #ready-to-post for every mode (`MODES` labels/colours). Never
   re-encodes: files <= `videos.discord_max_mb` are attached; bigger ones (or a Discord 413)
   go to the private bucket `VIDEOS_GCS_BUCKET` via `GCSUploader` (google-cloud-storage, lazy
@@ -183,6 +197,42 @@ it in sync when behaviour or config changes.
   check | refresh | retry [JOB]`. Tested in `tests/test_instagram.py`.
 - `tests/test_tokyo_girl.py`: stories, beat grid, shot picking, tags, captions, daily quota,
   host guard, and an end-to-end silent render (needs ffmpeg).
+- `spikebot/style.py` (pure): variant dimensions (grade, pace, font, size, position, colour,
+  transition, hook tone per mode, Lacy ending) + exact `custom` values; `resolve()` -> render
+  numbers, `grade_filter()`; `Profile` = `data/style_profile.json` (shown/approved/passed/rejected
+  per option, pins from `/style`, decisions, feedback notes + intent counts, preset stats);
+  `pick_variants()`: A best-scoring, B from a most-approved preset in rotation (else weighted
+  random), C experimental (least shown); unpinned dims differ across A/B/C; `parse_feedback()`
+  (rule based, no API) + `apply_changes()`; `hook_style()` / `ending_style()` classifiers.
+- `spikebot/presets.py`: `data/presets/<name>.json` (parts: pacing, colour, text, transitions,
+  hook, structure, music-sync; `PART_KEYS` says which settings each part may set), CRUD,
+  `combine()`, `to_style()`, `parse_copy()` / `parse_name()` for #inspiration notes.
+- `spikebot/review.py`: review items `data/review/items/<id>/item.json` (+ `r<N>_<L>.mp4`,
+  previews, `final.mp4`), `Store.edit()` = flock'd read-modify-write (bot and render
+  subprocesses both write). Status rendering -> open -> approved -> done | rejected | expired
+  (48 h after the latest round). Requests redo / feedback / preset are rendered by
+  `python -m spikebot.review render ID` (`render_round` -> mode `ReviewAdapter`). `approve()` plans
+  platforms from `review.modes.<mode>.auto` (Lacy: youtube+instagram; Tokyo Girl: none, it's
+  silent) filtered by `Publisher.available()`; the rest are manual (#tiktok-queue).
+  `Publisher.publish()` respects windows (UK), `youtube_max_per_day`, the Lacy CSV cap, the IG
+  cap; retries 3x; Lacy also gets thumbnail, submissions CSV row and job status. Never posts a
+  platform twice. CLI `list | render | approve ITEM LABEL | reject | publish` (fallback only).
+- `spikebot/discord_bot.py`: `ReviewBot` (started by `Bot.run` when the token is set; reconnects,
+  never crashes the bot). Pure layouts `round_payload` / `buttons` / `manual_payload` /
+  `style_overview`; custom ids `rv|action|item|round|label` handled in `on_interaction` (survive
+  restarts). Loops: `scan` (post ready rounds + thread, queue requests, report failures, expire,
+  #tiktok-queue, finish), `render_worker` (one subprocess at a time), `publish_loop` (60 s, under
+  `publish_lock`). Feedback/Edit caption use modals. `/style [setting] [value]`, `/preset apply |
+  list | show | rename | edit | delete | combine`. #inspiration `on_message` (approvers only).
+- `spikebot/inspiration.py`: style analysis in a subprocess (`python -m spikebot.inspiration
+  analyse --url|--file --name --copy --json`). yt-dlp only for tiktok/instagram/youtube hosts,
+  <= 4 min; the reference file is **always deleted** and only numbers are kept (hook *type*,
+  never their words or footage). PySceneDetect cuts (ffmpeg fallback), tempo + on-beat share from
+  an onset envelope (numpy), signalstats colour -> grade, optional easyocr text (`requirements-ocr.txt`),
+  OpenCV zoom/shake, flash/fade at cuts, structure. Download failure -> bot asks for an upload.
+- `tests/test_style.py`, `tests/test_review.py` (store, publisher with fakes, bot flows with fake
+  Discord objects, #inspiration flow), `tests/test_review_modes.py` (real ffmpeg: Lacy and Tokyo Girl
+  variants, feedback re-render, Lacy rules), `tests/test_inspiration.py`.
 - `spikebot/messages.py`: pure Discord layouts (embeds) for #moments (`moment`), #status
   (`status`, colour by alert kind) and #daily-summary (`summary`). Times use Discord
   `<t:unix:style>` markup; `plain()` renders a payload as one log line in UK time. Chat
@@ -204,7 +254,9 @@ it in sync when behaviour or config changes.
   restarts the bot. It also installs/enables `spikebot-tokyo-girl.timer` if missing.
   Never touches `config.json`, `.env`, `data/` or `exports/`.
 - `.env` / `.env.example`: `TWITCH_CLIENT_ID`, `TWITCH_CLIENT_SECRET`, `TOKYO_GIRL_MODE`, `TOKYO_GIRL_PER_DAY`, `LACY_MODE`,
-  `LACY_MAX_UPLOADS_PER_DAY`, `LACY_AUTO_UPLOAD`, `YOUTUBE_CLIENT_ID/SECRET/REFRESH_TOKEN`,
+  `LACY_MAX_UPLOADS_PER_DAY`, `LACY_AUTO_UPLOAD` (ignored), `DISCORD_BOT_TOKEN`,
+  `DISCORD_REVIEW_CHANNEL_ID`, `DISCORD_TIKTOK_CHANNEL_ID`, `DISCORD_INSPIRATION_CHANNEL_ID`,
+  `DISCORD_GUILD_ID`, `DISCORD_APPROVER_IDS`, `REVIEW_ENABLED`, `YOUTUBE_CLIENT_ID/SECRET/REFRESH_TOKEN`,
   `IG_USER_ID`, `IG_ACCESS_TOKEN` (read by `instagram.Token`, not `apply_env`),
   `IG_MAX_REELS_PER_DAY`, `INSTAGRAM_AUTO_POST`. `main.apply_env()`
   overlays them on the config (environment > `.env` next to config > `.env` in cwd >
@@ -238,7 +290,9 @@ python3 -m venv .venv && .venv/bin/pip install -r requirements.txt -r requiremen
 
 - Python 3.11+ syntax (`X | None`), `from __future__ import annotations`, asyncio throughout.
 - Dependencies are kept minimal (`websockets`, `curl_cffi`; `yt-dlp` and `faster-whisper`
-  only for Lacy mode, imported in the render subprocess); add new ones to `requirements.txt`.
+  only for Lacy mode, imported in the render subprocess; `discord.py` for the approval bot;
+  `scenedetect`/OpenCV only in the inspiration subprocess; easyocr optional via
+  `requirements-ocr.txt`); add new ones to `requirements.txt`.
 - Keep `detector.py` free of I/O so it stays testable with simulated timestamps.
 - Network failures should log and retry rather than crash the service (systemd restarts
   it anyway). Status/summary code must never take the bot down.

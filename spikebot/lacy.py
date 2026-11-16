@@ -8,11 +8,11 @@ Flow (all automatic up to review):
      `python -m spikebot.lacy render JOB` in a subprocess: cut the segment, skip
      BRB/away/camera-off, transcribe (English only), render 1080x1920 with his
      facecam on top for the whole clip, captions, no logo, unique thumbnail.
-  3. A review card with a small preview video goes to #moments. Tim approves:
-        python -m spikebot.lacy approve JOB
-     which uploads to YouTube (max N a day), sets the thumbnail and appends the
-     Shorts URL to logs/lacy_submissions.csv for Content Rewards.
-     With lacy.auto_upload=true step 3 happens without approval (still capped).
+  3. Three variants (A/B/C: different grade, pacing, text style and hook) go to the
+     review queue (spikebot/review.py); the Discord bot posts them in #ready-to-post.
+     Nothing is uploaded until Tim presses Approve. Then the bot uploads to YouTube
+     (max N a day, posting window), sets the thumbnail, posts the Instagram Reel,
+     appends to logs/lacy_submissions.csv and puts the TikTok copy in #tiktok-queue.
 
 CLI:  python -m spikebot.lacy list | render ID | approve ID | reject ID | layout VIDEO
 """
@@ -42,7 +42,7 @@ DEFAULTS = {
     "allowed_categories": ["Grand Theft Auto V", "Grand Theft Auto VI"],
     "max_uploads_per_day": 3,                # UK calendar day
     "max_renders_per_day": 12,               # CPU guard: clips made, approved or not
-    "auto_upload": False,                    # False = Tim approves every clip
+    "auto_upload": False,                    # ignored: Tim approves every clip in Discord
     "min_score": None,                       # None = use min_score_to_alert
     "vod_delay_s": 300,                      # wait for the VOD to contain the moment
     "max_clip_s": 59,
@@ -68,8 +68,8 @@ def settings(cfg: dict) -> dict:
         out["enabled"] = str(cfg["lacy_mode"]).strip().lower() in TRUE
     if cfg.get("lacy_max_uploads_per_day") not in (None, ""):
         out["max_uploads_per_day"] = int(cfg["lacy_max_uploads_per_day"])
-    if cfg.get("lacy_auto_upload") not in (None, ""):
-        out["auto_upload"] = str(cfg["lacy_auto_upload"]).strip().lower() in TRUE
+    # Auto-upload was removed: every clip waits for approval in Discord.
+    out["auto_upload"] = False
     if out["min_score"] is None:
         out["min_score"] = float(cfg.get("min_score_to_alert", 0))
     out["channel"] = out["channel"].lower()
@@ -137,16 +137,24 @@ def mood(vibe: list[str]) -> str:
     return "neutral"
 
 
-def make_title(vibe: list[str], category: str, used: set[str], rng: random.Random | None = None) -> str:
-    """A title for this clip's mood that hasn't been used on an earlier upload."""
+def make_title(vibe: list[str], category: str, used: set[str], rng: random.Random | None = None,
+               tone: str | None = None, hook_style: str | None = None) -> str:
+    """A title for this clip's mood (or the given tone) that hasn't been used on an
+    earlier upload. `hook_style` (from a preset: pov / wait / question...) moves
+    templates of that kind to the front."""
+    from .style import hook_style as classify
     rng = rng or random.Random()
     game = game_tag(category)
-    first = TITLES[mood(vibe)][:]
-    rest = [t for k, ts in TITLES.items() if k != mood(vibe) for t in ts]
+    m = tone if tone in TITLES else mood(vibe)
+    first = TITLES[m][:]
+    rest = [t for k, ts in TITLES.items() if k != m for t in ts]
     rng.shuffle(first)
     rng.shuffle(rest)
+    order = first + rest
+    if hook_style:
+        order.sort(key=lambda t: classify(t.format(game=game)) != hook_style)
     used_l = {u.lower() for u in used}
-    for tpl in first + rest:
+    for tpl in order:
         t = tpl.format(game=game)
         if title_ok(t) and t.lower() not in used_l:
             return t
@@ -341,15 +349,18 @@ def new_job(rec: dict, state: dict, lcfg: dict) -> dict:
 # --------------------------------------------------------------------------
 def render_job(job: dict, lcfg: dict, jobs: Jobs, used_titles: set[str],
                fetch=editor.fetch_segment, transcribe=editor.transcribe,
-               now: float | None = None) -> dict:
-    """Make the Short. Sets job status to ready / skipped / failed with a reason."""
+               now: float | None = None, review_store=None, cfg: dict | None = None,
+               base: Path | None = None) -> dict:
+    """Make the clip. With `review_store` (normal): 3 variants go to the review queue
+    and the job becomes `review`. Without: one Short (`ready`, old flow).
+    Sets skipped / failed with a reason when no clip can be made."""
     now = now or time.time()
     d = jobs.dir(job["id"])
     d.mkdir(parents=True, exist_ok=True)
 
     def finish(status: str, reason: str | None = None) -> dict:
         job["status"], job["reason"] = status, reason
-        (d / "segment.mp4").unlink(missing_ok=True)  # big, never needed again
+        (d / "segment.mp4").unlink(missing_ok=True)  # big; kept only while a clip is in review
         jobs.save(job)
         log.info("lacy job %s: %s%s", job["id"], status, f" ({reason})" if reason else "")
         return job
@@ -384,25 +395,166 @@ def render_job(job: dict, lcfg: dict, jobs: Jobs, used_titles: set[str],
             return finish("skipped", f"not English (detected {lang} {prob:.0%})")
         if len(words) < lcfg["min_words"]:
             return finish("skipped", "almost no speech, nothing to caption")
-        title = make_title(job["vibe"], job["category"], used_titles)
-        job["title"] = title
-        job["description"] = description(title, job["category"], job["channel"])
-        job["tags"] = tags(job["category"])
-        ass = d / "captions.ass"
-        # Lacy mode: never a watermark, channel logo or "6" overlay.
-        ass.write_text(editor.build_ass(words, title, duration, lay.cam_h, watermark=None),
-                       encoding="utf-8")
-        short = editor.render(seg, d / "short.mp4", lay, ass)
-        editor.review_copy(short, d / "preview.mp4")
-        peak = (job["peak_time"] - job["clip_start"]) if job.get("peak_time") else None
-        h = editor.pick_thumbnail(short, d / "thumb.jpg", duration, peak, jobs.used_hashes(),
-                                  lcfg["thumb_min_distance"])
-        jobs.add_hash(h)
-        job.update(thumb_hash=f"{h:016x}", duration=round(duration, 1), language=lang,
-                   rendered_day=day, words=len(words))
-        return finish("ready")
+        if review_store is None:  # old single-render path (CLI `lacy approve` / tests)
+            return _render_single(job, lcfg, jobs, used_titles, seg, lay, words, lang, duration, day, finish)
+        (d / "words.json").write_text(json.dumps([[w.start, w.end, w.text] for w in words]), encoding="utf-8")
+        job.update(duration=round(duration, 1), language=lang, rendered_day=day, words=len(words),
+                   src_w=info["width"], src_h=info["height"], audio=info.get("audio", True))
+        jobs.save(job)
+        from . import review
+        item = review_store.create("lacy", {"job_id": job["id"], "vod_link": job.get("vod_link"),
+                                            "channel": job["channel"], "category": job["category"]},
+                                   now, title=f"Lacy {job['id']} ({job['category']})")
+        job["review_item"] = item["id"]
+        jobs.save(job)
+        item = review.render_round(review_store, item["id"], cfg or {}, base or Path("."), {"kind": "initial"},
+                                   now=now, adapter=ReviewAdapter(cfg or {}, base or Path("."), lcfg, jobs,
+                                                                  used_titles))
+        if item["status"] != "open":
+            return finish("failed", item.get("error") or "variants could not be rendered")
+        job["status"], job["reason"] = "review", None
+        jobs.save(job)
+        log.info("lacy job %s: 3 variants waiting for approval (%s)", job["id"], item["id"])
+        return job
     except editor.EditError as e:
         return finish("failed", str(e))
+
+
+def _render_single(job, lcfg, jobs, used_titles, seg, lay, words, lang, duration, day, finish):
+    d = jobs.dir(job["id"])
+    title = make_title(job["vibe"], job["category"], used_titles)
+    job["title"] = title
+    job["description"] = description(title, job["category"], job["channel"])
+    job["tags"] = tags(job["category"])
+    ass = d / "captions.ass"
+    # Lacy mode: never a watermark, channel logo or "6" overlay.
+    ass.write_text(editor.build_ass(words, title, duration, lay.cam_h, watermark=None), encoding="utf-8")
+    short = editor.render(seg, d / "short.mp4", lay, ass)
+    editor.review_copy(short, d / "preview.mp4")
+    peak = (job["peak_time"] - job["clip_start"]) if job.get("peak_time") else None
+    h = editor.pick_thumbnail(short, d / "thumb.jpg", duration, peak, jobs.used_hashes(),
+                              lcfg["thumb_min_distance"])
+    jobs.add_hash(h)
+    job.update(thumb_hash=f"{h:016x}", duration=round(duration, 1), language=lang,
+               rendered_day=day, words=len(words))
+    return finish("ready")
+
+
+class ReviewAdapter:
+    """Renders review variants of a Lacy job from its kept segment + transcript.
+    Every variant obeys the Lacy rules: facecam on top, no watermark/logo, English
+    title containing "Lacy" with no banned words."""
+
+    def __init__(self, cfg: dict, base: Path, lcfg: dict | None = None, jobs: Jobs | None = None,
+                 used_titles: set[str] | None = None):
+        self.cfg, self.base = cfg, base
+        self.lcfg = lcfg or settings(cfg)
+        data_dir = Path(cfg.get("data_dir", "data"))
+        self.jobs = jobs or Jobs(data_dir if data_dir.is_absolute() else base / data_dir)
+        self.used_titles = used_titles
+
+    def _used(self) -> set[str]:
+        if self.used_titles is not None:
+            return set(self.used_titles)
+        return Submissions(Path(self.lcfg["submissions_csv"])).titles()
+
+    def render(self, item: dict, specs: list[dict], n: int, folder: Path, preview_bytes: int) -> list[dict]:
+        from . import instagram, style as st
+        job = self.jobs.load(item["source"]["job_id"])
+        d = self.jobs.dir(job["id"])
+        seg = d / "segment.mp4"
+        if not seg.exists():
+            raise editor.EditError("the source segment is gone (clip closed or disk cleaned)")
+        words = [editor.Word(a, b, t) for a, b, t in json.loads((d / "words.json").read_text(encoding="utf-8"))]
+        w, h = int(job["src_w"]), int(job["src_h"])
+        lay = editor.layout(w, h, self.lcfg["facecam"])
+        duration = float(job["duration"])
+        peak = (job["peak_time"] - job["clip_start"]) if job.get("peak_time") else None
+        used = self._used() | {v["title"] for r in item["rounds"] for v in r["variants"]}
+        hooks_used = instagram.PostLog(instagram.settings(self.cfg, self.base)["posts_csv"]).recent_hooks()
+        out = []
+        for spec in specs:
+            r = st.resolve(spec["style"])
+            base_v = spec.get("from")
+            texts = spec.get("texts") or {}
+            if texts.get("hook"):
+                title = texts["hook"].strip()
+                if not title_ok(title):
+                    raise ValueError(f"new hook {title!r} breaks the Lacy title rules (must contain"
+                                     " 'Lacy', 10-100 English characters, no negative words)")
+            elif base_v:
+                title = base_v["title"]
+            else:
+                tone = spec["style"].get("hook")
+                title = make_title(job["vibe"], job["category"], used, random.Random(f"{item['id']}{n}{spec['label']}"),
+                                   tone=None if tone == "matched" else tone, hook_style=r.get("hook_style"))
+            used.add(title)
+            if base_v and not texts.get("hook"):
+                caps = dict(base_v["captions"])
+                social = base_v.get("hook")
+            else:
+                tone = spec["style"].get("hook")
+                social = instagram.pick_hook(job | {"title": title}, hooks_used | used,
+                                             random.Random(f"{item['id']}{n}{spec['label']}"),
+                                             tone=None if tone == "matched" else tone)
+                hooks_used.add(social)
+                caps = instagram.captions(job | {"title": title}, social)
+            window = min(float(r["pace"]["window_s"]), float(self.lcfg["max_clip_s"]))
+            segs = editor.keep_segments(words, duration, window, peak, r["pace"]["max_gap_s"], r["payoff"])
+            cut_words = editor.remap_words(words, segs)
+            length = editor.cut_length(segs)
+            stem = f"r{n}_{spec['label']}"
+            ass = folder / f"{stem}.ass"
+            # Lacy mode: never a watermark, channel logo or "6" overlay.
+            ass.write_text(editor.build_ass(cut_words, title, length, lay.cam_h, watermark=None, style=r),
+                           encoding="utf-8")
+            mp4 = folder / f"{stem}.mp4"
+            editor.render_variant(seg, mp4, lay, ass, w, h, segs, st.grade_filter(r["grade"]),
+                                  r["transition"], audio=bool(job.get("audio", True)))
+            ass.unlink(missing_ok=True)
+            prev = editor.preview(mp4, folder / f"{stem}_preview.mp4", preview_bytes, length)
+            peak_cut = None
+            if peak is not None:
+                off = 0.0
+                for a, b in segs:
+                    if a <= peak < b:
+                        peak_cut = off + peak - a
+                    off += b - a
+            out.append({"label": spec["label"], "style": spec["style"], "preset": spec.get("preset"),
+                        "experimental": spec.get("experimental", False), "title": title,
+                        "description": description(title, job["category"], job["channel"]),
+                        "tags": tags(job["category"]), "hook": social, "captions": caps,
+                        "file": mp4.name, "preview": prev.name, "duration": round(length, 1),
+                        "cuts": len(segs) - 1, "peak": peak_cut})
+        return out
+
+    def validate(self, item: dict, v: dict) -> None:
+        job = self.jobs.load(item["source"]["job_id"])
+        if not title_ok(v["title"]):
+            raise ValueError("Lacy titles must contain 'Lacy', be 10-100 English characters"
+                             " and avoid negative words")
+        for k, text in v["captions"].items():
+            if BANNED.search(text):
+                raise ValueError(f"the {k} caption has a word the Lacy rules ban: {BANNED.search(text).group(0)!r}")
+            if "lacy" not in text.lower():
+                raise ValueError(f"the {k} caption must mention Lacy")
+        v["description"] = description(v["title"], job["category"], job["channel"])
+
+    def finish(self, item: dict, status: str) -> None:
+        job_id = item["source"].get("job_id")
+        if not job_id:
+            return
+        d = self.jobs.dir(job_id)
+        for f in ("segment.mp4", "short.mp4", "preview.mp4"):
+            (d / f).unlink(missing_ok=True)
+        try:
+            job = self.jobs.load(job_id)
+        except FileNotFoundError:
+            return
+        if job.get("status") == "review":
+            job["status"] = {"done": "uploaded", "rejected": "rejected", "expired": "expired"}.get(status, status)
+            job["reason"] = None if status == "done" else f"{status} in review"
+            self.jobs.save(job)
 
 
 def upload_job(job: dict, lcfg: dict, jobs: Jobs, subs: Submissions, yt,
@@ -559,9 +711,9 @@ class LacyMode:
             return -1, "timed out"
         return p.returncode or 0, out.decode(errors="replace")[-1500:]
 
-    async def worker(self, helix, post_review, post_text, post_status) -> None:
+    async def worker(self, helix, post_status) -> None:
         """Render queued jobs one at a time. Never raises: Lacy problems must not
-        take the chat bot down."""
+        take the chat bot down. Finished variants wait in the review queue."""
         self.queue = asyncio.Queue()
         for j in self.jobs.all():  # jobs left waiting by a restart
             if j.get("status") in ("queued", "rendering"):
@@ -569,11 +721,11 @@ class LacyMode:
         while True:
             job_id = await self.queue.get()
             try:
-                await self._process(job_id, helix, post_review, post_text, post_status)
+                await self._process(job_id, helix, post_status)
             except Exception as e:  # noqa: BLE001
                 log.warning("lacy job %s error: %s", job_id, e)
 
-    async def _process(self, job_id, helix, post_review, post_text, post_status) -> None:
+    async def _process(self, job_id, helix, post_status) -> None:
         job = self.jobs.load(job_id)
         wait = job["ready_at"] - time.time()
         if wait > 0:
@@ -591,17 +743,6 @@ class LacyMode:
             self.jobs.save(job)
         if job["status"] == "failed":
             await post_status(job)
-            return
-        if job["status"] != "ready":
-            return
-        if self.cfg["auto_upload"]:
-            code, out = await self._run("approve", job_id)
-            job = self.jobs.load(job_id)
-            if job["status"] == "uploaded":
-                await post_text(job)
-                return
-            job["reason"] = out.strip().splitlines()[-1] if out.strip() else "upload failed"
-        await post_review(job, self.jobs.dir(job_id) / "preview.mp4")
 
 
 # --------------------------------------------------------------------------
@@ -670,9 +811,11 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "render":
         used = subs.titles() | {j.get("title") for j in jobs.all()
                                 if j.get("title") and j["id"] != job["id"]}
-        job = render_job(job, lcfg, jobs, used)
+        from . import review
+        base = Path(args.config).resolve().parent
+        job = render_job(job, lcfg, jobs, used, review_store=review.Store(data_dir), cfg=cfg, base=base)
         print(f"{job['id']}: {job['status']} {job.get('reason') or ''}")
-        return 0 if job["status"] in ("ready", "skipped") else 1
+        return 0 if job["status"] in ("ready", "review", "skipped") else 1
     if args.cmd == "reject":
         job.update(status="rejected", reason="rejected by Tim")
         jobs.save(job)

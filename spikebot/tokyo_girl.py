@@ -94,6 +94,11 @@ def settings(cfg: dict, base: Path | None = None) -> dict:
     if cfg.get("tokyo_girl_per_day") not in (None, ""):
         out["per_day"] = int(cfg["tokyo_girl_per_day"])
     out["delivery"] = delivery.settings(cfg, base)  # #ready-to-post, shared by every mode
+    from . import review
+    out["review"] = review.settings(cfg)["enabled"]  # True: 3 variants wait for approval
+    data_dir = Path(cfg.get("data_dir", "data"))
+    out["data_dir"] = str(data_dir if data_dir.is_absolute() or base is None else base / data_dir)
+    out["_cfg"], out["_base"] = cfg, base
     if not 1 <= out["min_s"] <= out["max_s"]:
         raise ValueError("tokyo_girl: need 1 <= min_s <= max_s")
     if base is not None:
@@ -483,6 +488,7 @@ class Slot:
     card: int
     flash: bool
     pan: int           # +1 / -1 direction of the slow pan
+    punch: bool = False  # zoom-cut: tighter framing on the first shot of a card
 
 
 @dataclass
@@ -520,25 +526,41 @@ def card_bars(n_cards: int, bpm: float, min_s: float, max_s: float, rng: random.
     return bars
 
 
-def beat_pattern(n_bars: int, rng: random.Random) -> list[list[int]]:
+PACE_PATTERNS = {
+    "slow": {"open": [[4], [2, 2]], "mid": [[2, 2], [4], [2, 2], [3, 1]], "end": [[4]]},
+    "normal": BAR_PATTERNS,
+    "fast": {"open": [[1, 1, 2], [2, 1, 1], [1, 1, 1, 1]], "mid": [[1, 1, 1, 1], [1, 1, 2], [2, 1, 1]],
+             "end": [[2, 2], [1, 1, 2]]},
+}
+
+
+def pace_for_shot(shot_s: float, bpm: float) -> str:
+    """A preset's average shot length -> the nearest pacing pattern."""
+    beats = shot_s / beat_s(bpm)
+    return "fast" if beats < 1.6 else ("normal" if beats < 2.6 else "slow")
+
+
+def beat_pattern(n_bars: int, rng: random.Random, pace: str = "normal") -> list[list[int]]:
+    pats = PACE_PATTERNS.get(pace, BAR_PATTERNS)
     out = []
     for b in range(n_bars):
         kind = "open" if b == 0 else ("end" if b == n_bars - 1 else "mid")
-        out.append(list(rng.choice(BAR_PATTERNS[kind])))
+        out.append(list(rng.choice(pats[kind])))
     return out
 
 
 def plan_clip(story: Story, shots: list[Shot], lcfg: dict, today: date, rng: random.Random,
-              uses: dict[str, int] | None = None) -> Plan:
+              uses: dict[str, int] | None = None, pace: str = "normal", transition: str = "flash",
+              cards: list[str] | None = None) -> Plan:
     if not shots:
         raise editor.EditError("no usable media: run `fetch`, or drop official Rockstar "
                                f"screenshots/trailers into {lcfg['media_dir']}")
     uses = dict(uses or {})
     bpm = lcfg["bpm"]
     beat = beat_s(bpm)
-    texts = [fill(c, today) for c in story.cards]
+    texts = [fill(c, today) for c in (cards or story.cards)]
     bars = card_bars(len(texts), bpm, lcfg["min_s"], lcfg["max_s"], rng)
-    pattern = beat_pattern(sum(bars), rng)
+    pattern = beat_pattern(sum(bars), rng, pace)
     cards, slots, t, bar_i = [], [], 0, 0
     want = story.tags or ["city"]
     used_here: set[str] = set()
@@ -560,7 +582,9 @@ def plan_clip(story: Story, shots: list[Shot], lcfg: dict, today: date, rng: ran
                     offset = 0.0
                 first_of_card = (t * beat == cstart)
                 slots.append(Slot(shot, round(offset, 3), beats, round(t * beat, 3), dur, ci,
-                                  flash=first_of_card and ci > 0, pan=rng.choice((-1, 1))))
+                                  flash=first_of_card and ci > 0 and transition == "flash",
+                                  pan=rng.choice((-1, 1)),
+                                  punch=first_of_card and transition == "zoom"))
                 t += beats
             bar_i += 1
         cards.append((cstart, t * beat, text))
@@ -584,15 +608,32 @@ def choose_shot(shots: list[Shot], tag: str, dur: float, used_here: set[str],
 # --------------------------------------------------------------------------
 # Text (ASS, libass)
 # --------------------------------------------------------------------------
-def card_markup(text: str) -> str:
+def card_markup(text: str, highlight: str = "&H00E5FF&") -> str:
     t = editor.ass_escape(text)
-    return re.sub(r"\*(.+?)\*", r"{\\c&H00E5FF&}\1{\\c&HFFFFFF&}", t).replace("*", "")
+    return re.sub(r"\*(.+?)\*", rf"{{\\c{highlight}}}\1{{\\c&HFFFFFF&}}", t).replace("*", "")
 
 
-def build_text_ass(cards: list[tuple[float, float, str]], font: str, size: int) -> str:
+TEXT_POS = {"high": (8, 520), "middle": (5, 0), "low": (2, 560)}  # ASS alignment, MarginV
+
+
+def build_text_ass(cards: list[tuple[float, float, str]], font: str, size: int,
+                   style: dict | None = None) -> str:
     """Big centred text, upper middle (clear of TikTok/IG buttons), pops in on the
-    beat. The last card (the question) sits in a dark box so it stands out."""
+    beat. The last card (the question) sits in a dark box so it stands out.
+    `style` (style.resolve output) changes font, size, position and colours."""
+    from .style import ass_colour
+    r = style or {}
+    if r.get("font"):
+        font = r["font"]
+    size = int(r.get("text_px") or size * float(r.get("scale") or 1.0))
     q = int(size * 1.05)
+    align, margin = TEXT_POS.get(r.get("position") or "high", TEXT_POS["high"])
+    if r.get("text_y") is not None:
+        align, margin = 2, int(max(400, min(H - 300, H * (1 - float(r["text_y"])) - size)))
+    main = ass_colour(r.get("text_colour") or "#FFFFFF")
+    hi = "&H" + ass_colour(r.get("highlight") or "#FFE500")[4:] + "&"
+    outline = int(r["outline"]) if r.get("outline") is not None else 9
+    shadow = int(r["shadow"]) if r.get("shadow") is not None else 4
     head = f"""[Script Info]
 ScriptType: v4.00+
 PlayResX: {W}
@@ -602,8 +643,8 @@ ScaledBorderAndShadow: yes
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Card,{font},{size},&H00FFFFFF,&H00FFFFFF,&H00000000,&H96000000,-1,0,0,0,100,100,0,0,1,9,4,8,90,90,520,1
-Style: Ask,{font},{q},&H00FFFFFF,&H00FFFFFF,&H40000000,&H40000000,-1,0,0,0,100,100,0,0,3,22,0,8,90,90,520,1
+Style: Card,{font},{size},{main},{main},&H00000000,&H96000000,-1,0,0,0,100,100,0,0,1,{outline},{shadow},{align},90,90,{margin},1
+Style: Ask,{font},{q},&H00FFFFFF,&H00FFFFFF,&H40000000,&H40000000,-1,0,0,0,100,100,0,0,3,22,0,{align},90,90,{margin},1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
@@ -611,9 +652,9 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
     pop = r"{\fad(60,0)\fscx72\fscy72\t(0,140,\fscx100\fscy100)}"
     lines = []
     for i, (s, e, text) in enumerate(cards):
-        style = "Ask" if i == len(cards) - 1 else "Card"
-        lines.append(f"Dialogue: 0,{editor.ass_time(s)},{editor.ass_time(e)},{style},,0,0,0,,"
-                     f"{pop}{card_markup(text)}")
+        style_name = "Ask" if i == len(cards) - 1 else "Card"
+        lines.append(f"Dialogue: 0,{editor.ass_time(s)},{editor.ass_time(e)},{style_name},,0,0,0,,"
+                     f"{pop}{card_markup(text, hi)}")
     return head + "\n".join(lines) + "\n"
 
 
@@ -652,13 +693,15 @@ def render_slot(slot: Slot, media: Path, out: Path) -> None:
     else:
         inp = ["-loop", "1", "-framerate", str(FPS), "-t", f"{slot.dur + 0.2:.3f}", "-i", src]
         zoom = 1.15
+    if slot.punch:
+        zoom *= 1.18
     editor.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", *inp, "-an",
                 "-vf", slot_filter(slot, zoom), "-frames:v", str(frames),
                 "-c:v", "libx264", "-preset", "veryfast", "-crf", "16", "-r", str(FPS),
                 str(out)], timeout=300)
 
 
-def render_plan(plan: Plan, lcfg: dict, out: Path) -> Path:
+def render_plan(plan: Plan, lcfg: dict, out: Path, grade: str = "", text_style: dict | None = None) -> Path:
     media = Path(lcfg["media_dir"])
     out.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory() as tmp:
@@ -669,12 +712,12 @@ def render_plan(plan: Plan, lcfg: dict, out: Path) -> Path:
             render_slot(slot, media, seg)
             names.append(seg.name)
         (tmpd / "list.txt").write_text("".join(f"file '{n}'\n" for n in names), encoding="utf-8")
-        (tmpd / "text.ass").write_text(build_text_ass(plan.cards, lcfg["font"], lcfg["font_size"]),
+        (tmpd / "text.ass").write_text(build_text_ass(plan.cards, lcfg["font"], lcfg["font_size"], text_style),
                                        encoding="utf-8")
         part = tmpd / "edit.mp4"
         # -an: no audio stream at all. Tim adds the official sound in the app.
         editor.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "concat", "-safe", "0",
-                    "-i", "list.txt", "-vf", "ass=text.ass", "-an", "-r", str(FPS),
+                    "-i", "list.txt", "-vf", (grade + "," if grade else "") + "ass=text.ass", "-an", "-r", str(FPS),
                     "-t", f"{plan.duration:.3f}", "-c:v", "libx264", "-preset", "medium",
                     "-crf", "19", "-maxrate", "9M", "-bufsize", "18M", "-pix_fmt", "yuv420p", "-profile:v", "high",
                     "-movflags", "+faststart", part.name], timeout=1800, cwd=tmpd)
@@ -736,8 +779,149 @@ def make(lcfg: dict, n: int = 1, story_id: str | None = None, now: float | None 
     return out
 
 
-def daily(lcfg: dict, now: float | None = None) -> list[Path]:
-    """Top today's exports up to per_day. Safe to run any number of times a day."""
+# --------------------------------------------------------------------------
+# Review variants (spikebot/review.py): 3 versions per edit, Tim approves one
+# --------------------------------------------------------------------------
+def tg_captions(story: Story, today: date, lcfg: dict, hook: str | None = None) -> dict[str, str]:
+    h = hook or plain(fill(story.caption, today)).strip()
+    return {"instagram": lcfg["caption_ig"].format(hook=h).strip(),
+            "tiktok": lcfg["caption_tiktok"].format(hook=h).strip()}
+
+
+def pick_variant_story(today: date, recent: list[str], kind: str | None, taken: set[str],
+                       rng: random.Random, hook_style: str | None = None) -> Story:
+    from .style import hook_style as classify
+    live = [s for s in STORIES if eligible(s, today) and s.id not in taken]
+    if not live:
+        live = [s for s in STORIES if eligible(s, today)]
+    pool = [s for s in live if s.kind == kind] or live
+    fresh = [s for s in pool if s.id not in recent] or pool
+    if hook_style:
+        fresh = [s for s in fresh if classify(plain(fill(s.cards[0], today))) == hook_style] or fresh
+    return rng.choice(fresh)
+
+
+class ReviewAdapter:
+    """Renders Tokyo Girl review variants: each has its own story (hook wording),
+    pacing pattern, colour grade, text style and transition. Always silent."""
+
+    def __init__(self, cfg: dict, base: Path, lcfg: dict | None = None, shots: list[Shot] | None = None):
+        self.cfg, self.base = cfg, base
+        self.lcfg = lcfg or settings(cfg, base)
+        self._shots = shots
+
+    def shots(self) -> list[Shot]:
+        if self._shots is None:
+            self._shots = Library(self.lcfg).shots()
+        return self._shots
+
+    def render(self, item: dict, specs: list[dict], n: int, folder: Path, preview_bytes: int) -> list[dict]:
+        from . import style as st
+        today = date.fromisoformat(item["source"]["day"])
+        state_path = Path(self.lcfg["state_file"])
+        state = load_state(state_path)
+        taken = {v["story"] for r in item["rounds"] for v in r["variants"]} if n > 1 else set()
+        out = []
+        for spec in specs:
+            r = st.resolve(spec["style"])
+            base_v = spec.get("from")
+            texts = spec.get("texts") or {}
+            if base_v:
+                story = next(x for x in STORIES if x.id == base_v["story"])
+                seed = base_v["seed"]
+            else:
+                rng0 = random.Random(f"{item['id']}-{n}-{spec['label']}")
+                story = pick_variant_story(today, state.get("recent", []), spec["style"].get("hook"),
+                                           taken, rng0, r.get("hook_style"))
+                seed = rng0.randrange(1_000_000)
+            taken.add(story.id)
+            cards = list(base_v["cards"]) if base_v and base_v.get("cards") else list(story.cards)
+            if texts.get("hook"):
+                cards[0] = texts["hook"]
+            pace = spec["style"].get("pace", "normal")
+            if r["pace"].get("shot_s"):
+                pace = pace_for_shot(r["pace"]["shot_s"], self.lcfg["bpm"])
+            plan = plan_clip(story, self.shots(), self.lcfg, today, random.Random(seed), state.get("uses"),
+                             pace=pace, transition=r["transition"], cards=cards)
+            stem = f"r{n}_{spec['label']}"
+            mp4 = folder / f"{stem}.mp4"
+            render_plan(plan, self.lcfg, mp4, st.grade_filter(r["grade"]), r)
+            prev = editor.preview(mp4, folder / f"{stem}_preview.mp4", preview_bytes, plan.duration)
+            uses = state.setdefault("uses", {})
+            for sl in plan.slots:
+                uses[sl.shot.key] = uses.get(sl.shot.key, 0) + 1
+            state["recent"] = (state.get("recent", []) + [story.id])[-12:]
+            hook = plain(fill(texts["hook"], today)) if texts.get("hook") else None
+            caps = dict(base_v["captions"]) if base_v and not hook else tg_captions(story, today, self.lcfg, hook)
+            title = (base_v["title"] if base_v and not hook
+                     else (hook or plain(fill(story.caption, today)))[:95])
+            out.append({"label": spec["label"], "style": spec["style"], "preset": spec.get("preset"),
+                        "experimental": spec.get("experimental", False), "story": story.id, "seed": seed,
+                        "cards": cards, "title": title,
+                        "description": f"{title}\n\nUnofficial fan edit from official Rockstar GTA VI media."
+                                       "\n\n#GTA6 #GTAVI #Shorts",
+                        "tags": ["GTA 6", "GTA VI", "Shorts", "Vice City"], "hook": title,
+                        "captions": caps, "file": mp4.name, "preview": prev.name,
+                        "duration": round(plan.duration, 1), "cuts": len(plan.slots) - 1, "silent": True})
+        save_state(state_path, state)
+        return out
+
+    def validate(self, item: dict, v: dict) -> None:
+        if not (3 <= len(v["title"]) <= 100):
+            raise ValueError("the YouTube title must be 3-100 characters")
+        v["description"] = f"{v['title']}\n\nUnofficial fan edit from official Rockstar GTA VI media.\n\n#GTA6 #GTAVI #Shorts"
+
+    def finish(self, item: dict, status: str) -> None:
+        """Approved edits are also kept in exports/tokyo_girl/ (with the caption .txt)."""
+        if status != "done":
+            return
+        from . import review
+        store = review.Store(Path(self.lcfg["data_dir"]))
+        src = review.final_path(store, item)
+        if not src.exists():
+            return
+        a = item["approved"]
+        v = review.variant_of(item, a["round"], a["label"])
+        export = Path(self.lcfg["export_dir"])
+        export.mkdir(parents=True, exist_ok=True)
+        stem = f"{item['id']}_{v['story']}"
+        shutil.copyfile(src, export / f"{stem}.mp4")
+        (export / f"{stem}.txt").write_text(f"IG: {v['captions']['instagram']}\nTikTok: {v['captions']['tiktok']}\n",
+                                            encoding="utf-8")
+
+
+def make_review(lcfg: dict, n: int = 1, now: float | None = None, shots: list[Shot] | None = None) -> list[str]:
+    """Make n review items (3 variants each). Returns their ids."""
+    from . import review
+    now = now or time.time()
+    dt = datetime.fromtimestamp(now, UK)
+    store = review.Store(Path(lcfg["data_dir"]))
+    cfg, base = lcfg.get("_cfg") or {}, lcfg.get("_base") or Path(".")
+    adapter = ReviewAdapter(cfg, base, lcfg, shots)
+    ids = []
+    for i in range(n):
+        item = store.create("tokyo_girl", {"day": dt.date().isoformat()}, now + i,
+                            title=f"Tokyo Girl edit {dt:%d %b} #{i + 1}")
+        item = review.render_round(store, item["id"], cfg, base, {"kind": "initial"}, now=now + i, adapter=adapter)
+        state_path = Path(lcfg["state_file"])
+        state = load_state(state_path)
+        state.setdefault("made", []).append({"item": item["id"], "uk": dt.strftime("%Y-%m-%d %H:%M %Z"),
+                                             "status": item["status"]})
+        state["made"] = state["made"][-500:]
+        save_state(state_path, state)
+        log.info("Tokyo Girl review item %s: %s", item["id"], item["status"])
+        ids.append(item["id"])
+    return ids
+
+
+def items_on(state: dict, day: str) -> int:
+    return sum(1 for m in state.get("made", []) if m.get("item") and m.get("uk", "").startswith(day)
+               and m.get("status") != "failed")
+
+
+def daily(lcfg: dict, now: float | None = None) -> list:
+    """Top today's edits up to per_day (review items, or exports with review off).
+    Safe to run any number of times a day."""
     now = now or time.time()
     if not lcfg["enabled"]:
         log.info("Tokyo Girl mode is off (TOKYO_GIRL_MODE=false)")
@@ -752,6 +936,12 @@ def daily(lcfg: dict, now: float | None = None) -> list[Path]:
         state["last_fetch"] = now
         save_state(Path(lcfg["state_file"]), state)
     day = datetime.fromtimestamp(now, UK).strftime("%Y-%m-%d")
+    if lcfg.get("review"):
+        need = lcfg["per_day"] - items_on(load_state(Path(lcfg["state_file"])), day)
+        if need <= 0:
+            log.info("already %d edits for %s", lcfg["per_day"], day)
+            return []
+        return make_review(lcfg, need, now=now)
     need = lcfg["per_day"] - made_on(Path(lcfg["export_dir"]), day)
     made: list[Path] = []
     if need <= 0:
@@ -936,8 +1126,12 @@ def main(argv: list[str] | None = None) -> None:
             print(f"{'LIVE' if eligible(s, today) else '    '}  {s.kind:7} {s.id:15} "
                   f"{plain(fill(s.cards[0], today))}  ...  {s.cards[-1]}")
     elif args.cmd == "make":
-        for p in make(lcfg, args.n, args.story, seed=args.seed):
-            print(p)
+        if lcfg["review"] and not args.story:
+            for item_id in make_review(lcfg, args.n):
+                print(f"review item {item_id} (approve it in Discord #ready-to-post)")
+        else:
+            for p in make(lcfg, args.n, args.story, seed=args.seed):
+                print(p)
     elif args.cmd == "deliver":
         if not lcfg["delivery"]["webhook_url"]:
             sys.exit("videos_webhook_url is not set in config.json")
