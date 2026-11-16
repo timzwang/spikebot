@@ -278,7 +278,9 @@ add the official sound in the app.
 that UK day (running it again the same day does nothing). The auto-update installs the
 timer by itself; `install.sh` does too.
 
-**Footage**: once a week it tries to download the official media: images from
+**Footage** lives in `/opt/spikebot/data/rockstar_media/`, a shared library of official
+Rockstar media (not only for Tokyo Girl). Old configs that say `data/tokyo_girl/media` use
+the new folder automatically unless the old one already has files. Once a week it tries to download the official media: images from
 `rockstargames.com/VI/media` and the trailers from the Rockstar Games YouTube channel
 (video only, 1080p max; anything not uploaded by Rockstar is refused). If the media folder
 has no usable shots, `make` and the daily run fetch first; if there is still nothing, `make`
@@ -288,12 +290,12 @@ and trailers yourself from rockstargames.com/VI/media and copy them in:
 
 ```bash
 gcloud compute scp ~/Downloads/*.jpg YOUR_VM:/tmp/ && \
-  gcloud compute ssh YOUR_VM -- 'sudo mv /tmp/*.jpg /opt/spikebot/data/tokyo_girl/media/ && sudo chown -R spikebot: /opt/spikebot/data/tokyo_girl'
+  gcloud compute ssh YOUR_VM -- 'sudo mv /tmp/*.jpg /opt/spikebot/data/rockstar_media/ && sudo chown -R spikebot: /opt/spikebot/data/rockstar_media'
 ```
 
 Tags come from file names (`jason`, `lucia`, `vice`, `beach`, `car`, `chase`, ...). To tag
 parts of a trailer, skip a file or cut out a part, create
-`/opt/spikebot/data/tokyo_girl/media/tags.json`:
+`/opt/spikebot/data/rockstar_media/tags.json`:
 
 ```json
 {

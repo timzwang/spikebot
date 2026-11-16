@@ -228,7 +228,7 @@ def test_daily_tops_up_to_per_day(tmp_path, monkeypatch):
 # ---- end to end -----------------------------------------------------------------------
 @needs_ffmpeg
 def test_render_is_silent_vertical_and_on_length(tmp_path):
-    media = tmp_path / "data/tokyo_girl/media"
+    media = tmp_path / "data/rockstar_media"
     media.mkdir(parents=True)
     ff = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y"]
     subprocess.run(ff + ["-f", "lavfi", "-i", "gradients=s=1920x1080:seed=2", "-frames:v", "1",
@@ -395,3 +395,14 @@ def test_no_media_fetches_once_and_makes_no_failed_items(tmp_path, monkeypatch):
     assert not (Path(s["data_dir"]) / "review" / "items").exists()
     with pytest.raises(SystemExit):
         TG.main(["--config", str(tmp_path / "none.json"), "make"])
+
+
+def test_legacy_media_dir_moves_to_shared_library(tmp_path):
+    s = TG.settings({"tokyo_girl": {"media_dir": "data/tokyo_girl/media"}}, tmp_path)
+    assert Path(s["media_dir"]) == tmp_path / "data/rockstar_media"
+    old = tmp_path / "data/tokyo_girl/media"
+    old.mkdir(parents=True)
+    (old / "a.jpg").write_bytes(b"x")                      # old folder in use: keep it
+    s = TG.settings({"tokyo_girl": {"media_dir": "data/tokyo_girl/media"}}, tmp_path)
+    assert Path(s["media_dir"]) == old
+    assert Path(TG.settings({}, tmp_path)["media_dir"]) == tmp_path / "data/rockstar_media"

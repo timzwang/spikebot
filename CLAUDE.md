@@ -150,7 +150,7 @@ it in sync when behaviour or config changes.
   by `spikebot-tokyo-girl.timer` (06:47 UK, `daily` tops up to `per_day`). Makes silent
   (`-an`, no audio stream) 1080x1920 15-30 s edits from official Rockstar GTA VI trailers and
   screenshots only (`fetch`: `ALLOWED_HOSTS`, yt-dlp limited to uploader Rockstar; plus a drop
-  folder `data/tokyo_girl/media/`). `Library` caches per-file analysis (scene cuts, YAVG,
+  folder `data/rockstar_media/`). `Library` caches per-file analysis (scene cuts, YAVG,
   letterbox crop) in `library.json`; `build_shots` trims trailer head/tail, dark shots and
   `tags.json` excludes. `plan_clip` puts text cards on whole bars and cuts on beats
   (`bpm`, default 120), picking least-used footage by the story's tags. `STORIES` hold the

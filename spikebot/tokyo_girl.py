@@ -56,7 +56,7 @@ DEFAULTS = {
     "bpm": 120,
     "min_s": 15,
     "max_s": 30,
-    "media_dir": "data/tokyo_girl/media",
+    "media_dir": "data/rockstar_media",   # shared official Rockstar library (any mode may read it)
     "export_dir": "exports/tokyo_girl",
     "state_file": "data/tokyo_girl/state.json",
     "sources": [
@@ -105,7 +105,24 @@ def settings(cfg: dict, base: Path | None = None) -> dict:
         for k in ("media_dir", "export_dir", "state_file"):
             p = Path(out[k])
             out[k] = str(p if p.is_absolute() else base / p)
+    out["media_dir"] = str(migrate_media_dir(Path(out["media_dir"])))
     return out
+
+
+LEGACY_MEDIA_DIR = Path("data/tokyo_girl/media")
+
+
+def has_media(folder: Path) -> bool:
+    return folder.is_dir() and any(p.is_file() and p.suffix.lower() in VIDEO_EXT | IMAGE_EXT
+                                   for p in folder.rglob("*"))
+
+
+def migrate_media_dir(media: Path) -> Path:
+    """Old configs say data/tokyo_girl/media. Use the shared data/rockstar_media
+    instead, unless the old folder already holds media."""
+    if media.parts[-3:] != LEGACY_MEDIA_DIR.parts or has_media(media):
+        return media
+    return media.parent.parent / "rockstar_media"
 
 
 def beat_s(bpm: float) -> float:

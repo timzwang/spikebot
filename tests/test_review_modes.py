@@ -105,7 +105,7 @@ def test_lacy_job_becomes_three_reviewed_variants(tmp_path):
 # ---- Tokyo Girl end to end ------------------------------------------------------------------
 @needs_ffmpeg
 def test_tokyo_girl_review_items_are_silent_and_different(tmp_path):
-    media = tmp_path / "data/tokyo_girl/media"
+    media = tmp_path / "data/rockstar_media"
     media.mkdir(parents=True)
     ff = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y"]
     for i in range(3):
