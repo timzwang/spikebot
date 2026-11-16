@@ -21,9 +21,10 @@ from zoneinfo import ZoneInfo
 
 from curl_cffi.requests import AsyncSession
 
+from . import messages as msg_
 from . import status as st_
 from .detector import DetectorConfig, Spike, SpikeDetector
-from .sources import (TwitchHelix, kick_channel_info, kick_stream_state,
+from .sources import (TwitchHelix, kick_channel_info, kick_stream_state, kick_stream_vod,
                       run_kick_chat, run_twitch_chat)
 
 log = logging.getLogger("spikebot")
@@ -80,16 +81,28 @@ class Store:
 
     def candidates_since(self, ts: float) -> list[dict]:
         cur = self.db.execute(
-            "SELECT platform, channel, score, onset_uk, stream_offset_start FROM spikes"
+            "SELECT platform, channel, score, onset, stream_offset_start, data FROM spikes"
             " WHERE status = 'candidate' AND onset >= ? ORDER BY onset", (ts,))
-        cols = [c[0] for c in cur.description]
-        return [dict(zip(cols, row)) for row in cur.fetchall()]
+        rows = []
+        for platform, channel, score, onset, offset, data in cur.fetchall():
+            try:
+                extra = json.loads(data or "{}")
+            except ValueError:
+                extra = {}
+            rows.append({"platform": platform, "channel": channel, "score": score,
+                         "onset": onset, "stream_offset_start": offset,
+                         "peak_rate": extra.get("peak_rate"), "baseline": extra.get("baseline"),
+                         "vod_url": extra.get("vod_url")})
+        return rows
 
 
-async def post_discord(url: str, content: str) -> None:
+async def post_discord(url: str, payload: str | dict) -> None:
+    """Send a webhook message: a payload dict from messages.py, or plain text."""
+    if isinstance(payload, str):
+        payload = {"content": payload[:1900], "allowed_mentions": msg_.NO_MENTIONS}
     try:
         async with AsyncSession() as s:
-            r = await s.post(url, json={"content": content[:1900]}, timeout=15)
+            r = await s.post(url, json=payload, timeout=15)
             if r.status_code >= 300:
                 log.warning("discord post failed: HTTP %s %s", r.status_code, r.text[:200])
     except Exception as e:  # noqa: BLE001
@@ -107,6 +120,7 @@ class Bot:
             for c in self.channels
         }
         self.meta = {(c["platform"], c["name"].lower()): c for c in self.channels}
+        self.names = {k: c.get("display") or c["name"] for k, c in self.meta.items()}
         self.state: dict[tuple[str, str], dict] = {k: {} for k in self.detectors}
         self.counts = {k: 0 for k in self.detectors}
         self.required = [s.lower() for s in cfg.get("require_category_contains", [])]
@@ -188,7 +202,10 @@ class Bot:
             "title": st.get("title"),
             "stream_offset_start": hms(spike.clip_start - start) if start else None,
             "stream_offset_end": hms(spike.clip_end - start) if start else None,
+            "vod_url": None,
         }
+        if status == "candidate":
+            rec["vod_url"] = await self.vod_link(key, st, spike.clip_start, start)
         self.store.save(rec)
         log.info("SPIKE %s/%s score=%s status=%s at %s offset=%s",
                  spike.platform, spike.channel, spike.score, status,
@@ -196,22 +213,33 @@ class Bot:
         if status == "candidate":
             await self.alert(rec)
 
+    async def vod_link(self, key, st: dict, clip_start: float, stream_start: float | None) -> str | None:
+        """Link to the VOD at the clip start, or None if it isn't published yet.
+        Only a link: nothing is downloaded."""
+        platform, name = key
+        try:
+            if platform == "kick":
+                vod = await kick_stream_vod(name, st.get("stream_id"))
+            elif self.helix:
+                vod = await self.helix.stream_vod(st.get("user_id"), st.get("stream_id"))
+            else:
+                return None
+        except Exception as e:  # noqa: BLE001
+            log.info("VOD lookup %s/%s failed: %s", platform, name, e)
+            return None
+        if not vod or not vod.get("url"):
+            return None
+        base = parse_time(vod.get("started_at")) or stream_start
+        if base is None:
+            return vod["url"]
+        return vod["url"] + msg_.vod_offset(clip_start - base, platform)
+
     async def alert(self, rec: dict) -> None:
         url = self.cfg.get("discord_webhook_url")
         if not url:
             return
-        prog = rec["programme"] or "NO PROGRAMME: check permission before posting"
-        lines = [
-            f"**{rec['platform']}/{rec['channel']}**  score **{rec['score']}**",
-            f"When: {rec['onset_uk']}",
-            f"Stream time: {rec['stream_offset_start'] or '?'} to {rec['stream_offset_end'] or '?'}",
-            f"Chat: {rec['peak_rate']}/s vs normal {rec['baseline']}/s,"
-            f" {rec['unique_users']} chatters, {rec['clip_mentions']} said 'clip'",
-            f"Category: {rec['category'] or 'unknown'}",
-            f"Programme: {prog}",
-            "Chat said: " + " | ".join(rec["sample"][:5])[:600],
-        ]
-        await post_discord(url, "\n".join(lines))
+        key = (rec["platform"], rec["channel"])
+        await post_discord(url, msg_.moment(rec, self.names.get(key, rec["channel"])))
 
     # ---- status alerts -----------------------------------------------------
     def on_status(self, key):
@@ -233,25 +261,29 @@ class Bot:
 
     def _name(self, key) -> str:
         prog = self.meta[key].get("programme")
-        return f"**{key[0]}/{key[1]}**" + (f" ({prog})" if prog else "")
+        return (f"**{msg_.escape(self.names[key])}** ({key[0].capitalize()})"
+                + (f" · {msg_.escape(prog)}" if prog else ""))
 
     async def live_alert(self, key, change: str, category: str) -> None:
+        cat = msg_.escape(category)
         if change == "live":
-            started = st_.uk_time(parse_time(self.state[key].get("started_at")) or time.time())
-            text = f"🟢 {self._name(key)} is LIVE: {category} (since {started})"
+            started = parse_time(self.state[key].get("started_at")) or time.time()
+            text = (f"🟢 {self._name(key)} is **LIVE**: {cat} (since {msg_.ts(started)})\n"
+                    f"{msg_.live_url(*key)}")
         else:
-            text = f"⚫ {self._name(key)} went offline (was: {category})"
+            text = f"⚫ {self._name(key)} went offline (was: {cat})"
         await self.notifier.send(f"{change}:{key[0]}/{key[1]}", text)
 
     async def startup_alert(self) -> None:
         last = self.status_state.data.get("last_seen")
         chans = ", ".join(f"{p}/{n}" for p, n in self.detectors)
+        now = time.time()
         if last:
-            head = (f"🔄 Spike bot **restarted** on {socket.gethostname()} at {st_.uk_time(time.time())}."
-                    f" Previous run last seen {st_.uk_time(last)}"
-                    f" ({st_.duration(time.time() - last)} ago).")
+            head = (f"🔄 Spike bot **restarted** on {socket.gethostname()} at {msg_.ts(now)}."
+                    f" Previous run last seen {msg_.ts(last)}"
+                    f" ({st_.duration(now - last)} ago).")
         else:
-            head = f"🚀 Spike bot **started** on {socket.gethostname()} at {st_.uk_time(time.time())}."
+            head = f"🚀 Spike bot **started** on {socket.gethostname()} at {msg_.ts(now)}."
         await self.notifier.send("start", f"{head}\nTracking: {chans}")
 
     async def status_loop(self) -> None:
@@ -273,14 +305,15 @@ class Bot:
                     _, key, used = event
                     await self.notifier.send(
                         "kick_key_4001",
-                        f"🔑 Kick returned **error 4001** for {key[0]}/{key[1]}: the chat key"
+                        f"🔑 Kick returned **error 4001** for {self._name(key)}: the chat key"
                         f" `{used}` has rotated. Kick chat is down until kick_pusher_key /"
-                        f" kick_pusher_cluster are updated (README: 'If Kick chat shows 0 messages').")
+                        f" kick_pusher_cluster are updated (README: 'If Kick chat shows 0 messages').",
+                        kind="key_error")
                 for key, since in self.conn.due(now):
                     await self.notifier.send(
                         f"disconnected:{key[0]}/{key[1]}",
                         f"🔴 {self._name(key)} chat has been disconnected for"
-                        f" {st_.duration(now - since)} (since {st_.uk_time(since)}).")
+                        f" {st_.duration(now - since)} (since {msg_.ts(since)}).")
                 if now - last_disk >= 300:
                     last_disk = now
                     free = st_.disk_free_share(self.data_dir)
@@ -292,9 +325,9 @@ class Bot:
             except Exception as e:  # noqa: BLE001 - alerts must never take the bot down
                 log.warning("status loop error: %s", e)
 
-    def summary_text(self, now: float) -> str:
-        return st_.build_summary(self.store.candidates_since(now - 86400),
-                                 list(self.detectors), now)
+    def summary_message(self, now: float) -> dict:
+        return msg_.summary(self.store.candidates_since(now - 86400),
+                            list(self.detectors), now, self.names)
 
     async def summary_loop(self) -> None:
         if st_.summary_due_on_start(time.time(), self.status_state.data.get("last_summary_date")):
@@ -308,10 +341,10 @@ class Bot:
         now = time.time()
         self.status_state.data["last_summary_date"] = st_.uk_time(now, "%Y-%m-%d")
         self.status_state.save()
-        text = self.summary_text(now)
-        log.info("daily summary: %s", text.replace("\n", " | "))
+        payload = self.summary_message(now)
+        log.info("daily summary: %s", msg_.plain(payload))
         if self.summary_url:
-            await post_discord(self.summary_url, text)
+            await post_discord(self.summary_url, payload)
 
     # ---- running -----------------------------------------------------------
     def chat_tasks(self, with_status: bool = True) -> list:
@@ -358,7 +391,8 @@ class Bot:
                 print(f"  {key[0]}/{key[1]} info lookup failed: {e}")
         free = st_.disk_free_share(self.data_dir)
         print(f"  disk free: {free:.0%} (status alert below {st_.DISK_MIN_FREE:.0%})")
-        print("\nDaily summary preview (last 24h):\n" + self.summary_text(time.time()))
+        preview = msg_.plain(self.summary_message(time.time())).replace(" | ", "\n")
+        print("\nDaily summary preview (last 24h):\n" + preview)
         hooks = [("discord_webhook_url", "#moments", "Spike bot connection test: alerts are working."),
                  ("status_webhook_url", "#status", "Spike bot connection test: status alerts are working."),
                  ("summary_webhook_url", "#daily-summary",
@@ -366,7 +400,7 @@ class Bot:
         print()
         for field, chan, msg in hooks:
             if self.cfg.get(field):
-                await post_discord(self.cfg[field], msg)
+                await post_discord(self.cfg[field], msg_.status("start", msg))
                 print(f"  Sent a test message to {chan} ({field}).")
             else:
                 print(f"  {field} not set: {chan} messages are disabled.")

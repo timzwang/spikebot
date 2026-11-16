@@ -16,6 +16,8 @@ from pathlib import Path
 from typing import Awaitable, Callable
 from zoneinfo import ZoneInfo
 
+from . import messages
+
 log = logging.getLogger("status")
 UK = ZoneInfo("Europe/London")
 
@@ -24,7 +26,7 @@ DISCONNECT_ALERT_S = 5 * 60  # a channel must be down this long before we alert
 DISK_MIN_FREE = 0.20         # alert when free space drops below this share
 SUMMARY_HOUR_UK = 22         # daily summary at 22:00 UK time
 
-Poster = Callable[[str, str], Awaitable[None]]  # (webhook_url, content)
+Poster = Callable[[str, dict], Awaitable[None]]  # (webhook_url, payload)
 
 
 def uk_time(ts: float, fmt: str = "%a %d %b %H:%M %Z") -> str:
@@ -84,13 +86,16 @@ class Notifier:
         self.state.save()
         return True
 
-    async def send(self, key: str, text: str) -> bool:
+    async def send(self, key: str, text: str, kind: str | None = None) -> bool:
+        """`kind` picks the embed colour; it defaults to the key prefix
+        (`live:kick/adinross` -> `live`)."""
         if not self.allow(key):
             log.info("status alert %r suppressed (sent within %ds)", key, self.cooldown_s)
             return False
-        log.info("STATUS %s", text.replace("\n", " | "))
+        payload = messages.status(kind or key.split(":")[0], text)
+        log.info("STATUS %s", messages.plain(payload))
         if self.url:
-            await self.poster(self.url, text)
+            await self.poster(self.url, payload)
         return True
 
 
@@ -154,7 +159,7 @@ def disk_free_share(path: Path) -> float:
 
 
 # --------------------------------------------------------------------------
-# Daily summary
+# Daily summary timing (the layout is messages.summary)
 # --------------------------------------------------------------------------
 def next_summary_time(now: float, hour: int = SUMMARY_HOUR_UK) -> float:
     """Next HH:00 UK time strictly after `now`, correct across clock changes."""
@@ -170,25 +175,3 @@ def summary_due_on_start(now: float, last_date: str | None, hour: int = SUMMARY_
     local = datetime.fromtimestamp(now, UK)
     return local.hour >= hour and last_date != local.date().isoformat()
 
-
-def build_summary(rows: list[dict], channels: list[tuple[str, str]], now: float,
-                  window_s: float = 86400) -> str:
-    """rows: candidate moments in the window, each with platform, channel, score,
-    onset_uk and stream_offset_start. channels: every tracked (platform, name)."""
-    counts = {c: 0 for c in channels}
-    for r in rows:
-        k = (r["platform"], r["channel"])
-        counts[k] = counts.get(k, 0) + 1
-    start, end = uk_time(now - window_s, "%a %H:%M"), uk_time(now, "%a %H:%M %Z")
-    lines = [f"**Daily summary** ({start} to {end})",
-             f"Moments sent to #moments: **{len(rows)}**", ""]
-    for (p, n), c in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0])):
-        lines.append(f"• {p}/{n}: {c}")
-    top = sorted(rows, key=lambda r: r["score"], reverse=True)[:3]
-    lines += ["", "**Top 3 by score**"]
-    if not top:
-        lines.append("No moments today.")
-    for i, r in enumerate(top, 1):
-        lines.append(f"{i}. {r['platform']}/{r['channel']}  score **{r['score']}**  "
-                     f"{r['onset_uk']}, stream time {r.get('stream_offset_start') or '?'}")
-    return "\n".join(lines)[:1900]

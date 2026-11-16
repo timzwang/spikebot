@@ -49,7 +49,25 @@ def kick_stream_state(info: dict) -> dict:
         "started_at": ls.get("start_time") or ls.get("created_at"),
         "category": ", ".join(c.get("name", "") for c in cats if isinstance(c, dict)),
         "title": ls.get("session_title"),
+        "stream_id": ls.get("id"),
     }
+
+
+async def kick_stream_vod(slug: str, stream_id) -> dict | None:
+    """The VOD for live stream `stream_id`: {"url", "started_at"}, or None if Kick
+    hasn't published it yet. A link only; nothing is downloaded."""
+    if not stream_id:
+        return None
+    async with AsyncSession(impersonate="chrome") as s:
+        r = await s.get(f"https://kick.com/api/v2/channels/{slug}/videos", timeout=20)
+        r.raise_for_status()
+        items = r.json()
+    for it in items if isinstance(items, list) else []:
+        uuid = (it.get("video") or {}).get("uuid")
+        if uuid and str(it.get("id")) == str(stream_id):
+            return {"url": f"https://kick.com/{slug}/videos/{uuid}",
+                    "started_at": it.get("start_time") or it.get("created_at")}
+    return None
 
 
 # Kick rotates its chat key. 32cbd69e... was retired in October 2026.
@@ -240,16 +258,30 @@ class TwitchHelix:
         self._token, self._expires = j["access_token"], time.time() + j["expires_in"]
         return self._token
 
-    async def stream_state(self, login: str) -> dict:
+    async def _get(self, path: str, params: dict) -> list:
         async with AsyncSession() as s:
             tok = await self._auth(s)
-            r = await s.get("https://api.twitch.tv/helix/streams", params={"user_login": login},
+            r = await s.get(f"https://api.twitch.tv/helix/{path}", params=params,
                             headers={"Client-Id": self.client_id, "Authorization": f"Bearer {tok}"},
                             timeout=20)
             r.raise_for_status()
-            data = r.json().get("data") or []
+            return r.json().get("data") or []
+
+    async def stream_state(self, login: str) -> dict:
+        data = await self._get("streams", {"user_login": login})
         if not data:
             return {"live": False, "started_at": None, "category": "", "title": None}
         d = data[0]
         return {"live": True, "started_at": d.get("started_at"),
-                "category": d.get("game_name", ""), "title": d.get("title")}
+                "category": d.get("game_name", ""), "title": d.get("title"),
+                "stream_id": d.get("id"), "user_id": d.get("user_id")}
+
+    async def stream_vod(self, user_id: str, stream_id: str) -> dict | None:
+        """The archive VOD of a live stream: {"url", "started_at"}, or None."""
+        if not (user_id and stream_id):
+            return None
+        for v in await self._get("videos", {"user_id": user_id, "type": "archive", "first": 5}):
+            if str(v.get("stream_id")) == str(stream_id):
+                return {"url": v.get("url") or f"https://www.twitch.tv/videos/{v['id']}",
+                        "started_at": v.get("created_at")}
+        return None

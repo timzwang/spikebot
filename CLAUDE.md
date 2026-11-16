@@ -100,12 +100,20 @@ it in sync when behaviour or config changes.
   `poll_state()` refreshes live/category/start time every 120s, `handle()` sets the
   status (`candidate` / `low_score` / `filtered_category`) and saves *every* spike
   through `Store` (`data/spikes.jsonl` + `data/spikes.db` SQLite). `alert()` posts only
-  `candidate` spikes to Discord as plain `content` text (no embeds, max 1900 chars).
-  Times are shown in UK time (`Europe/London`); stream offsets are `HH:MM:SS` from the
-  stream start. `status_loop()` (every 30s or on an event) sends #status alerts and
-  checks disk every 5 min; `summary_loop()` posts the daily summary. All Discord posts
-  go through `post_discord()`.
+  `candidate` spikes to Discord. For candidates `vod_link()` looks up the VOD
+  (`kick_stream_vod` / `TwitchHelix.stream_vod`, links only) and stores `vod_url` with a
+  `?t=` offset at the clip start. Log times are UK time (`Europe/London`); stream offsets
+  are `HH:MM:SS` from the stream start. Channels may set `display` for the Discord name.
+  `status_loop()` (every 30s or on an event) sends #status alerts and checks disk every
+  5 min; `summary_loop()` posts the daily summary. All Discord posts
+  go through `post_discord()`, which takes a payload dict (or wraps plain text).
+- `spikebot/messages.py`: pure Discord layouts (embeds) for #moments (`moment`), #status
+  (`status`, colour by alert kind) and #daily-summary (`summary`). Times use Discord
+  `<t:unix:style>` markup; `plain()` renders a payload as one log line in UK time. Chat
+  text is markdown-escaped and `allowed_mentions` is empty so chat can't ping anyone.
 - `tests/test_detector.py`: simulated-chat tests for the detector plus the Kick key parser.
+- `tests/test_messages.py`: message layouts, vibe words, VOD offsets, and a `Bot.handle()`
+  test that checks the VOD link in the #moments card.
 - `tests/test_status.py`: alert de-duplication, disconnect/reconnect timing, live/offline,
   4001 detection, summary timing and content, plus an end-to-end `Bot` test with a fake
   Discord (it also checks nothing leaks into #moments).
