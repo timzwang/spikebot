@@ -29,7 +29,8 @@ log = logging.getLogger("delivery")
 DEFAULTS = {
     "discord_max_mb": 10,          # 10 unboosted, 50 at boost level 2, 100 at level 3
     "gcs_bucket": "",              # empty = no upload; big files get a card instead
-    "gcs_key_file": "gcs-key.json",  # service account key next to config.json (secret)
+    "gcs_key_file": "gcs-key.json",  # optional key next to config.json; without it the VM's
+                                     # own service account is used (no key file needed)
     "link_days": 7,                # 7 is the maximum for a V4 signed URL
     "keep_days": 8,                # older objects are deleted from the bucket
 }
@@ -107,13 +108,43 @@ def post_webhook(url: str, payload: dict, path: Path | None = None, filename: st
     return r.status_code
 
 
+CLOUD_PLATFORM = "https://www.googleapis.com/auth/cloud-platform"
+
+
+def gcs_client(key_file: str | None):
+    """(storage client, credentials). Uses the key file if it exists; otherwise the
+    machine's own identity (on the VM: its attached service account), which is what
+    projects that block key creation (iam.disableServiceAccountKeyCreation) need."""
+    from google.cloud import storage  # lazy
+    if key_file and Path(key_file).is_file():
+        from google.oauth2 import service_account
+        creds = service_account.Credentials.from_service_account_file(key_file, scopes=[CLOUD_PLATFORM])
+        return storage.Client(credentials=creds, project=creds.project_id), creds
+    import google.auth
+    creds, project = google.auth.default(scopes=[CLOUD_PLATFORM])
+    return storage.Client(credentials=creds, project=project), creds
+
+
+def sign_kwargs(creds, request_factory=None) -> dict:
+    """Extra generate_signed_url() arguments. A key file signs locally; keyless VM
+    credentials can't, so GCS signs through the IAM API instead (the account needs
+    roles/iam.serviceAccountTokenCreator on itself and the VM the cloud-platform scope)."""
+    from google.auth import credentials as ga
+    if isinstance(creds, ga.Signing):
+        return {}
+    if not creds.valid or not creds.token:
+        if request_factory is None:
+            from google.auth.transport.requests import Request as request_factory
+        creds.refresh(request_factory())
+    return {"service_account_email": creds.service_account_email, "access_token": creds.token}
+
+
 class GCSUploader:
-    """Private bucket + V4 signed GET links, with a service-account key file.
+    """Private bucket + V4 signed GET links (key file, or the VM's own service account).
     google-cloud-storage is imported here only, never by the chat bot."""
 
     def __init__(self, bucket: str, key_file: str):
-        from google.cloud import storage  # lazy
-        self.client = storage.Client.from_service_account_json(key_file)
+        self.client, self.creds = gcs_client(key_file)
         self.bucket = self.client.bucket(bucket)
 
     def upload(self, path: Path, object_name: str, link_days: int) -> str:
@@ -121,7 +152,8 @@ class GCSUploader:
         blob.upload_from_filename(str(path), content_type="video/mp4", timeout=900)
         name = Path(object_name).name
         return blob.generate_signed_url(version="v4", method="GET", expiration=timedelta(days=link_days),
-                                        response_disposition=f'attachment; filename="{name}"')
+                                        response_disposition=f'attachment; filename="{name}"',
+                                        **sign_kwargs(self.creds))
 
     def cleanup(self, keep_days: int, now: float) -> int:
         """The bucket only holds our deliveries: drop anything older than keep_days."""

@@ -127,3 +127,41 @@ def test_posted_command_logs_links(tmp_path, capsys):
     assert row["youtube_url"] and row["tiktok_url"].endswith("/video/1") and row["instagram_url"].endswith("/Cabc/")
     assert L.missing_platforms(jobs.load(job["id"])) == []
     assert run("list") == 0 and "NOT YET ON" not in capsys.readouterr().out
+
+
+# ---- keyless GCS (projects that block service-account keys) -------------------------
+def test_keyless_credentials_sign_through_iam():
+    pytest.importorskip("google.auth")
+
+    class VMCreds:  # like google.auth.compute_engine.Credentials: no local signer
+        valid, token, service_account_email = False, None, "default"
+
+        def refresh(self, request):
+            self.valid, self.token = True, "ya29.tok"
+            self.service_account_email = "spikebot-uploads@p.iam.gserviceaccount.com"
+
+    assert D.sign_kwargs(VMCreds(), request_factory=object) == {
+        "service_account_email": "spikebot-uploads@p.iam.gserviceaccount.com", "access_token": "ya29.tok"}
+
+
+def test_missing_key_file_falls_back_to_machine_identity(tmp_path, monkeypatch):
+    pytest.importorskip("google.cloud.storage")
+    import google.auth
+    from google.auth.credentials import AnonymousCredentials
+    monkeypatch.setattr(google.auth, "default", lambda scopes=None: (AnonymousCredentials(), "p"))
+    up = D.GCSUploader("b", str(tmp_path / "gcs-key.json"))  # file doesn't exist
+    assert isinstance(up.creds, AnonymousCredentials) and up.bucket.name == "b"
+
+
+def test_instagram_bucket_selftest_fetches_and_deletes(tmp_path):
+    from spikebot import instagram as I
+    from tests.test_instagram import FakeHost, Resp
+
+    class HTTP:
+        def get(self, url, timeout=None):
+            return Resp(200, {})
+    host = FakeHost()
+    assert I.bucket_selftest(host, tmp_path, HTTP()) == "OK" and host.deleted == 1
+    with pytest.raises(I.InstagramError, match="403"):
+        I.bucket_selftest(host, tmp_path, type("H", (), {"get": lambda self, u, timeout=None: Resp(403, {})})())
+    assert host.deleted == 2 and not (tmp_path / "spikebot-selftest.txt").exists()

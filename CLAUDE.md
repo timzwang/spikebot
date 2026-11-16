@@ -150,7 +150,10 @@ it in sync when behaviour or config changes.
 - `spikebot/delivery.py`: #ready-to-post for every mode (`MODES` labels/colours). Never
   re-encodes: files <= `videos.discord_max_mb` are attached; bigger ones (or a Discord 413)
   go to the private bucket `VIDEOS_GCS_BUCKET` via `GCSUploader` (google-cloud-storage, lazy
-  import, key `gcs-key.json` next to config, objects `videos/<mode>/<name>`) and Discord gets
+  import, objects `videos/<mode>/<name>`). Credentials from `gcs_client()`: `gcs-key.json` next to
+  config if it exists, else the VM's attached service account `spikebot-uploads` (the project's
+  org policy blocks key creation); keyless signing goes through the IAM API via `sign_kwargs()`
+  (needs `roles/iam.serviceAccountTokenCreator` on itself and the VM's cloud-platform scope) and Discord gets
   a 7-day V4 signed link. Objects older than `keep_days` are deleted (dedicated bucket).
   `settings()` also reads the old Tokyo Girl names. Lacy: `upload_job(send=...)` posts the
   Short after the YouTube upload and only then deletes it; `lacy deliver ID` retries.
@@ -224,7 +227,7 @@ python3 -m venv .venv && .venv/bin/pip install -r requirements.txt -r requiremen
   Restarting sends a "restarted" alert to #status (at most one per 30 min).
 - Service: `systemctl status spikebot`, logs with `journalctl -u spikebot -f`.
 - Live data: `/opt/spikebot/data/`. Don't write test spikes into it.
-- The live `config.json` and `.env` contain real secrets (four Discord webhooks, Twitch secret; `gcs-key.json` next to them). Don't print
+- The live `config.json` and `.env` contain real secrets (four Discord webhooks, Twitch secret, Instagram token; `gcs-key.json` next to them if used). Don't print
   them or paste them into commits, logs or external requests.
 
 ### Conventions

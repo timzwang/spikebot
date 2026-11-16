@@ -58,7 +58,7 @@ class FakeHost:
     def __init__(self):
         self.put_paths, self.deleted = [], 0
 
-    def put(self, path, name):
+    def put(self, path, name, content_type="video/mp4"):
         assert path.exists()
         self.put_paths.append(path)
         return "https://storage.googleapis.com/b/instagram/x.mp4?X-Goog-Signature=abc", self.delete

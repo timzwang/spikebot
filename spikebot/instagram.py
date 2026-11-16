@@ -237,17 +237,39 @@ def maybe_refresh(icfg: dict, token: Token, state: State, now: float | None = No
 # --------------------------------------------------------------------------
 class GCSHost:
     def __init__(self, bucket: str, key_file: str, minutes: int):
-        from google.cloud import storage  # lazy, only where a Reel is posted
-        self.bucket = storage.Client.from_service_account_json(key_file).bucket(bucket)
+        from .delivery import gcs_client  # lazy, only where a Reel is posted
+        client, self.creds = gcs_client(key_file)
+        self.bucket = client.bucket(bucket)
         self.minutes = minutes
 
-    def put(self, path: Path, name: str):
+    def put(self, path: Path, name: str, content_type: str = "video/mp4"):
         """Upload; return (https url, delete function)."""
+        from .delivery import sign_kwargs
         blob = self.bucket.blob(f"instagram/{name}")
-        blob.upload_from_filename(str(path), content_type="video/mp4", timeout=900)
+        blob.upload_from_filename(str(path), content_type=content_type, timeout=900)
         url = blob.generate_signed_url(version="v4", method="GET",
-                                       expiration=timedelta(minutes=self.minutes))
+                                       expiration=timedelta(minutes=self.minutes),
+                                       **sign_kwargs(self.creds))
         return url, blob.delete
+
+
+def bucket_selftest(host, tmp_dir: Path, http=None) -> str:
+    """Upload a tiny file, fetch it through its signed link like Instagram would,
+    delete it. Returns "OK" or raises."""
+    if http is None:
+        from curl_cffi import requests as http  # noqa: N813
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    f = tmp_dir / "spikebot-selftest.txt"
+    f.write_text("ok\n")
+    url, delete = host.put(f, f.name, "text/plain")
+    try:
+        r = http.get(url, timeout=30)
+        if r.status_code != 200:
+            raise InstagramError(f"signed link returned HTTP {r.status_code}")
+    finally:
+        delete()
+        f.unlink(missing_ok=True)
+    return "OK"
 
 
 def host_from_config(cfg: dict, base: Path | None, icfg: dict):
@@ -541,10 +563,12 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"Token check FAILED: {e}")
                 return 1
         try:
-            host_from_config(cfg, base, icfg)
-            print("Bucket for the temporary public link: OK")
+            host = host_from_config(cfg, base, icfg)
+            print("Bucket upload + signed link + delete: "
+                  + bucket_selftest(host, Path(cfg.get("data_dir", "data")) / "instagram"))
         except Exception as e:  # noqa: BLE001
-            print(f"Bucket: {e}")
+            print(f"Bucket test FAILED: {type(e).__name__}: {str(e)[:300]}")
+            return 1
         return 0
     if args.cmd == "refresh":
         res = maybe_refresh(icfg, token, state, force=True)

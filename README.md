@@ -349,28 +349,31 @@ Setup:
 
 ```bash
 PROJECT=$(gcloud config get-value project); B=$PROJECT-videos; SA=spikebot-uploads@$PROJECT.iam.gserviceaccount.com
+gcloud services enable iamcredentials.googleapis.com
 gcloud storage buckets create gs://$B --location=europe-west2 --uniform-bucket-level-access --public-access-prevention
 gcloud iam service-accounts create spikebot-uploads --display-name="spikebot video uploads"
 gcloud storage buckets add-iam-policy-binding gs://$B --member="serviceAccount:$SA" --role=roles/storage.objectAdmin
-gcloud iam service-accounts keys create gcs-key.json --iam-account=$SA && echo "Bucket name: $B"
+gcloud iam service-accounts add-iam-policy-binding $SA --member="serviceAccount:$SA" --role=roles/iam.serviceAccountTokenCreator
+echo "Bucket name: $B"
 ```
 
-   The key can only touch that one bucket, and the bucket must hold nothing else (old files
-   in it are deleted). Copy the key to the server, then delete the Cloud Shell copy (use
-   your VM's name and zone):
+   No key file: the VM itself runs as `spikebot-uploads`, which can only touch that one
+   bucket (and the bucket must hold nothing else: old files in it are deleted). Attach it
+   to the VM. This needs the VM stopped for a minute (the bot restarts on boot; an
+   ephemeral external IP may change). `gcloud compute instances list` shows the name and zone:
 
 ```bash
-gcloud compute scp gcs-key.json YOUR_VM:/tmp/gcs-key.json --zone YOUR_ZONE && rm gcs-key.json
+VM=YOUR_VM; ZONE=YOUR_ZONE
+gcloud compute instances stop $VM --zone $ZONE
+gcloud compute instances set-service-account $VM --zone $ZONE --service-account=$SA --scopes=cloud-platform
+gcloud compute instances start $VM --zone $ZONE
 ```
 
-   On the server:
-
-```bash
-sudo install -o spikebot -g spikebot -m 600 /tmp/gcs-key.json /opt/spikebot/gcs-key.json && sudo rm /tmp/gcs-key.json
-```
-
+   (A `gcs-key.json` service-account key next to `config.json` is still used if present,
+   for servers outside Google Cloud. New Google Cloud organisations block key creation.)
 3. Add `VIDEOS_GCS_BUCKET=<the bucket name it printed>` to `/opt/spikebot/.env`.
-4. Test: `--check` sends a test message to #ready-to-post, and
+4. Test: `sudo -u spikebot venv/bin/python -m spikebot.instagram check` uploads a tiny
+   file, opens its signed link and deletes it. `--check` sends a test message to #ready-to-post, and
    `sudo -u spikebot venv/bin/python -m spikebot.tokyo_girl deliver <file.mp4>` re-sends one edit.
 
 ## Useful commands
