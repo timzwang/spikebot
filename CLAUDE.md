@@ -17,6 +17,16 @@ revenue on a budget of about £20/month. Give all times in UK time.
   so it stays within YouTube's reused content rules.
 - Never commit or print secrets (Discord webhook, Twitch secret, Google OAuth JSON).
 
+## Task tracker
+
+GitHub Issues on `timzwang/spikebot` is the task list (labels `pre-launch`,
+`launch-week`, `automate`, `deadlines`, `owner:tim`, `owner:claude-code`; one milestone
+per phase).
+
+- At the start of a job, check the open issues: `gh issue list`.
+- Reference the issue in every commit message (e.g. `Build editor captions (#15)`).
+- Close it with `Closes #N` in the commit only when the work is done and tested.
+
 ## Still to build
 
 - **Editor:** vertical 1080x1920, word-level captions, programme watermark/hashtags,
