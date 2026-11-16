@@ -919,6 +919,19 @@ def items_on(state: dict, day: str) -> int:
                and m.get("status") != "failed")
 
 
+def ensure_media(lcfg: dict) -> list[Shot]:
+    """Usable shots on disk; runs `fetch` once first if there are none."""
+    shots = Library(lcfg).shots()
+    if not shots:
+        log.info("no usable media in %s yet, fetching official Rockstar media", lcfg["media_dir"])
+        try:
+            fetch(lcfg)
+        except Exception as e:
+            log.warning("fetch failed: %s", e)
+        shots = Library(lcfg).shots()
+    return shots
+
+
 def daily(lcfg: dict, now: float | None = None) -> list:
     """Top today's edits up to per_day (review items, or exports with review off).
     Safe to run any number of times a day."""
@@ -941,7 +954,11 @@ def daily(lcfg: dict, now: float | None = None) -> list:
         if need <= 0:
             log.info("already %d edits for %s", lcfg["per_day"], day)
             return []
-        return make_review(lcfg, need, now=now)
+        shots = ensure_media(lcfg)
+        if not shots:  # don't fill the review queue with failed items
+            log.error("no usable media in %s: run `fetch` by hand and check its log", lcfg["media_dir"])
+            return []
+        return make_review(lcfg, need, now=now, shots=shots)
     need = lcfg["per_day"] - made_on(Path(lcfg["export_dir"]), day)
     made: list[Path] = []
     if need <= 0:
@@ -1126,9 +1143,23 @@ def main(argv: list[str] | None = None) -> None:
             print(f"{'LIVE' if eligible(s, today) else '    '}  {s.kind:7} {s.id:15} "
                   f"{plain(fill(s.cards[0], today))}  ...  {s.cards[-1]}")
     elif args.cmd == "make":
+        shots = ensure_media(lcfg)
+        if not shots:
+            sys.exit(f"no usable media in {lcfg['media_dir']}: `fetch` found nothing (check the log above), "
+                     "or drop official Rockstar screenshots/trailers there")
         if lcfg["review"] and not args.story:
-            for item_id in make_review(lcfg, args.n):
-                print(f"review item {item_id} (approve it in Discord #ready-to-post)")
+            from . import review
+            store = review.Store(Path(lcfg["data_dir"]))
+            failed = 0
+            for item_id in make_review(lcfg, args.n, shots=shots):
+                item = store.load(item_id)
+                if item.get("status") == "failed":
+                    failed += 1
+                    print(f"review item {item_id} FAILED: {item.get('error') or 'see the log above'}")
+                else:
+                    print(f"review item {item_id} (approve it in Discord #ready-to-post)")
+            if failed:
+                sys.exit(1)
         else:
             for p in make(lcfg, args.n, args.story, seed=args.seed):
                 print(p)

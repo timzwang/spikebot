@@ -380,3 +380,18 @@ def test_signed_link_is_made_offline_with_a_key(tmp_path):
                                    response_disposition='attachment; filename="x.mp4"')
     assert url.startswith("https://storage.googleapis.com/tg-bucket/tokyo_girl/x.mp4?")
     assert "X-Goog-Expires=604800" in url and "X-Goog-Signature=" in url
+
+
+def test_no_media_fetches_once_and_makes_no_failed_items(tmp_path, monkeypatch):
+    s = cfg(tmp_path, per_day=2)
+    s["review"] = True
+    calls = []
+    monkeypatch.setattr(TG.Library, "shots", lambda self, entries=None: [])
+    monkeypatch.setattr(TG, "fetch", lambda lcfg: calls.append(1))
+    now = datetime(2026, 11, 16, 6, 50, tzinfo=TG.UK).timestamp()
+    TG.save_state(Path(s["state_file"]), {"last_fetch": now})   # periodic refetch not due
+    assert TG.daily(s, now) == []
+    assert calls == [1]                                            # fetched because the library was empty
+    assert not (Path(s["data_dir"]) / "review" / "items").exists()
+    with pytest.raises(SystemExit):
+        TG.main(["--config", str(tmp_path / "none.json"), "make"])

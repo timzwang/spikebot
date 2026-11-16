@@ -280,7 +280,9 @@ timer by itself; `install.sh` does too.
 
 **Footage**: once a week it tries to download the official media: images from
 `rockstargames.com/VI/media` and the trailers from the Rockstar Games YouTube channel
-(video only, 1080p max; anything not uploaded by Rockstar is refused). Google Cloud IPs
+(video only, 1080p max; anything not uploaded by Rockstar is refused). If the media folder
+has no usable shots, `make` and the daily run fetch first; if there is still nothing, `make`
+exits with an error and the daily run makes no review items (rather than failed ones). Google Cloud IPs
 are sometimes blocked by YouTube, so if `scan` shows few shots, download the screenshots
 and trailers yourself from rockstargames.com/VI/media and copy them in:
 
