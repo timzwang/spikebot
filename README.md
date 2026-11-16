@@ -24,18 +24,49 @@ Results go to `data/spikes.jsonl` (one line per moment) and `data/spikes.db` (SQ
 
 ## Install on the server
 
-```bash
-# from your own computer: copy the folder up (replace the IP)
-scp -r spikebot root@YOUR_SERVER_IP:/root/
+The server needs a **git clone** (not an `scp` copy) so it can auto-update. The repo is
+private, so first give the server read access, e.g. a deploy key:
+`ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519 -N ""`, then paste `~/.ssh/id_ed25519.pub`
+into GitHub → spikebot → Settings → Deploy keys (read-only).
 
-# then on the server
+```bash
 ssh root@YOUR_SERVER_IP
-cd /root/spikebot && bash setup.sh
-nano /opt/spikebot/config.json          # add channels + Discord webhook
+git clone git@github.com:timzwang/spikebot.git /root/spikebot
+cd /root/spikebot && bash deploy/install.sh   # one command: packages, venv, service, auto-update
+nano /opt/spikebot/.env                 # TWITCH_CLIENT_ID / TWITCH_CLIENT_SECRET
+nano /opt/spikebot/config.json          # add channels + Discord webhooks
 cd /opt/spikebot && sudo -u spikebot venv/bin/python -m spikebot.main --check
 systemctl start spikebot
 journalctl -u spikebot -f               # live log, Ctrl+C to exit
 ```
+
+`install.sh` is safe to re-run and never overwrites an existing `config.json` or `.env`.
+(`setup.sh` still works; it just calls `deploy/install.sh`.)
+
+### What gets installed
+
+| Unit | Does |
+|---|---|
+| `spikebot.service` | Runs the bot in the background from `/opt/spikebot`, starts on boot, restarts 10s after a crash |
+| `spikebot-update.timer` | Every 5 minutes runs `deploy/auto_update.sh` |
+
+`deploy/auto_update.sh` does `git pull --ff-only` in the clone. **Only if there are new
+commits** it copies `spikebot/` to `/opt/spikebot`, updates the venv if `requirements.txt`
+changed, and restarts the bot. A commit with a Python syntax error is refused and the bot
+stays on the old code. `config.json`, `.env` and `data/` are never touched.
+
+```bash
+systemctl list-timers spikebot-update.timer   # next/last check
+journalctl -u spikebot-update -n 50           # what the updater did
+systemctl start spikebot-update               # check for updates now
+bash /root/spikebot/deploy/auto_update.sh --force   # redeploy even with no new commits
+```
+
+## Twitch keys (.env)
+
+`TWITCH_CLIENT_ID` and `TWITCH_CLIENT_SECRET` are read from `/opt/spikebot/.env`
+(template: `.env.example`, free keys at dev.twitch.tv/console). They override the
+`twitch_client_*` fields in `config.json`. `.env` is gitignored: never commit it.
 
 ## config.json
 
@@ -43,8 +74,8 @@ journalctl -u spikebot -f               # live log, Ctrl+C to exit
   (kick.com/**adinross**, twitch.tv/**kaicenat**); `programme` is a note for yourself,
   `null` means no clipping permission.
 - `require_category_contains`: moments are only alerted if the stream category contains
-  this text. Kick category is read automatically; Twitch needs `twitch_client_id`/`secret`
-  (free at dev.twitch.tv/console), otherwise Twitch moments are never filtered.
+  this text. Kick category is read automatically; Twitch needs the Twitch keys
+  (`.env`, see above), otherwise Twitch moments are never filtered.
 - `min_score_to_alert`: raise to 5 if Discord gets too noisy, lower to 2 if too quiet.
 - `discord_webhook_url`: Discord server → channel settings → Integrations → Webhooks → New → Copy URL.
   This is #moments: clip moments only.
@@ -57,7 +88,7 @@ journalctl -u spikebot -f               # live log, Ctrl+C to exit
 - `detector`: tuning. `ratio` and `z` control sensitivity (higher = fewer, bigger moments);
   `pre_roll_s` / `post_roll_s` control how much footage either side of the reaction.
 
-After editing the config: `systemctl restart spikebot`.
+After editing `config.json` or `.env`: `systemctl restart spikebot`.
 
 ## Useful commands
 

@@ -1,0 +1,22 @@
+# Installed to /etc/systemd/system/spikebot.service by deploy/install.sh.
+# @APP@ is replaced with the install path (default /opt/spikebot).
+[Unit]
+Description=GTA 6 Clipped chat spike detector
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=spikebot
+Group=spikebot
+WorkingDirectory=@APP@
+# Optional: TWITCH_CLIENT_ID / TWITCH_CLIENT_SECRET (the bot also reads this file itself)
+EnvironmentFile=-@APP@/.env
+Environment=PYTHONUNBUFFERED=1
+ExecStart=@APP@/venv/bin/python -m spikebot.main --config @APP@/config.json
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

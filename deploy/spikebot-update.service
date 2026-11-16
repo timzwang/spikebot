@@ -1,0 +1,10 @@
+# Installed by deploy/install.sh. Run by spikebot-update.timer every 5 minutes.
+# @REPO@ is the git checkout install.sh was run from.
+[Unit]
+Description=Pull spikebot from GitHub and redeploy if there are new commits
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/env bash @REPO@/deploy/auto_update.sh

@@ -10,6 +10,7 @@ import argparse
 import asyncio
 import json
 import logging
+import os
 import socket
 import sqlite3
 import time
@@ -371,13 +372,54 @@ class Bot:
                 print(f"  {field} not set: {chan} messages are disabled.")
 
 
+ENV_KEYS = {"TWITCH_CLIENT_ID": "twitch_client_id",
+            "TWITCH_CLIENT_SECRET": "twitch_client_secret"}
+
+
+def load_dotenv(path: Path) -> dict[str, str]:
+    """Parse a simple KEY=VALUE .env file (comments, blank lines, optional quotes
+    and a leading `export ` are allowed). A missing file gives an empty dict."""
+    out: dict[str, str] = {}
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except FileNotFoundError:
+        return out
+    for line in lines:
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, val = line.removeprefix("export ").partition("=")
+        val = val.strip()
+        if len(val) >= 2 and val[0] == val[-1] and val[0] in "\"'":
+            val = val[1:-1]
+        out[key.strip()] = val
+    return out
+
+
+def apply_env(cfg: dict, env_files: list[Path], environ: dict[str, str]) -> dict:
+    """Overlay Twitch credentials onto the config. Precedence: real environment
+    (e.g. systemd EnvironmentFile) > .env files (first found wins) > config.json."""
+    file_vals: dict[str, str] = {}
+    for f in reversed(env_files):
+        file_vals.update(load_dotenv(f))
+    for env_key, cfg_key in ENV_KEYS.items():
+        val = environ.get(env_key) or file_vals.get(env_key)
+        if val:
+            cfg[cfg_key] = val
+    return cfg
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", default="config.json")
     ap.add_argument("--check", action="store_true", help="60 second connection test")
     args = ap.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
-    cfg = json.loads(Path(args.config).read_text(encoding="utf-8"))
+    cfg_path = Path(args.config)
+    cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+    # .env next to config.json, then in the working directory
+    env_files = list(dict.fromkeys([cfg_path.resolve().parent / ".env", Path.cwd() / ".env"]))
+    apply_env(cfg, env_files, dict(os.environ))
     bot = Bot(cfg)
     asyncio.run(bot.check() if args.check else bot.run())
 

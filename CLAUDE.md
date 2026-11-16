@@ -109,8 +109,18 @@ it in sync when behaviour or config changes.
 - `tests/test_status.py`: alert de-duplication, disconnect/reconnect timing, live/offline,
   4001 detection, summary timing and content, plus an end-to-end `Bot` test with a fake
   Discord (it also checks nothing leaks into #moments).
-- `setup.sh`: one-shot root installer for Ubuntu. Creates the `spikebot` system user,
-  copies the code to `/opt/spikebot`, builds a venv, and installs `spikebot.service`.
+- `deploy/install.sh`: one-command root installer for Ubuntu, run from a git clone
+  (`setup.sh` is a shim to it). Creates the `spikebot` user, copies the code to
+  `/opt/spikebot`, builds the venv, creates `config.json`/`.env` from the examples if
+  missing, and installs `spikebot.service` plus `spikebot-update.timer`
+  (templates in `deploy/`).
+- `deploy/auto_update.sh`: run by the timer every 5 min. `git pull --ff-only` as the
+  clone's owner; if HEAD differs from `/opt/spikebot/.deployed_commit` it stages the
+  code, syntax-checks it, swaps it in, `pip install`s if `requirements.txt` changed and
+  restarts the bot. Never touches `config.json`, `.env` or `data/`.
+- `.env` / `.env.example`: `TWITCH_CLIENT_ID`, `TWITCH_CLIENT_SECRET`. `main.apply_env()`
+  overlays them on the config (environment > `.env` next to config > `.env` in cwd >
+  `config.json`). Tested in `tests/test_env.py`.
 - `config.example.json`: config template. A real `config.json` holds the Discord webhook
   and Twitch secret, so it is gitignored. Never commit it.
 
@@ -126,15 +136,14 @@ python3 -m venv .venv && .venv/bin/pip install -r requirements.txt -r requiremen
 
 ### Deployment (this server)
 
-- Deployed copy: `/opt/spikebot` (owned by `spikebot`), with its own venv and
-  `config.json`. It is **not** a git checkout. Changes in this repo go live only once
-  they are copied over (`setup.sh` does that; it keeps an existing `config.json`), then
-  `sudo systemctl restart spikebot`. For a code-only update:
-  `sudo cp spikebot/*.py /opt/spikebot/spikebot/ && sudo chown -R spikebot:spikebot /opt/spikebot/spikebot`.
+- Deployed copy: `/opt/spikebot` (owned by `spikebot`), with its own venv, `config.json`
+  and `.env`. It is **not** a git checkout. The server's git clone is auto-deployed:
+  anything pushed to `main` goes live within ~5 minutes via `spikebot-update.timer`
+  (log: `journalctl -u spikebot-update`). So only push to `main` when it's tested.
   Restarting sends a "restarted" alert to #status (at most one per 30 min).
 - Service: `systemctl status spikebot`, logs with `journalctl -u spikebot -f`.
 - Live data: `/opt/spikebot/data/`. Don't write test spikes into it.
-- The live config contains real secrets (three Discord webhooks, Twitch secret). Don't print
+- The live `config.json` and `.env` contain real secrets (three Discord webhooks, Twitch secret). Don't print
   them or paste them into commits, logs or external requests.
 
 ### Conventions
