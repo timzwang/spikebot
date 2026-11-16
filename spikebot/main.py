@@ -558,13 +558,6 @@ class Bot:
         print(f"    discord.py: {'OK' if _has('discord') else 'MISSING (pip install -r requirements.txt)'};"
               f" PySceneDetect: {'OK' if _has('scenedetect') else 'MISSING'};"
               f" easyocr: {'OK' if _has('easyocr') else 'not installed (optional, see README)'}")
-        rc = rv_.settings(self.cfg)
-        print(f"  Discord approval bot: {'token set' if rc['token'] else 'OFF (DISCORD_BOT_TOKEN missing)'};"
-              f" #ready-to-post {rc['channel_id'] or 'NOT SET'}, #tiktok-queue {rc['tiktok_channel_id'] or 'NOT SET'},"
-              f" #inspiration {rc['inspiration_channel_id'] or 'NOT SET'}")
-        print(f"    discord.py: {'OK' if _has('discord') else 'MISSING (pip install -r requirements.txt)'};"
-              f" PySceneDetect: {'OK' if _has('scenedetect') else 'MISSING'};"
-              f" easyocr: {'OK' if _has('easyocr') else 'not installed (optional, see README)'}")
         free = st_.disk_free_share(self.data_dir)
         print(f"  disk free: {free:.0%} (status alert below {st_.DISK_MIN_FREE:.0%})")
         preview = msg_.plain(self.summary_message(time.time())).replace(" | ", "\n")
