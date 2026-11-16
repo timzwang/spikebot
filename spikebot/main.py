@@ -502,7 +502,9 @@ class Bot:
         hooks = [("discord_webhook_url", "#moments", "Spike bot connection test: alerts are working."),
                  ("status_webhook_url", "#status", "Spike bot connection test: status alerts are working."),
                  ("summary_webhook_url", "#daily-summary",
-                  "Spike bot connection test: the daily summary will post here at 22:00 UK time.")]
+                  "Spike bot connection test: the daily summary will post here at 22:00 UK time."),
+                 ("tokyo_girl_webhook_url", "#tokyo-girl",
+                  "Spike bot connection test: Tokyo Girl edits will post here (06:47 UK).")]
         print()
         for field, chan, msg in hooks:
             if self.cfg.get(field):
@@ -524,6 +526,7 @@ ENV_KEYS = {"TWITCH_CLIENT_ID": "twitch_client_id",
             "LACY_AUTO_UPLOAD": "lacy_auto_upload",
             "TOKYO_GIRL_MODE": "tokyo_girl_mode",
             "TOKYO_GIRL_PER_DAY": "tokyo_girl_per_day",
+            "TOKYO_GIRL_GCS_BUCKET": "tokyo_girl_gcs_bucket",
             "YOUTUBE_CLIENT_ID": "youtube_client_id",
             "YOUTUBE_CLIENT_SECRET": "youtube_client_secret",
             "YOUTUBE_REFRESH_TOKEN": "youtube_refresh_token"}

@@ -15,7 +15,8 @@ revenue on a budget of about £20/month. Give all times in UK time.
 - Rockstar policy: no isolated cutscenes, endings, story spoilers or leaked footage.
 - Every Short must add original value (captions, hook, context). Never raw re-uploads,
   so it stays within YouTube's reused content rules.
-- Never commit or print secrets (Discord webhook, Twitch secret, Google OAuth JSON).
+- Never commit or print secrets (Discord webhook, Twitch secret, Google OAuth JSON,
+  `gcs-key.json`).
 
 ## Task tracker
 
@@ -63,6 +64,7 @@ It posts to three Discord webhooks, which must stay separate:
 | `discord_webhook_url` | #moments | Clip moments only (`candidate` spikes) |
 | `status_webhook_url` | #status | Bot health: start/restart, streamer live/offline (with category), chat down >5 min and reconnected, Kick 4001 key error, disk <20% free |
 | `summary_webhook_url` | #daily-summary | 22:00 UK daily summary: moments per streamer + top 3 by score (last 24h) |
+| `tokyo_girl_webhook_url` | #tokyo-girl | Finished Tokyo Girl edits: original file attached, or a GCS download link if too big |
 
 An empty field disables that channel; the message is still logged.
 
@@ -142,6 +144,11 @@ it in sync when behaviour or config changes.
   on-screen text (last card is always a question; date windows relative to launch).
   Output `exports/tokyo_girl/*.mp4` + `.txt` (IG/TikTok captions from `caption_ig` /
   `caption_tiktok`). No logos/watermarks. State in `data/tokyo_girl/state.json`.
+  Delivery (`deliver`, called after each export; `deliver_pending` retries for 3 days): never
+  re-encodes. Files <= `discord_max_mb` are attached to #tokyo-girl; bigger ones go to the
+  private bucket `TOKYO_GIRL_GCS_BUCKET` via `GCSUploader` (google-cloud-storage, lazy import,
+  key `gcs-key.json` next to config) and Discord gets a 7-day V4 signed link; a Discord 413
+  also falls back to the link. Uploads older than `gcs_keep_days` are deleted.
 - `tests/test_tokyo_girl.py`: stories, beat grid, shot picking, tags, captions, daily quota,
   host guard, and an end-to-end silent render (needs ffmpeg).
 - `spikebot/messages.py`: pure Discord layouts (embeds) for #moments (`moment`), #status

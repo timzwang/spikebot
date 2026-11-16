@@ -3,3 +3,5 @@ curl_cffi>=0.7
 # Lacy mode only (imported in the render subprocess, never by the chat bot)
 yt-dlp>=2026.10.26
 faster-whisper>=1.1,<2
+# Tokyo Girl mode only: big edits go to a private bucket with a signed link (imported lazily)
+google-cloud-storage>=2.14,<4

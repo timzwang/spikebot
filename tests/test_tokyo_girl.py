@@ -245,3 +245,134 @@ def test_render_is_silent_vertical_and_on_length(tmp_path):
     assert (j["streams"][0]["width"], j["streams"][0]["height"]) == (1080, 1920)
     assert float(j["format"]["duration"]) == pytest.approx(16.0, abs=0.05)
     assert out.with_suffix(".txt").read_text().startswith("IG: Jason & Lucia: partners in crime")
+
+
+# ---- delivery to Discord ------------------------------------------------------------
+class FakeDiscord:
+    def __init__(self, codes=None):
+        self.calls, self.codes = [], list(codes or [])
+
+    def __call__(self, url, payload, path):
+        self.calls.append({"url": url, "payload": payload, "file": path.read_bytes() if path else None})
+        return self.codes.pop(0) if self.codes else 204
+
+
+class FakeGCS:
+    made = []
+
+    def __init__(self, bucket, key_file):
+        self.bucket, self.key_file, self.uploaded, self.cleaned = bucket, key_file, None, False
+        FakeGCS.made.append(self)
+
+    def upload(self, path, days):
+        self.uploaded = path.read_bytes()
+        return f"https://storage.googleapis.com/{self.bucket}/tokyo_girl/{path.name}?X-Goog-Signature=abc"
+
+    def cleanup(self, keep_days, now):
+        self.cleaned = True
+        return 0
+
+
+def export(tmp_path, size: int, **kw):
+    s = cfg(tmp_path, **kw)
+    s["webhook_url"] = "https://discord.example/webhook"
+    d = Path(s["export_dir"])
+    d.mkdir(parents=True)
+    mp4 = d / "2026-11-16_0647-1_couple_partners.mp4"
+    mp4.write_bytes(bytes(range(256)) * (size // 256))
+    story = next(x for x in TG.STORIES if x.id == "partners")
+    mp4.with_suffix(".txt").write_text(TG.caption_file(story, TODAY, s))
+    TG.save_state(Path(s["state_file"]), {"made": [{"file": mp4.name, "story": "partners", "seconds": 18.0}]})
+    return s, mp4
+
+
+def test_small_edit_is_attached_untouched(tmp_path):
+    s, mp4 = export(tmp_path, 2_000_000)
+    original = mp4.read_bytes()
+    fake = FakeDiscord()
+    assert TG.deliver(s, mp4, post=fake, uploader_factory=FakeGCS) == "attached"
+    (call,) = fake.calls
+    assert call["file"] == original and mp4.read_bytes() == original      # byte-for-byte, no re-encode
+    content = call["payload"]["content"]
+    assert "18s" in content and "partners" in content and "2.0 MB" in content
+    assert "```Jason & Lucia: partners in crime, literally. Couple goals or red flag? Song: Tokyo Girl by @PassiveBand #GTA6```" in content
+    assert "```Jason & Lucia: partners in crime, literally. Couple goals or red flag? Song: Tokyo Girl by @Passive #GTA6```" in content
+    assert call["payload"]["allowed_mentions"] == {"parse": []}
+
+
+def test_big_edit_goes_to_bucket_link(tmp_path):
+    FakeGCS.made.clear()
+    s, mp4 = export(tmp_path, 12_000_000, gcs_bucket="tg-bucket")
+    original = mp4.read_bytes()
+    fake = FakeDiscord()
+    assert TG.deliver(s, mp4, now=1_800_000_000, post=fake, uploader_factory=FakeGCS) == "link"
+    (gcs,) = FakeGCS.made
+    assert gcs.uploaded == original and gcs.cleaned and gcs.key_file == str(tmp_path / "gcs-key.json")
+    (call,) = fake.calls
+    assert call["file"] is None                                             # link only, no attachment
+    emb = call["payload"]["embeds"][0]
+    assert emb["url"].startswith("https://storage.googleapis.com/tg-bucket/") and "12.0 MB" in emb["title"]
+    assert f"<t:{1_800_000_000 + 7 * 86400}:f>" in emb["description"]
+
+
+def test_discord_413_falls_back_to_link_and_boost_limit(tmp_path):
+    s, mp4 = export(tmp_path, 3_000_000, gcs_bucket="b")
+    fake = FakeDiscord([413, 204])
+    assert TG.deliver(s, mp4, post=fake, uploader_factory=FakeGCS) == "link"
+    assert fake.calls[0]["file"] and fake.calls[1]["file"] is None
+    s2, mp42 = export(tmp_path / "boosted", 30_000_000, discord_max_mb=50)
+    assert TG.deliver(s2, mp42, post=FakeDiscord(), uploader_factory=FakeGCS) == "attached"
+
+
+def test_big_edit_without_bucket_gets_a_card(tmp_path):
+    s, mp4 = export(tmp_path, 12_000_000)
+    fake = FakeDiscord()
+    assert TG.deliver(s, mp4, post=fake, uploader_factory=FakeGCS) == "card"
+    assert mp4.name in fake.calls[0]["payload"]["embeds"][0]["description"]
+
+
+def test_failed_delivery_is_retried_later(tmp_path, monkeypatch):
+    s, mp4 = export(tmp_path, 1_000_000)
+    now = datetime(2026, 11, 16, 6, 50, tzinfo=TG.UK).timestamp()
+    monkeypatch.setattr(TG, "post_webhook", FakeDiscord([500]))
+    monkeypatch.setattr(TG.deliver, "__defaults__", (None, TG.post_webhook, FakeGCS))
+    assert TG.deliver_safe(s, mp4, now) is None                             # Discord down: no crash
+    assert "delivered" not in TG.load_state(Path(s["state_file"]))["made"][0]
+    assert TG.deliver_pending(s, now + 86400) == [mp4.name]                 # next run sends it
+    assert TG.load_state(Path(s["state_file"]))["made"][0]["delivered"] == "attached"
+    assert TG.deliver_pending(s, now + 2 * 86400) == []                     # only once
+
+
+def test_no_webhook_means_off(tmp_path):
+    s, mp4 = export(tmp_path, 1000)
+    s["webhook_url"] = ""
+    assert TG.deliver(s, mp4, post=FakeDiscord()) == "off" and TG.deliver_pending(s) == []
+
+
+def test_delivery_settings():
+    from spikebot.main import apply_env
+    c = apply_env({"tokyo_girl_webhook_url": "https://d/x"}, [], {"TOKYO_GIRL_GCS_BUCKET": "gs://my-bucket/"})
+    s = TG.settings(c, Path("/opt/spikebot"))
+    assert s["gcs_bucket"] == "my-bucket" and s["webhook_url"] == "https://d/x"
+    assert s["gcs_key_file"] == "/opt/spikebot/gcs-key.json" and s["discord_max_mb"] == 10
+    with pytest.raises(ValueError):
+        TG.settings({"tokyo_girl": {"gcs_link_days": 8}})
+
+
+def test_signed_link_is_made_offline_with_a_key(tmp_path):
+    pytest.importorskip("google.cloud.storage")
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    pem = key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
+                            serialization.NoEncryption()).decode()
+    kf = tmp_path / "key.json"
+    kf.write_text(json.dumps({"type": "service_account", "project_id": "p", "private_key_id": "1",
+                              "private_key": pem, "client_email": "up@p.iam.gserviceaccount.com",
+                              "client_id": "1", "token_uri": "https://oauth2.googleapis.com/token"}))
+    up = TG.GCSUploader("tg-bucket", str(kf))
+    blob = up.bucket.blob("tokyo_girl/x.mp4")
+    url = blob.generate_signed_url(version="v4", method="GET", expiration=7 * 86400,
+                                   response_disposition='attachment; filename="x.mp4"')
+    assert url.startswith("https://storage.googleapis.com/tg-bucket/tokyo_girl/x.mp4?")
+    assert "X-Goog-Expires=604800" in url and "X-Goog-Signature=" in url

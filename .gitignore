@@ -9,3 +9,4 @@ config.json
 logs/
 layout_check.jpg
 exports/
+gcs-key.json
