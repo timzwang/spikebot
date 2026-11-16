@@ -22,6 +22,7 @@ from zoneinfo import ZoneInfo
 
 from curl_cffi.requests import AsyncSession
 
+from . import instagram as ig_
 from . import lacy as lacy_
 from . import messages as msg_
 from . import status as st_
@@ -167,6 +168,13 @@ class Bot:
             if not self.helix:
                 log.warning("Lacy mode is on but Twitch keys are missing: no Lacy clips"
                             " (the GTA category can't be checked)")
+
+        # Instagram Reels: token refresh + Reels waiting for the daily cap (spikebot/instagram.py)
+        self.ig = None
+        if config_path:
+            xp = ig_.crossposter(cfg, Path(config_path).resolve().parent, dict(os.environ))
+            if xp.icfg["enabled"] and xp.icfg["user_id"]:
+                self.ig = xp
 
     def on_msg(self, key):
         det = self.detectors[key]
@@ -324,6 +332,39 @@ class Bot:
                                  f" {msg_.escape(job.get('reason') or 'unknown error')}",
                                  kind="lacy")
 
+    async def instagram_loop(self, interval_s: float = 3600, now=time.time) -> None:
+        """Hourly: refresh the IG token when due (every 50 days) and post Lacy Reels that
+        waited for the daily cap or failed. Never raises."""
+        state = ig_.State(self.data_dir)
+        while True:
+            try:
+                await self.instagram_tick(state, now())
+            except Exception as e:  # noqa: BLE001
+                log.warning("instagram loop: %s", e)
+            await asyncio.sleep(interval_s)
+
+    async def instagram_tick(self, state, now: float) -> None:
+        if not ig_.active(self.ig.icfg, self.ig.token):
+            return
+        res = await asyncio.to_thread(ig_.maybe_refresh, self.ig.icfg, self.ig.token, state, now)
+        if res.startswith("failed"):
+            exp = state.load().get("expires_at") or now
+            await self.notifier.send(
+                "instagram_token", f"📸 Instagram token refresh {res}. It expires about "
+                f"{ig_._uk(exp)}. Retrying every 6h; or run `python -m spikebot.instagram refresh`,"
+                " or paste a new token into .env as IG_ACCESS_TOKEN.", kind="lacy")
+        if not self.lacy:
+            return
+        subs = lacy_.Submissions(Path(self.lacy.cfg["submissions_csv"]))
+        done = await asyncio.to_thread(ig_.retry_pending, self.ig, self.lacy.jobs, subs, None, now)
+        for job_id, how in done:
+            if how == "failed":
+                job = self.lacy.jobs.load(job_id)
+                await self.notifier.send(f"instagram_failed:{job_id}",
+                                         f"📸 Instagram Reel for Lacy clip `{job_id}` failed"
+                                         f" (try {job.get('instagram_attempts')}): {job.get('instagram_error')}",
+                                         kind="lacy")
+
     def lacy_uploads_today(self) -> int:
         subs = lacy_.Submissions(Path(self.lacy.cfg["submissions_csv"]))
         return subs.uploads_on(lacy_.uk_day(time.time()))
@@ -457,6 +498,8 @@ class Bot:
         if self.lacy:
             extra.append(self.lacy.worker(self.helix, self.lacy_review, self.lacy_uploaded,
                                           self.lacy_failed))
+        if self.ig:
+            extra.append(self.instagram_loop())
         await asyncio.gather(self.ticker(), self.poll_state(), self.status_loop(),
                              self.summary_loop(), *self.chat_tasks(), *extra)
 
@@ -495,6 +538,14 @@ class Bot:
                 print("    WARNING: Twitch keys missing, so no Lacy clips will be made")
         else:
             print("  Lacy mode off")
+        if self.ig:
+            ic, tok = self.ig.icfg, self.ig.token
+            today = self.ig.posts.published_on(lacy_.uk_day(time.time()))
+            print(f"  Instagram auto-post {'ON' if ig_.active(ic, tok) else 'OFF (IG_ACCESS_TOKEN missing)'}:"
+                  f" Reels today {today}/{ic['max_per_day']}"
+                  "  (full check: python -m spikebot.instagram check)")
+        else:
+            print("  Instagram auto-post off (IG_USER_ID not set)")
         free = st_.disk_free_share(self.data_dir)
         print(f"  disk free: {free:.0%} (status alert below {st_.DISK_MIN_FREE:.0%})")
         preview = msg_.plain(self.summary_message(time.time())).replace(" | ", "\n")
@@ -532,7 +583,11 @@ ENV_KEYS = {"TWITCH_CLIENT_ID": "twitch_client_id",
             "TOKYO_GIRL_GCS_BUCKET": "tokyo_girl_gcs_bucket",  # old name
             "YOUTUBE_CLIENT_ID": "youtube_client_id",
             "YOUTUBE_CLIENT_SECRET": "youtube_client_secret",
-            "YOUTUBE_REFRESH_TOKEN": "youtube_refresh_token"}
+            "YOUTUBE_REFRESH_TOKEN": "youtube_refresh_token",
+            # IG_ACCESS_TOKEN is read straight from .env by instagram.Token (it gets refreshed)
+            "IG_USER_ID": "ig_user_id",
+            "IG_MAX_REELS_PER_DAY": "ig_max_reels_per_day",
+            "INSTAGRAM_AUTO_POST": "instagram_auto_post"}
 
 
 def load_dotenv(path: Path) -> dict[str, str]:

@@ -44,6 +44,15 @@
     "media_dir": "data/tokyo_girl/media"
   },
 
+  "instagram": {
+    "max_per_day": 3,
+    "share_to_feed": true,
+    "refresh_every_days": 50,
+    "posts_csv": "logs/instagram_posts.csv",
+    "tiktok_dir": "exports/tiktok",
+    "tiktok_keep_days": 14
+  },
+
   "videos": {
     "discord_max_mb": 10,
     "gcs_bucket": "",

@@ -133,10 +133,12 @@ cd /opt/spikebot && sudo -u spikebot venv/bin/python -m spikebot.lacy list
 happened that UK day), sets the thumbnail and appends a row to
 `/opt/spikebot/logs/lacy_submissions.csv` (`uploaded_uk, youtube_url, title, ...`) ready to
 paste into Content Rewards. With `LACY_AUTO_UPLOAD=true` approval is skipped (still capped).
-**Every Lacy Short goes on all three platforms.** YouTube is automatic. The full-quality
-file then arrives in #ready-to-post (see "Finished videos on your phone") with a TikTok
-caption, an Instagram Reels caption and a ready-made command. Post it on TikTok and
-Instagram, then log both links so the CSV has all three for Content Rewards:
+**Every Lacy Short goes on all three platforms.** YouTube is automatic, and so is Instagram
+once it's set up (see "Instagram Reels" below). The file is also copied to
+`/opt/spikebot/exports/tiktok/` with a TikTok caption `.txt` beside it. The full-quality
+file then arrives in #ready-to-post (see "Finished videos on your phone") with the captions
+still to post by hand and a ready-made command. Post it, then log the links so the CSV has
+all three for Content Rewards (once Instagram auto-posts, only `--tiktok` is needed):
 
 ```bash
 cd /opt/spikebot && sudo -u spikebot venv/bin/python -m spikebot.lacy posted 20261119-061502 \
@@ -176,6 +178,63 @@ the upload still works and the review card says the thumbnail wasn't set. A Goog
 project that hasn't passed YouTube's API audit can only upload **private** videos (#25).
 Clips live in `data/lacy/jobs/<id>/`; video files are deleted after upload or reject.
 The Whisper model (~150 MB) downloads on the first render.
+
+## Instagram Reels (auto-post) and the TikTok folder
+
+After each Lacy Short is on YouTube (`approve`, or auto-upload):
+
+1. **TikTok:** the file is copied unchanged to `exports/tiktok/lacy_<id>.mp4` with
+   `lacy_<id>.txt` (caption) beside it. Upload by hand, then log it with `lacy posted ID --tiktok URL`.
+   Files older than 14 days are deleted (`instagram.tiktok_keep_days`).
+2. **Instagram:** posted as a Reel through the Instagram API (graph.instagram.com):
+   - the video goes to your private bucket (`VIDEOS_GCS_BUCKET`) and Instagram gets a
+     signed link that works for 60 minutes; the copy is **deleted right after publishing**
+     (or failing);
+   - container (`media_type=REELS`) > wait until `FINISHED` > `media_publish`;
+   - the caption uses a **different hook from the YouTube title** (`HOOKS` in
+     `spikebot/instagram.py`, same banned-word rules as titles) plus GTA hashtags
+     (`#GTA6 #GTAVI #GrandTheftAuto6 #GTA6Clips #Lacy ...`; GTA V clips get `#GTA5` ones);
+   - **max 3 Reels a UK day** (`IG_MAX_REELS_PER_DAY`). Over the cap, the Reel waits and the
+     bot posts it in the next hour that the cap allows. A failed post is retried hourly, up
+     to 3 tries, with an alert in #status;
+   - each attempt is logged to `logs/instagram_posts.csv`
+     (`posted_uk, status, job_id, mode, instagram_url, media_id, hook, error`) and the Reel
+     link is added to `instagram_url` in `logs/lacy_submissions.csv` for Content Rewards.
+3. **Token:** long-lived tokens last 60 days. The bot refreshes it every 50 days
+   (`refresh_access_token`) and writes the new one back into `.env` (it always reads the
+   token from `.env`, so no restart is needed). If a refresh fails, #status gets an alert
+   and it retries every 6 hours.
+
+**Setup (once)**
+
+1. The Instagram account must be a **Professional** account (Creator or Business). Switch in
+   the Instagram app: Settings > Account type and tools.
+2. At developers.facebook.com create an app (use case **"Manage messaging & content on
+   Instagram"**, i.e. the Instagram API with Instagram Login). Under App roles > Roles add
+   the Instagram account as an **Instagram Tester** and accept the invite in the Instagram
+   app (Settings > Website permissions > Apps and websites > Tester invites). The app can stay
+   in Development mode because it only posts to your own account: no App Review needed.
+3. In the app: Instagram > API setup with Instagram login > **Generate access token** for the
+   account (permissions `instagram_business_basic` and `instagram_business_content_publish`).
+   It shows a long-lived token and the account's user ID.
+4. In `/opt/spikebot/.env`: `IG_USER_ID=...`, `IG_ACCESS_TOKEN=...` (and `VIDEOS_GCS_BUCKET`,
+   see "Finished videos on your phone"). Then check and restart:
+
+```bash
+cd /opt/spikebot && sudo -u spikebot venv/bin/python -m spikebot.instagram check
+sudo systemctl restart spikebot
+```
+
+Other commands:
+
+```bash
+cd /opt/spikebot && sudo -u spikebot venv/bin/python -m spikebot.instagram retry            # post waiting Reels now
+cd /opt/spikebot && sudo -u spikebot venv/bin/python -m spikebot.instagram retry 20261119-061502
+cd /opt/spikebot && sudo -u spikebot venv/bin/python -m spikebot.instagram refresh          # refresh the token now
+```
+
+Set `INSTAGRAM_AUTO_POST=false` to pause auto-posting (TikTok export carries on). Reels
+use the same file as YouTube: 1080x1920 H.264/AAC, under 60 s, no watermark.
 
 ## Tokyo Girl mode (TikTok / Instagram campaign edits)
 
@@ -264,8 +323,8 @@ Every finished video from every mode goes to one Discord channel, labelled with 
 
 - **Tokyo Girl**: each edit, with the IG and TikTok captions.
 - **Lacy**: each Short once it's on YouTube (after `approve`, or automatically with
-  auto-upload), with TikTok and Instagram captions and the `lacy posted` command, so the same
-  file goes on all three platforms.
+  auto-upload), with the Instagram link if it was auto-posted, the captions still to post by
+  hand and the `lacy posted` command, so the same file goes on all three platforms.
 
 Text to copy is in code blocks (long-press to copy). The video is **never re-encoded or
 compressed**; you get the exact file the server made:

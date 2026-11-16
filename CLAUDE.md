@@ -16,7 +16,7 @@ revenue on a budget of about £20/month. Give all times in UK time.
 - Every Short must add original value (captions, hook, context). Never raw re-uploads,
   so it stays within YouTube's reused content rules.
 - Never commit or print secrets (Discord webhook, Twitch secret, Google OAuth JSON,
-  `gcs-key.json`).
+  `gcs-key.json`, Instagram access token).
 
 ## Task tracker
 
@@ -34,7 +34,8 @@ per phase).
   already has a Lacy-only version in `editor.py`/`lacy.py`),
   optional AI voiceover hook.
 - **Review queue:** Tim approves each clip.
-- **Uploader:** YouTube, plus the same edit to TikTok and Reels.
+- **Uploader:** YouTube, plus the same edit to TikTok and Reels (Lacy: YouTube + Reels are
+  automatic, TikTok is a manual upload from `exports/tiktok/`).
 
 ## Deadlines
 
@@ -158,6 +159,21 @@ it in sync when behaviour or config changes.
   fills `tiktok_url`/`instagram_url` in the submissions CSV (`Submissions._upgrade` adds the
   columns to old files); `lacy list` flags `missing_platforms`.
   Tested in `tests/test_delivery.py`.
+- `spikebot/instagram.py`: **Instagram Reels auto-post** (Instagram API with Instagram Login,
+  graph.instagram.com) for Lacy Shorts, called from `lacy.upload_job(social=Crossposter)` after
+  the YouTube upload. First copies the Short to `exports/tiktok/lacy_<id>.mp4` + caption `.txt`
+  (manual TikTok upload). Then, if `IG_USER_ID` + `IG_ACCESS_TOKEN` are set: uploads it to the
+  `VIDEOS_GCS_BUCKET` bucket under `instagram/` with a 60 min V4 signed link (`GCSHost`), REELS
+  container > poll `status_code` until FINISHED > `media_publish`, deletes the object in a
+  `finally`. Caption hook from `HOOKS` (never the YouTube title, `lacy.BANNED` applies) +
+  GTA hashtags. Cap `max_per_day` (3, `IG_MAX_REELS_PER_DAY`) per UK day from
+  `logs/instagram_posts.csv`; over cap = `instagram_status: waiting`, failures retried up to
+  `max_attempts`; `Bot.instagram_loop()` runs hourly (`retry_pending` + `maybe_refresh`).
+  Token: `Token` reads `.env` before the process env (systemd's copy goes stale); refreshed
+  every 50 days via `refresh_access_token` and saved with `youtube.set_env_value` (atomic).
+  `data/instagram/state.json` holds only a token fingerprint and times. The token goes in the
+  `Authorization` header and is scrubbed from errors. CLI: `python -m spikebot.instagram
+  check | refresh | retry [JOB]`. Tested in `tests/test_instagram.py`.
 - `tests/test_tokyo_girl.py`: stories, beat grid, shot picking, tags, captions, daily quota,
   host guard, and an end-to-end silent render (needs ffmpeg).
 - `spikebot/messages.py`: pure Discord layouts (embeds) for #moments (`moment`), #status
@@ -181,7 +197,9 @@ it in sync when behaviour or config changes.
   restarts the bot. It also installs/enables `spikebot-tokyo-girl.timer` if missing.
   Never touches `config.json`, `.env`, `data/` or `exports/`.
 - `.env` / `.env.example`: `TWITCH_CLIENT_ID`, `TWITCH_CLIENT_SECRET`, `TOKYO_GIRL_MODE`, `TOKYO_GIRL_PER_DAY`, `LACY_MODE`,
-  `LACY_MAX_UPLOADS_PER_DAY`, `LACY_AUTO_UPLOAD`, `YOUTUBE_CLIENT_ID/SECRET/REFRESH_TOKEN`. `main.apply_env()`
+  `LACY_MAX_UPLOADS_PER_DAY`, `LACY_AUTO_UPLOAD`, `YOUTUBE_CLIENT_ID/SECRET/REFRESH_TOKEN`,
+  `IG_USER_ID`, `IG_ACCESS_TOKEN` (read by `instagram.Token`, not `apply_env`),
+  `IG_MAX_REELS_PER_DAY`, `INSTAGRAM_AUTO_POST`. `main.apply_env()`
   overlays them on the config (environment > `.env` next to config > `.env` in cwd >
   `config.json`). Tested in `tests/test_env.py`.
 - `config.example.json`: config template. A real `config.json` holds the Discord webhook

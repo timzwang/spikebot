@@ -108,8 +108,11 @@ def set_env_value(path: Path, key: str, value: str) -> None:
         out.append(line)
     if not done:
         out.append(f"{key}={value}")
-    path.write_text("\n".join(out) + "\n", encoding="utf-8")
-    path.chmod(0o600)
+    tmp = path.with_name(path.name + ".tmp")  # atomic: a crash can't lose the other secrets
+    tmp.touch(mode=0o600)
+    tmp.chmod(0o600)
+    tmp.write_text("\n".join(out) + "\n", encoding="utf-8")
+    tmp.replace(path)
 
 
 def auth(env_path: Path, client_id: str, client_secret: str, port: int = 8765) -> None:

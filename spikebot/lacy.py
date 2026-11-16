@@ -406,10 +406,11 @@ def render_job(job: dict, lcfg: dict, jobs: Jobs, used_titles: set[str],
 
 
 def upload_job(job: dict, lcfg: dict, jobs: Jobs, subs: Submissions, yt,
-               now: float | None = None, send=None) -> dict:
+               now: float | None = None, send=None, social=None) -> dict:
     """Upload a ready job (respecting the daily cap) and log it to the CSV.
-    `send(path, job)` (if given) then posts the full-quality Short to #ready-to-post
-    for TikTok/Reels; the file is only deleted once that worked."""
+    `social(path, job)` (if given, instagram.Crossposter) copies it to exports/tiktok/
+    and auto-posts the Instagram Reel. `send(path, job)` (if given) then posts the
+    full-quality Short to #ready-to-post; the file is only deleted once that worked."""
     now = now or time.time()
     if job.get("status") != "ready":
         raise ValueError(f"job {job['id']} is {job.get('status')}, not ready")
@@ -437,6 +438,14 @@ def upload_job(job: dict, lcfg: dict, jobs: Jobs, subs: Submissions, yt,
     subs.append({"uploaded_uk": uk_stamp(now), "youtube_url": url, "title": job["title"],
                  "video_id": vid, "job_id": job["id"], "source_vod": job.get("vod_link") or ""})
     jobs.save(job)  # the upload is recorded even if the Discord step fails
+    if social is not None:
+        try:
+            social(d / "short.mp4", job, now=now)
+        except Exception as e:  # noqa: BLE001 - YouTube is done; Instagram retries later
+            log.warning("lacy job %s: TikTok/Instagram step failed: %s", job["id"], e)
+        if job.get("instagram_url"):
+            subs.set_links(job["id"], {"instagram": job["instagram_url"]})
+        jobs.save(job)
     if send is not None:
         deliver_job(job, jobs, send)
     else:
@@ -476,20 +485,35 @@ def crosspost_caption(job: dict) -> str:
 
 
 def video_blocks(job: dict) -> list[tuple[str, str]]:
-    """What to paste: a caption per platform, then the command that logs both links."""
-    cap = crosspost_caption(job)
-    return [("TikTok caption", cap), ("Instagram Reels caption", cap),
-            ("Then log both links (for Content Rewards)",
-             f"cd /opt/spikebot && sudo -u spikebot venv/bin/python -m spikebot.lacy posted {job['id']} "
-             "--tiktok TIKTOK_URL --instagram INSTAGRAM_URL")]
+    """What to paste: a caption per platform still to post by hand, then the command
+    that logs the links. Instagram is skipped once it was auto-posted."""
+    cmd = f"cd /opt/spikebot && sudo -u spikebot venv/bin/python -m spikebot.lacy posted {job['id']} "
+    tiktok = job.get("tiktok_caption") or crosspost_caption(job)
+    if job.get("instagram_url") or job.get("instagram_status") == "waiting":
+        return [("TikTok caption", tiktok), ("Then log the TikTok link (for Content Rewards)",
+                                             cmd + "--tiktok TIKTOK_URL")]
+    insta = job.get("instagram_caption") or crosspost_caption(job)
+    return [("TikTok caption", tiktok), ("Instagram Reels caption", insta),
+            ("Then log both links (for Content Rewards)", cmd + "--tiktok TIKTOK_URL --instagram INSTAGRAM_URL")]
 
 
 def send_video(dcfg: dict, path: Path, job: dict, **kw) -> str:
     """#ready-to-post message for an uploaded Lacy Short (original file, no re-encode)."""
     from . import delivery
+    ig = job.get("instagram_status")
+    if job.get("instagram_url"):
+        todo = "now post on **TikTok**"
+    elif ig == "waiting":
+        todo = "now post on **TikTok** (Instagram auto-posts once the daily Reels cap allows)"
+    elif ig == "failed":
+        todo = ("now post on **TikTok** · Instagram auto-post failed, retrying hourly"
+                " (post it by hand and log it to stop that)")
+    else:
+        todo = "now post on **TikTok + Instagram**"
     bits = ([f"{job['duration']:g}s"] if job.get("duration") else []) + \
            ([f"YouTube \u2705 <{job['youtube_url']}>"] if job.get("youtube_url") else []) + \
-           ["now post on **TikTok + Instagram**"]
+           ([f"Instagram \u2705 <{job['instagram_url']}>"] if job.get("instagram_url") else []) + \
+           [todo]
     return delivery.send(dcfg, path, "lacy", bits, video_blocks(job), name=f"lacy_{job['id']}.mp4", **kw)
 
 
@@ -695,7 +719,10 @@ def main(argv: list[str] | None = None) -> int:
         try:
             yt = YouTube(cfg.get("youtube_client_id", ""), cfg.get("youtube_client_secret", ""),
                          cfg.get("youtube_refresh_token", ""))
-            job = upload_job(job, lcfg, jobs, subs, yt, send=send)
+            from . import instagram
+            import os
+            social = instagram.crossposter(cfg, Path(args.config).resolve().parent, dict(os.environ))
+            job = upload_job(job, lcfg, jobs, subs, yt, send=send, social=social)
         except (ValueError, YouTubeError) as e:
             print(f"NOT uploaded: {e}")
             return 1
@@ -703,6 +730,10 @@ def main(argv: list[str] | None = None) -> int:
         if job.get("reason"):
             print(job["reason"])
         print(f"Logged to {lcfg['submissions_csv']}")
+        if job.get("tiktok_export"):
+            print(f"TikTok: {job['tiktok_export']} (+ caption .txt)")
+        print(f"Instagram: {job.get('instagram_url') or job.get('instagram_status') or 'off'}"
+              + (f" ({job['instagram_error']})" if job.get("instagram_error") else ""))
         if send is not None:
             print(f"#ready-to-post: {job.get('delivered') or 'FAILED (file kept, see reason)'}")
         return 0
