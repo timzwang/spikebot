@@ -1,5 +1,43 @@
 # CLAUDE.md
 
+## Project
+
+Automated GTA 6 Shorts channel (gta-6-clipped-yt). Tim runs everything. The goal is
+revenue on a budget of about £20/month. Give all times in UK time.
+
+## Hard rules
+
+- Main income is clipping programmes: Adin Ross, Seal (via Content Rewards) and Lacy
+  (via Reach). Channels with `programme: null` need Tim to check permission before
+  anything is posted.
+- Never write code that downloads video from streamers who haven't allowed clipping.
+- GTA gameplay only. Skip gambling/casino segments.
+- Rockstar policy: no isolated cutscenes, endings, story spoilers or leaked footage.
+- Every Short must add original value (captions, hook, context). Never raw re-uploads,
+  so it stays within YouTube's reused content rules.
+- Never commit or print secrets (Discord webhook, Twitch secret, Google OAuth JSON).
+
+## Still to build
+
+- **Editor:** vertical 1080x1920, word-level captions, programme watermark/hashtags,
+  optional AI voiceover hook.
+- **Review queue:** Tim approves each clip.
+- **Uploader:** YouTube, plus the same edit to TikTok and Reels.
+
+## Deadlines
+
+- GTA 6 launches Thu 19 Nov 2026; big streams from about 05:00 UK.
+- YouTube Partner Program Shorts threshold doubles to 20M views/90 days from 1 Feb 2027.
+- Google Cloud $300 trial ends about 14 Feb 2027: downsize the VM or move before then.
+
+## Known issues
+
+- The Kick key auto-lookup returns HTTP 400, so the fallback key from config is used.
+  If the logs show `4001` errors, the key has rotated (see README for how to find the
+  new one).
+
+## The spike bot (this repo)
+
 Spike bot for the GTA 6 Clipped YouTube channel. It reads live public chat on Kick and
 Twitch, learns each channel's normal chat rate, and flags moments when chat suddenly
 surges (laughing, "NO WAY", "clip it"). Each moment is saved with a suggested VOD clip
@@ -8,7 +46,7 @@ window and, if it qualifies, posted to a Discord webhook. It never downloads vid
 `README.md` is the user-facing guide (install, config fields, useful commands). Keep
 it in sync when behaviour or config changes.
 
-## Layout
+### Layout
 
 - `spikebot/detector.py`: pure detection logic, no networking. `SpikeDetector.add_message()`
   takes each chat line; `tick(now)` runs once a second and returns a `Spike` when one
@@ -19,7 +57,7 @@ it in sync when behaviour or config changes.
   unique-user ratio, so single-user spam scores low.
 - `spikebot/sources.py`: chat and stream-state sources.
   - Kick: an unofficial Pusher websocket. The key/cluster are scraped fresh on every
-    connect (`kick_pusher_credentials`); config values are only a fallback. Channel info
+    connect (`kick_pusher_credentials`), falling back to the config values (currently always; see Known issues). Channel info
     comes from `kick.com/api/v2/channels/<slug>` via `curl_cffi` (gets past Cloudflare).
     `chatroom_id` can be set in config if the lookup is blocked.
   - Twitch: anonymous IRC for chat; Helix (`TwitchHelix`) for live/category only when
@@ -38,7 +76,7 @@ it in sync when behaviour or config changes.
 - `config.example.json`: config template. A real `config.json` holds the Discord webhook
   and Twitch secret, so it is gitignored. Never commit it.
 
-## Commands
+### Commands
 
 ```bash
 python -m spikebot.main --config config.json           # run forever
@@ -46,7 +84,7 @@ python -m spikebot.main --config config.json --check   # 60s connection test; al
 python -m pytest -q                                    # tests (pytest isn't in requirements.txt; install it first)
 ```
 
-## Deployment (this server)
+### Deployment (this server)
 
 - Deployed copy: `/opt/spikebot` (owned by `spikebot`), with its own venv and
   `config.json`. It is **not** a git checkout. Changes in this repo go live only once
@@ -57,12 +95,10 @@ python -m pytest -q                                    # tests (pytest isn't in 
 - The live config contains real secrets (Discord webhook, Twitch secret). Don't print
   them or paste them into commits, logs or external requests.
 
-## Conventions
+### Conventions
 
 - Python 3.11+ syntax (`X | None`), `from __future__ import annotations`, asyncio throughout.
 - Dependencies are kept minimal (`websockets`, `curl_cffi`); add new ones to `requirements.txt`.
 - Keep `detector.py` free of I/O so it stays testable with simulated timestamps.
 - Network failures should log and retry rather than crash the service (systemd restarts
   it anyway).
-- Channels can be posted only with a clipping programme. `programme: null` means no
-  permission, and the alert warns about that.
