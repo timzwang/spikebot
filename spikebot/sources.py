@@ -19,6 +19,12 @@ from curl_cffi.requests import AsyncSession
 log = logging.getLogger("sources")
 
 ChatCallback = Callable[[float, str, str], None]  # (unix_ts, user, text)
+# (event, detail): event is "connected", "disconnected" or "key_error"
+StatusCallback = Callable[[str, str], None]
+
+
+def _no_status(event: str, detail: str) -> None:
+    pass
 
 
 # --------------------------------------------------------------------------
@@ -91,11 +97,32 @@ async def kick_pusher_credentials() -> tuple[str, str]:
     return FALLBACK_KICK_PUSHER
 
 
+def _pusher_error_code(data) -> int | None:
+    """Pusher error payloads arrive as a dict or a JSON string: {"code": 4001, ...}."""
+    if isinstance(data, str):
+        try:
+            data = json.loads(data)
+        except ValueError:
+            return None
+    code = data.get("code") if isinstance(data, dict) else None
+    return code if isinstance(code, int) else None
+
+
+def _close_code(exc: BaseException) -> int | None:
+    """Websocket close code from a websockets ConnectionClosed error, if any."""
+    for frame in (getattr(exc, "rcvd", None), getattr(exc, "sent", None)):
+        if frame is not None and getattr(frame, "code", None):
+            return frame.code
+    return None
+
+
 async def run_kick_chat(slug: str, on_msg: ChatCallback, pusher_key: str | None = None,
-                        cluster: str | None = None, chatroom_id: int | None = None) -> None:
+                        cluster: str | None = None, chatroom_id: int | None = None,
+                        on_status: StatusCallback = _no_status) -> None:
     """Listen to a Kick chatroom forever, reconnecting on errors.
     With no key (or a retired one) set, the current key is fetched on every connect."""
     fixed = pusher_key if pusher_key and pusher_key not in RETIRED_KICK_KEYS else None
+    key = fixed or "?"
     backoff = 2
     while True:
         try:
@@ -117,6 +144,7 @@ async def run_kick_chat(slug: str, on_msg: ChatCallback, pusher_key: str | None 
                         }))
                     elif ev == "pusher_internal:subscription_succeeded":
                         log.info("kick/%s subscribed (key %s, cluster %s)", slug, key, clus)
+                        on_status("connected", "")
                         backoff = 2
                     elif ev == "pusher:ping":
                         await ws.send(json.dumps({"event": "pusher:pong", "data": {}}))
@@ -128,10 +156,15 @@ async def run_kick_chat(slug: str, on_msg: ChatCallback, pusher_key: str | None 
                         on_msg(time.time(), user, data.get("content", ""))
                     elif ev == "pusher:error":
                         log.warning("kick/%s pusher error: %s", slug, msg.get("data"))
+                        if _pusher_error_code(msg.get("data")) == 4001:
+                            on_status("key_error", key)
         except asyncio.CancelledError:
             raise
         except Exception as e:  # noqa: BLE001 - keep listening whatever happens
             log.warning("kick/%s disconnected (%s); retry in %ss", slug, e, backoff)
+            if _close_code(e) == 4001:
+                on_status("key_error", key)
+            on_status("disconnected", str(e)[:200])
             await asyncio.sleep(backoff)
             backoff = min(backoff * 2, 120)
 
@@ -153,7 +186,8 @@ def _parse_privmsg(line: str) -> tuple[str, str] | None:
         return None
 
 
-async def run_twitch_chat(channel: str, on_msg: ChatCallback) -> None:
+async def run_twitch_chat(channel: str, on_msg: ChatCallback,
+                          on_status: StatusCallback = _no_status) -> None:
     """Anonymous read-only Twitch IRC over websocket, reconnecting forever."""
     url = "wss://irc-ws.chat.twitch.tv:443"
     backoff = 2
@@ -172,6 +206,8 @@ async def run_twitch_chat(channel: str, on_msg: ChatCallback) -> None:
                         if line.startswith("PING"):
                             await ws.send("PONG :tmi.twitch.tv")
                             continue
+                        if f" JOIN #{channel.lower()}" in line:
+                            on_status("connected", "")
                         parsed = _parse_privmsg(line)
                         if parsed:
                             on_msg(time.time(), *parsed)
@@ -179,6 +215,7 @@ async def run_twitch_chat(channel: str, on_msg: ChatCallback) -> None:
             raise
         except Exception as e:  # noqa: BLE001
             log.warning("twitch/%s disconnected (%s); retry in %ss", channel, e, backoff)
+            on_status("disconnected", str(e)[:200])
             await asyncio.sleep(backoff)
             backoff = min(backoff * 2, 120)
 

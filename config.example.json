@@ -10,6 +10,8 @@
   "min_score_to_alert": 3,
 
   "discord_webhook_url": "",
+  "status_webhook_url": "",
+  "summary_webhook_url": "",
 
   "twitch_client_id": "",
   "twitch_client_secret": "",

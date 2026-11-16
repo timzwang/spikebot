@@ -43,6 +43,16 @@ Twitch, learns each channel's normal chat rate, and flags moments when chat sudd
 surges (laughing, "NO WAY", "clip it"). Each moment is saved with a suggested VOD clip
 window and, if it qualifies, posted to a Discord webhook. It never downloads video.
 
+It posts to three Discord webhooks, which must stay separate:
+
+| Config field | Channel | What goes there |
+|---|---|---|
+| `discord_webhook_url` | #moments | Clip moments only (`candidate` spikes) |
+| `status_webhook_url` | #status | Bot health: start/restart, streamer live/offline (with category), chat down >5 min and reconnected, Kick 4001 key error, disk <20% free |
+| `summary_webhook_url` | #daily-summary | 22:00 UK daily summary: moments per streamer + top 3 by score (last 24h) |
+
+An empty field disables that channel; the message is still logged.
+
 `README.md` is the user-facing guide (install, config fields, useful commands). Keep
 it in sync when behaviour or config changes.
 
@@ -62,15 +72,33 @@ it in sync when behaviour or config changes.
     `chatroom_id` can be set in config if the lookup is blocked.
   - Twitch: anonymous IRC for chat; Helix (`TwitchHelix`) for live/category only when
     `twitch_client_id`/`secret` are set, otherwise Twitch moments are never
-    category-filtered.
+    category-filtered **and Twitch live/offline status alerts don't fire**.
+  - Both readers take an `on_status(event, detail)` callback: `connected`,
+    `disconnected`, or `key_error` (Kick 4001, from a `pusher:error` event or a 4001
+    websocket close code).
+- `spikebot/status.py`: pure logic for #status and #daily-summary, with explicit
+  timestamps so it is testable. `Notifier` drops a repeat of the same alert key
+  (e.g. `live:kick/adinross`, `disk`, `start`) within 30 min. `StatusState` persists
+  that history, `last_seen` and `last_summary_date` to `data/status_state.json`, so a
+  crash loop can't spam and a restart is reported as "restarted, last seen X".
+  `ConnectionWatch` counts a channel as down from its first disconnect (or from startup
+  if it never connected) and alerts after 5 min, then again on reconnect.
+  `LiveWatch` turns polls into live/offline events (offline at startup is silent).
+  `next_summary_time` handles GMT/BST; a summary missed while the bot was down is
+  sent on start if it's still before midnight UK.
 - `spikebot/main.py`: `Bot` wires it together. `ticker()` drives the detectors,
   `poll_state()` refreshes live/category/start time every 120s, `handle()` sets the
   status (`candidate` / `low_score` / `filtered_category`) and saves *every* spike
   through `Store` (`data/spikes.jsonl` + `data/spikes.db` SQLite). `alert()` posts only
   `candidate` spikes to Discord as plain `content` text (no embeds, max 1900 chars).
   Times are shown in UK time (`Europe/London`); stream offsets are `HH:MM:SS` from the
-  stream start.
+  stream start. `status_loop()` (every 30s or on an event) sends #status alerts and
+  checks disk every 5 min; `summary_loop()` posts the daily summary. All Discord posts
+  go through `post_discord()`.
 - `tests/test_detector.py`: simulated-chat tests for the detector plus the Kick key parser.
+- `tests/test_status.py`: alert de-duplication, disconnect/reconnect timing, live/offline,
+  4001 detection, summary timing and content, plus an end-to-end `Bot` test with a fake
+  Discord (it also checks nothing leaks into #moments).
 - `setup.sh`: one-shot root installer for Ubuntu. Creates the `spikebot` system user,
   copies the code to `/opt/spikebot`, builds a venv, and installs `spikebot.service`.
 - `config.example.json`: config template. A real `config.json` holds the Discord webhook
@@ -80,8 +108,10 @@ it in sync when behaviour or config changes.
 
 ```bash
 python -m spikebot.main --config config.json           # run forever
-python -m spikebot.main --config config.json --check   # 60s connection test; also posts a test message to Discord
-python -m pytest -q                                    # tests (pytest isn't in requirements.txt; install it first)
+python -m spikebot.main --config config.json --check   # 60s connection test: message counts, disk, summary preview,
+                                                       # and a test message to each configured webhook
+python3 -m venv .venv && .venv/bin/pip install -r requirements.txt -r requirements-dev.txt
+.venv/bin/python -m pytest -q                          # tests (.venv is gitignored)
 ```
 
 ### Deployment (this server)
@@ -89,10 +119,12 @@ python -m pytest -q                                    # tests (pytest isn't in 
 - Deployed copy: `/opt/spikebot` (owned by `spikebot`), with its own venv and
   `config.json`. It is **not** a git checkout. Changes in this repo go live only once
   they are copied over (`setup.sh` does that; it keeps an existing `config.json`), then
-  `sudo systemctl restart spikebot`.
+  `sudo systemctl restart spikebot`. For a code-only update:
+  `sudo cp spikebot/*.py /opt/spikebot/spikebot/ && sudo chown -R spikebot:spikebot /opt/spikebot/spikebot`.
+  Restarting sends a "restarted" alert to #status (at most one per 30 min).
 - Service: `systemctl status spikebot`, logs with `journalctl -u spikebot -f`.
 - Live data: `/opt/spikebot/data/`. Don't write test spikes into it.
-- The live config contains real secrets (Discord webhook, Twitch secret). Don't print
+- The live config contains real secrets (three Discord webhooks, Twitch secret). Don't print
   them or paste them into commits, logs or external requests.
 
 ### Conventions
@@ -101,4 +133,4 @@ python -m pytest -q                                    # tests (pytest isn't in 
 - Dependencies are kept minimal (`websockets`, `curl_cffi`); add new ones to `requirements.txt`.
 - Keep `detector.py` free of I/O so it stays testable with simulated timestamps.
 - Network failures should log and retry rather than crash the service (systemd restarts
-  it anyway).
+  it anyway). Status/summary code must never take the bot down.

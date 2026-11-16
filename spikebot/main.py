@@ -10,6 +10,7 @@ import argparse
 import asyncio
 import json
 import logging
+import socket
 import sqlite3
 import time
 from dataclasses import asdict
@@ -19,6 +20,7 @@ from zoneinfo import ZoneInfo
 
 from curl_cffi.requests import AsyncSession
 
+from . import status as st_
 from .detector import DetectorConfig, Spike, SpikeDetector
 from .sources import (TwitchHelix, kick_channel_info, kick_stream_state,
                       run_kick_chat, run_twitch_chat)
@@ -75,6 +77,23 @@ class Store:
              rec["clip_start"], rec["clip_end"], rec["category"], rec["title"], json.dumps(rec)))
         self.db.commit()
 
+    def candidates_since(self, ts: float) -> list[dict]:
+        cur = self.db.execute(
+            "SELECT platform, channel, score, onset_uk, stream_offset_start FROM spikes"
+            " WHERE status = 'candidate' AND onset >= ? ORDER BY onset", (ts,))
+        cols = [c[0] for c in cur.description]
+        return [dict(zip(cols, row)) for row in cur.fetchall()]
+
+
+async def post_discord(url: str, content: str) -> None:
+    try:
+        async with AsyncSession() as s:
+            r = await s.post(url, json={"content": content[:1900]}, timeout=15)
+            if r.status_code >= 300:
+                log.warning("discord post failed: HTTP %s %s", r.status_code, r.text[:200])
+    except Exception as e:  # noqa: BLE001
+        log.warning("discord post failed: %s", e)
+
 
 class Bot:
     def __init__(self, cfg: dict):
@@ -95,6 +114,16 @@ class Bot:
         if cfg.get("twitch_client_id") and cfg.get("twitch_client_secret"):
             self.helix = TwitchHelix(cfg["twitch_client_id"], cfg["twitch_client_secret"])
 
+        # health alerts (#status) and the daily summary (#daily-summary)
+        self.data_dir = Path(cfg.get("data_dir", "data"))
+        self.status_state = st_.StatusState(self.data_dir / "status_state.json")
+        self.notifier = st_.Notifier(cfg.get("status_webhook_url") or None,
+                                     self.status_state, post_discord)
+        self.summary_url = cfg.get("summary_webhook_url") or None
+        self.conn = st_.ConnectionWatch(self.detectors, time.time())
+        self.live = st_.LiveWatch()
+        self.status_events: asyncio.Queue | None = None
+
     def on_msg(self, key):
         det = self.detectors[key]
 
@@ -113,8 +142,14 @@ class Bot:
                         self.state[key] = kick_stream_state(await kick_channel_info(name))
                     elif self.helix:
                         self.state[key] = await self.helix.stream_state(name)
+                    else:
+                        continue
                 except Exception as e:  # noqa: BLE001
                     log.debug("state %s/%s failed: %s", platform, name, e)
+                    continue
+                change = self.live.update(key, self.state[key])
+                if change:
+                    await self.live_alert(key, *change)
             await asyncio.sleep(120)
 
     async def ticker(self) -> None:
@@ -175,32 +210,133 @@ class Bot:
             f"Programme: {prog}",
             "Chat said: " + " | ".join(rec["sample"][:5])[:600],
         ]
-        try:
-            async with AsyncSession() as s:
-                await s.post(url, json={"content": "\n".join(lines)[:1900]}, timeout=15)
-        except Exception as e:  # noqa: BLE001
-            log.warning("discord alert failed: %s", e)
+        await post_discord(url, "\n".join(lines))
 
-    def chat_tasks(self) -> list:
+    # ---- status alerts -----------------------------------------------------
+    def on_status(self, key):
+        def cb(event: str, detail: str) -> None:
+            now = time.time()
+            if event == "connected":
+                outage = self.conn.connected(key, now)
+                if outage is not None:
+                    self._queue("reconnected", key, outage)
+            elif event == "disconnected":
+                self.conn.disconnected(key, now)
+            elif event == "key_error":
+                self._queue("key_error", key, detail)
+        return cb
+
+    def _queue(self, *event) -> None:
+        if self.status_events is not None:
+            self.status_events.put_nowait(event)
+
+    def _name(self, key) -> str:
+        prog = self.meta[key].get("programme")
+        return f"**{key[0]}/{key[1]}**" + (f" ({prog})" if prog else "")
+
+    async def live_alert(self, key, change: str, category: str) -> None:
+        if change == "live":
+            started = st_.uk_time(parse_time(self.state[key].get("started_at")) or time.time())
+            text = f"🟢 {self._name(key)} is LIVE: {category} (since {started})"
+        else:
+            text = f"⚫ {self._name(key)} went offline (was: {category})"
+        await self.notifier.send(f"{change}:{key[0]}/{key[1]}", text)
+
+    async def startup_alert(self) -> None:
+        last = self.status_state.data.get("last_seen")
+        chans = ", ".join(f"{p}/{n}" for p, n in self.detectors)
+        if last:
+            head = (f"🔄 Spike bot **restarted** on {socket.gethostname()} at {st_.uk_time(time.time())}."
+                    f" Previous run last seen {st_.uk_time(last)}"
+                    f" ({st_.duration(time.time() - last)} ago).")
+        else:
+            head = f"🚀 Spike bot **started** on {socket.gethostname()} at {st_.uk_time(time.time())}."
+        await self.notifier.send("start", f"{head}\nTracking: {chans}")
+
+    async def status_loop(self) -> None:
+        self.status_events = asyncio.Queue()
+        last_disk = 0.0
+        while True:
+            try:
+                event = await asyncio.wait_for(self.status_events.get(), timeout=30)
+            except asyncio.TimeoutError:
+                event = None
+            now = time.time()
+            try:
+                if event and event[0] == "reconnected":
+                    _, key, outage = event
+                    await self.notifier.send(f"reconnected:{key[0]}/{key[1]}",
+                                             f"✅ {self._name(key)} chat reconnected"
+                                             f" after {st_.duration(outage)}.")
+                elif event and event[0] == "key_error":
+                    _, key, used = event
+                    await self.notifier.send(
+                        "kick_key_4001",
+                        f"🔑 Kick returned **error 4001** for {key[0]}/{key[1]}: the chat key"
+                        f" `{used}` has rotated. Kick chat is down until kick_pusher_key /"
+                        f" kick_pusher_cluster are updated (README: 'If Kick chat shows 0 messages').")
+                for key, since in self.conn.due(now):
+                    await self.notifier.send(
+                        f"disconnected:{key[0]}/{key[1]}",
+                        f"🔴 {self._name(key)} chat has been disconnected for"
+                        f" {st_.duration(now - since)} (since {st_.uk_time(since)}).")
+                if now - last_disk >= 300:
+                    last_disk = now
+                    free = st_.disk_free_share(self.data_dir)
+                    if free < st_.DISK_MIN_FREE:
+                        await self.notifier.send(
+                            "disk", f"💾 Disk space low: only **{free:.0%} free** on the bot server.")
+                self.status_state.data["last_seen"] = now
+                self.status_state.save()
+            except Exception as e:  # noqa: BLE001 - alerts must never take the bot down
+                log.warning("status loop error: %s", e)
+
+    def summary_text(self, now: float) -> str:
+        return st_.build_summary(self.store.candidates_since(now - 86400),
+                                 list(self.detectors), now)
+
+    async def summary_loop(self) -> None:
+        if st_.summary_due_on_start(time.time(), self.status_state.data.get("last_summary_date")):
+            await self.send_summary()
+        while True:
+            await asyncio.sleep(max(1.0, st_.next_summary_time(time.time()) - time.time()))
+            await self.send_summary()
+            await asyncio.sleep(60)  # never fire twice for the same 22:00
+
+    async def send_summary(self) -> None:
+        now = time.time()
+        self.status_state.data["last_summary_date"] = st_.uk_time(now, "%Y-%m-%d")
+        self.status_state.save()
+        text = self.summary_text(now)
+        log.info("daily summary: %s", text.replace("\n", " | "))
+        if self.summary_url:
+            await post_discord(self.summary_url, text)
+
+    # ---- running -----------------------------------------------------------
+    def chat_tasks(self, with_status: bool = True) -> list:
         tasks = []
         for c in self.channels:
             key = (c["platform"], c["name"].lower())
+            status = self.on_status(key) if with_status else (lambda e, d: None)
             if c["platform"] == "kick":
                 tasks.append(run_kick_chat(c["name"].lower(), self.on_msg(key),
                                            self.cfg.get("kick_pusher_key") or None,
                                            self.cfg.get("kick_pusher_cluster") or None,
-                                           c.get("chatroom_id")))
+                                           c.get("chatroom_id"), on_status=status))
             elif c["platform"] == "twitch":
-                tasks.append(run_twitch_chat(c["name"].lower(), self.on_msg(key)))
+                tasks.append(run_twitch_chat(c["name"].lower(), self.on_msg(key),
+                                             on_status=status))
             else:
                 raise ValueError(f"unknown platform {c['platform']}")
         return tasks
 
     async def run(self) -> None:
-        await asyncio.gather(self.ticker(), self.poll_state(), *self.chat_tasks())
+        await self.startup_alert()
+        await asyncio.gather(self.ticker(), self.poll_state(), self.status_loop(),
+                             self.summary_loop(), *self.chat_tasks())
 
     async def check(self, seconds: int = 60) -> None:
-        tasks = [asyncio.create_task(t) for t in self.chat_tasks()]
+        tasks = [asyncio.create_task(t) for t in self.chat_tasks(with_status=False)]
         await asyncio.sleep(seconds)
         for t in tasks:
             t.cancel()
@@ -219,11 +355,20 @@ class Bot:
                 print(f"  {key[0]}/{key[1]} live={st['live']} category={st['category']!r}")
             except Exception as e:  # noqa: BLE001
                 print(f"  {key[0]}/{key[1]} info lookup failed: {e}")
-        if self.cfg.get("discord_webhook_url"):
-            async with AsyncSession() as s:
-                await s.post(self.cfg["discord_webhook_url"],
-                             json={"content": "Spike bot connection test: alerts are working."})
-            print("  Sent a test message to Discord.")
+        free = st_.disk_free_share(self.data_dir)
+        print(f"  disk free: {free:.0%} (status alert below {st_.DISK_MIN_FREE:.0%})")
+        print("\nDaily summary preview (last 24h):\n" + self.summary_text(time.time()))
+        hooks = [("discord_webhook_url", "#moments", "Spike bot connection test: alerts are working."),
+                 ("status_webhook_url", "#status", "Spike bot connection test: status alerts are working."),
+                 ("summary_webhook_url", "#daily-summary",
+                  "Spike bot connection test: the daily summary will post here at 22:00 UK time.")]
+        print()
+        for field, chan, msg in hooks:
+            if self.cfg.get(field):
+                await post_discord(self.cfg[field], msg)
+                print(f"  Sent a test message to {chan} ({field}).")
+            else:
+                print(f"  {field} not set: {chan} messages are disabled.")
 
 
 def main() -> None:

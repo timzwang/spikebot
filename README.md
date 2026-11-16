@@ -47,6 +47,13 @@ journalctl -u spikebot -f               # live log, Ctrl+C to exit
   (free at dev.twitch.tv/console), otherwise Twitch moments are never filtered.
 - `min_score_to_alert`: raise to 5 if Discord gets too noisy, lower to 2 if too quiet.
 - `discord_webhook_url`: Discord server → channel settings → Integrations → Webhooks → New → Copy URL.
+  This is #moments: clip moments only.
+- `status_webhook_url`: a second webhook (e.g. #status) for bot health. Alerts: bot started/restarted,
+  a streamer went live or offline (with category), a channel's chat disconnected for 5+ minutes
+  and when it reconnects, Kick error 4001 (chat key rotated), disk under 20% free. The same alert
+  is never repeated within 30 minutes. Twitch live/offline needs `twitch_client_id`/`secret`.
+- `summary_webhook_url`: a third webhook (#daily-summary). At 22:00 UK time every day: moments
+  per streamer and the top 3 by score for the last 24 hours.
 - `detector`: tuning. `ratio` and `z` control sensitivity (higher = fewer, bigger moments);
   `pre_roll_s` / `post_roll_s` control how much footage either side of the reaction.
 
@@ -76,5 +83,10 @@ normally fixes itself. Leave `kick_pusher_key` and `kick_pusher_cluster` empty.
 
 ## Tests
 
-`python -m pytest -q` runs simulated-chat tests: no false alarms in steady chat,
-bursts caught with the right timing, spam scored low, big chats need a real jump.
+```bash
+python3 -m venv .venv && .venv/bin/pip install -r requirements.txt -r requirements-dev.txt
+.venv/bin/python -m pytest -q
+```
+
+Simulated-chat tests (no false alarms in steady chat, bursts caught with the right timing,
+spam scored low, big chats need a real jump) plus tests for status alerts and the daily summary.
