@@ -180,7 +180,7 @@ class SpikeDetector:
         )
 
         clip_start = a["onset"] - cfg.pre_roll_s
-        clip_end = max(a["onset"] + cfg.post_roll_s, a["peak_time"])
+        clip_end = max(a["onset"] + cfg.post_roll_s, a["peak_time"] + 5)
         clip_end = min(clip_end, clip_start + cfg.max_clip_s)
 
         return Spike(
