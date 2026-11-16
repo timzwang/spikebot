@@ -46,8 +46,11 @@ def test_lacy_short_is_sent_after_upload_then_deleted(tmp_path):
     (call,) = fake.calls
     assert call["file"] == b"\x01" * 3_000_000 and call["filename"] == f"lacy_{job['id']}.mp4"
     c = call["payload"]["content"]
-    assert c.startswith("**Lacy** · 41.5s · YouTube: <https://youtube.com/shorts/vid1>")
-    assert f"Title:\n```{job['title']}```" in c and f"```{job['title']} #Lacy #GTA6 #GTA```" in c
+    assert c.startswith("**Lacy** · 41.5s · YouTube ✅ <https://youtube.com/shorts/vid1>"
+                        " · now post on **TikTok + Instagram**")
+    cap = f"```{job['title']} #Lacy #GTA6 #GTA```"
+    assert f"TikTok caption:\n{cap}" in c and f"Instagram Reels caption:\n{cap}" in c
+    assert f"spikebot.lacy posted {job['id']} --tiktok TIKTOK_URL --instagram INSTAGRAM_URL" in c
     assert not (jobs.dir(job["id"]) / "short.mp4").exists()
 
 
@@ -78,3 +81,49 @@ def test_lacy_without_webhook_behaves_as_before(tmp_path):
     jobs, subs, job, _ = lacy_setup(tmp_path, 1000)
     job = L.upload_job(job, L.settings({}), jobs, subs, FakeYT(), now=T)
     assert "delivered" not in job and not (jobs.dir(job["id"]) / "short.mp4").exists()
+
+
+# ---- all three platforms: TikTok / Instagram links logged next to YouTube -----------
+def test_crosspost_url_check():
+    assert L.crosspost_url_ok("tiktok", "https://www.tiktok.com/@gta6.clipped/video/7300000000000000000")
+    assert L.crosspost_url_ok("instagram", "https://www.instagram.com/reel/C1abcDEF/")
+    for p, u in (("tiktok", "https://www.instagram.com/reel/x/"), ("tiktok", "http://tiktok.com/@a/video/1"),
+                 ("instagram", "https://evilinstagram.com/reel/x"), ("tiktok", "https://www.tiktok.com/"),
+                 ("instagram", "")):
+        assert not L.crosspost_url_ok(p, u), u
+
+
+def test_old_csv_gets_new_columns_and_links(tmp_path):
+    f = tmp_path / "s.csv"
+    f.write_text("uploaded_uk,youtube_url,title,video_id,job_id,source_vod\n"
+                 "2026-11-19 06:00:01 GMT,https://youtube.com/shorts/a,T1,a,J1,v\n")
+    subs = L.Submissions(f)
+    subs.append({"uploaded_uk": "2026-11-19 07:00:00 GMT", "youtube_url": "https://youtube.com/shorts/b",
+                 "title": "T2", "video_id": "b", "job_id": "J2"})
+    assert f.read_text().splitlines()[0] == ",".join(L.CSV_FIELDS)
+    assert subs.set_links("J1", {"tiktok": "https://www.tiktok.com/@x/video/1"})
+    assert not subs.set_links("nope", {"tiktok": "https://www.tiktok.com/@x/video/2"})
+    rows = subs.rows()
+    assert [r["job_id"] for r in rows] == ["J1", "J2"] and rows[0]["youtube_url"] == "https://youtube.com/shorts/a"
+    assert rows[0]["tiktok_url"] == "https://www.tiktok.com/@x/video/1" and rows[0]["instagram_url"] == ""
+    assert subs.uploads_on("2026-11-19") == 2
+
+
+def test_posted_command_logs_links(tmp_path, capsys):
+    import json
+    jobs, subs = L.Jobs(tmp_path / "data"), L.Submissions(tmp_path / "subs.csv")
+    job = L.upload_job(ready_job(jobs, 1), L.settings({}), jobs, subs, FakeYT(), now=T)
+    assert L.missing_platforms(job) == ["TikTok", "Instagram"]
+    cfgf = tmp_path / "config.json"
+    cfgf.write_text(json.dumps({"data_dir": str(tmp_path / "data"),
+                                "lacy": {"submissions_csv": str(tmp_path / "subs.csv")}}))
+    run = lambda *a: L.main(["--config", str(cfgf), *a])
+    assert run("posted", job["id"], "--tiktok", "https://www.instagram.com/reel/x/") == 1
+    assert run("posted", job["id"], "--tiktok", "https://www.tiktok.com/@gta6.clipped/video/1") == 0
+    assert "Still to post: Instagram" in capsys.readouterr().out
+    assert run("posted", job["id"], "--instagram", "https://www.instagram.com/reel/Cabc/") == 0
+    assert "On all 3 platforms" in capsys.readouterr().out
+    row = subs.rows()[0]
+    assert row["youtube_url"] and row["tiktok_url"].endswith("/video/1") and row["instagram_url"].endswith("/Cabc/")
+    assert L.missing_platforms(jobs.load(job["id"])) == []
+    assert run("list") == 0 and "NOT YET ON" not in capsys.readouterr().out

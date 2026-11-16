@@ -153,6 +153,10 @@ it in sync when behaviour or config changes.
   a 7-day V4 signed link. Objects older than `keep_days` are deleted (dedicated bucket).
   `settings()` also reads the old Tokyo Girl names. Lacy: `upload_job(send=...)` posts the
   Short after the YouTube upload and only then deletes it; `lacy deliver ID` retries.
+  Lacy Shorts go on all 3 platforms: YouTube via API, TikTok/Instagram by hand from
+  #ready-to-post, then `lacy posted ID --tiktok URL --instagram URL` (`crosspost_url_ok`)
+  fills `tiktok_url`/`instagram_url` in the submissions CSV (`Submissions._upgrade` adds the
+  columns to old files); `lacy list` flags `missing_platforms`.
   Tested in `tests/test_delivery.py`.
 - `tests/test_tokyo_girl.py`: stories, beat grid, shot picking, tags, captions, daily quota,
   host guard, and an end-to-end silent render (needs ffmpeg).

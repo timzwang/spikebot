@@ -174,7 +174,26 @@ def tags(category: str) -> list[str]:
 # --------------------------------------------------------------------------
 # Submission log (the CSV Tim pastes into Content Rewards) and the daily cap
 # --------------------------------------------------------------------------
-CSV_FIELDS = ["uploaded_uk", "youtube_url", "title", "video_id", "job_id", "source_vod"]
+CSV_FIELDS = ["uploaded_uk", "youtube_url", "title", "video_id", "job_id", "source_vod",
+              "tiktok_url", "instagram_url"]
+# The same Short goes on all three platforms. YouTube is uploaded by the API; TikTok and
+# Instagram are posted by hand from #ready-to-post and logged with `lacy posted`.
+CROSSPOST = {"tiktok": ("TikTok", "tiktok.com"), "instagram": ("Instagram", "instagram.com")}
+
+
+def crosspost_url_ok(platform: str, url: str) -> bool:
+    from urllib.parse import urlparse
+    u = urlparse((url or "").strip())
+    host = (u.hostname or "").lower()
+    dom = CROSSPOST[platform][1]
+    return u.scheme == "https" and (host == dom or host.endswith("." + dom)) and len(u.path) > 1
+
+
+def missing_platforms(job: dict) -> list[str]:
+    """Platforms this uploaded Short still needs (names for humans)."""
+    if job.get("status") != "uploaded":
+        return []
+    return [name for p, (name, _) in CROSSPOST.items() if not job.get(f"{p}_url")]
 
 
 class Submissions:
@@ -194,8 +213,39 @@ class Submissions:
     def titles(self) -> set[str]:
         return {r["title"] for r in self.rows() if r.get("title")}
 
+    def _write_all(self, rows: list[dict]) -> None:
+        tmp = self.path.with_suffix(".tmp")
+        with tmp.open("w", newline="", encoding="utf-8") as f:
+            w = csv.DictWriter(f, fieldnames=CSV_FIELDS, extrasaction="ignore")
+            w.writeheader()
+            w.writerows(rows)
+        tmp.replace(self.path)
+
+    def _upgrade(self) -> None:
+        """A CSV written before the TikTok/Instagram columns gets them (blank)."""
+        if not self.path.exists() or self.path.stat().st_size == 0:
+            return
+        with self.path.open(newline="", encoding="utf-8") as f:
+            header = next(csv.reader(f), [])
+        if header != CSV_FIELDS:
+            self._write_all(self.rows())
+
+    def set_links(self, job_id: str, links: dict[str, str]) -> bool:
+        """Fill tiktok_url / instagram_url on that job's row. False if no row."""
+        self._upgrade()
+        rows = self.rows()
+        hit = False
+        for r in rows:
+            if r.get("job_id") == job_id:
+                r.update({f"{p}_url": u for p, u in links.items()})
+                hit = True
+        if hit:
+            self._write_all(rows)
+        return hit
+
     def append(self, row: dict) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._upgrade()
         new = not self.path.exists() or self.path.stat().st_size == 0
         with self.path.open("a", newline="", encoding="utf-8") as f:
             w = csv.DictWriter(f, fieldnames=CSV_FIELDS, extrasaction="ignore")
@@ -420,16 +470,26 @@ def deliver_job(job: dict, jobs: Jobs, send) -> str | None:
     return how
 
 
-def video_blocks(job: dict) -> list[tuple[str, str]]:
+def crosspost_caption(job: dict) -> str:
     tag = "#GTA6" if game_tag(job.get("category") or "") == "GTA 6" else "#GTA5"
-    return [("Title", job["title"]), ("TikTok / Reels caption", f"{job['title']} #Lacy {tag} #GTA")]
+    return f"{job['title']} #Lacy {tag} #GTA"
+
+
+def video_blocks(job: dict) -> list[tuple[str, str]]:
+    """What to paste: a caption per platform, then the command that logs both links."""
+    cap = crosspost_caption(job)
+    return [("TikTok caption", cap), ("Instagram Reels caption", cap),
+            ("Then log both links (for Content Rewards)",
+             f"cd /opt/spikebot && sudo -u spikebot venv/bin/python -m spikebot.lacy posted {job['id']} "
+             "--tiktok TIKTOK_URL --instagram INSTAGRAM_URL")]
 
 
 def send_video(dcfg: dict, path: Path, job: dict, **kw) -> str:
     """#ready-to-post message for an uploaded Lacy Short (original file, no re-encode)."""
     from . import delivery
     bits = ([f"{job['duration']:g}s"] if job.get("duration") else []) + \
-           ([f"YouTube: <{job['youtube_url']}>"] if job.get("youtube_url") else [])
+           ([f"YouTube \u2705 <{job['youtube_url']}>"] if job.get("youtube_url") else []) + \
+           ["now post on **TikTok + Instagram**"]
     return delivery.send(dcfg, path, "lacy", bits, video_blocks(job), name=f"lacy_{job['id']}.mp4", **kw)
 
 
@@ -540,8 +600,11 @@ def main(argv: list[str] | None = None) -> int:
     for name, hlp in (("render", "make the Short for a queued job"),
                       ("approve", "upload a ready clip to YouTube"),
                       ("deliver", "send an uploaded clip to #ready-to-post again"),
+                      ("posted", "log the TikTok/Instagram links of an uploaded clip"),
                       ("reject", "drop a clip")):
         sub.add_parser(name, help=hlp).add_argument("job")
+    for name, (label, _) in CROSSPOST.items():
+        sub.choices["posted"].add_argument(f"--{name}", metavar="URL", help=f"{label} post link")
     lay = sub.add_parser("layout", help="still image of the vertical layout, to check the facecam box")
     lay.add_argument("video")
     lay.add_argument("--at", type=float, default=5.0)
@@ -560,8 +623,10 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Lacy mode {'ON' if lcfg['enabled'] else 'OFF'} · uploads today "
               f"{subs.uploads_on(today)}/{lcfg['max_uploads_per_day']}")
         for j in jobs.all()[-30:]:
-            print(f"  {j['id']}  {j['status']:<9} score {j['score']:<5} "
-                  f"{j.get('title') or ''}  {j.get('youtube_url') or j.get('reason') or ''}")
+            todo = missing_platforms(j)
+            print(f"  {j['id']}  {j['status']:<9} score {j.get('score', '-'):<5} "
+                  f"{j.get('title') or ''}  {j.get('youtube_url') or j.get('reason') or ''}"
+                  + (f"  NOT YET ON: {', '.join(todo)}" if todo else ""))
         return 0
     if args.cmd == "layout":
         src = Path(args.video)
@@ -604,6 +669,27 @@ def main(argv: list[str] | None = None) -> int:
         how = deliver_job(job, jobs, send)
         print(f"{job['id']}: {how or 'FAILED: ' + job['reason']}")
         return 0 if how else 1
+    if args.cmd == "posted":
+        if job.get("status") != "uploaded":
+            print(f"{job['id']} is {job.get('status')}; upload it to YouTube first (approve)")
+            return 1
+        links = {p: getattr(args, p) for p in CROSSPOST if getattr(args, p)}
+        if not links:
+            print("give --tiktok URL and/or --instagram URL")
+            return 1
+        bad = [p for p, u in links.items() if not crosspost_url_ok(p, u)]
+        if bad:
+            print("not a " + " / ".join(CROSSPOST[p][0] for p in bad) + " post link: "
+                  + " ".join(links[p] for p in bad))
+            return 1
+        job.update({f"{p}_url": u.strip() for p, u in links.items()})
+        jobs.save(job)
+        if not subs.set_links(job["id"], {p: u.strip() for p, u in links.items()}):
+            print(f"warning: {job['id']} has no row in {lcfg['submissions_csv']}")
+        todo = missing_platforms(job)
+        print(f"{job['id']}: logged " + ", ".join(CROSSPOST[p][0] for p in links)
+              + (f". Still to post: {', '.join(todo)}" if todo else ". On all 3 platforms."))
+        return 0
     if args.cmd == "approve":
         from .youtube import YouTube, YouTubeError
         try:

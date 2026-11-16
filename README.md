@@ -133,8 +133,18 @@ cd /opt/spikebot && sudo -u spikebot venv/bin/python -m spikebot.lacy list
 happened that UK day), sets the thumbnail and appends a row to
 `/opt/spikebot/logs/lacy_submissions.csv` (`uploaded_uk, youtube_url, title, ...`) ready to
 paste into Content Rewards. With `LACY_AUTO_UPLOAD=true` approval is skipped (still capped).
-The full-quality Short then goes to #ready-to-post for TikTok/Reels (see "Finished videos on
-your phone").
+**Every Lacy Short goes on all three platforms.** YouTube is automatic. The full-quality
+file then arrives in #ready-to-post (see "Finished videos on your phone") with a TikTok
+caption, an Instagram Reels caption and a ready-made command. Post it on TikTok and
+Instagram, then log both links so the CSV has all three for Content Rewards:
+
+```bash
+cd /opt/spikebot && sudo -u spikebot venv/bin/python -m spikebot.lacy posted 20261119-061502 \
+  --tiktok https://www.tiktok.com/@gta6.clipped/video/... --instagram https://www.instagram.com/reel/...
+```
+
+The CSV gains `tiktok_url` and `instagram_url` columns (older files are upgraded in place).
+`lacy list` shows `NOT YET ON: TikTok, Instagram` for any Short still missing a platform.
 
 **Setup**
 
@@ -253,9 +263,9 @@ Girl sound in the app, paste the matching caption line from the `.txt`.
 Every finished video from every mode goes to one Discord channel, labelled with the mode:
 
 - **Tokyo Girl**: each edit, with the IG and TikTok captions.
-- **Lacy**: each Short once it's uploaded to YouTube (after `approve`, or automatically
-  with auto-upload), with the title, a TikTok/Reels caption and the YouTube link, so you can
-  cross-post the same file.
+- **Lacy**: each Short once it's on YouTube (after `approve`, or automatically with
+  auto-upload), with TikTok and Instagram captions and the `lacy posted` command, so the same
+  file goes on all three platforms.
 
 Text to copy is in code blocks (long-press to copy). The video is **never re-encoded or
 compressed**; you get the exact file the server made:
