@@ -522,6 +522,8 @@ ENV_KEYS = {"TWITCH_CLIENT_ID": "twitch_client_id",
             "LACY_MODE": "lacy_mode",
             "LACY_MAX_UPLOADS_PER_DAY": "lacy_max_uploads_per_day",
             "LACY_AUTO_UPLOAD": "lacy_auto_upload",
+            "TOKYO_GIRL_MODE": "tokyo_girl_mode",
+            "TOKYO_GIRL_PER_DAY": "tokyo_girl_per_day",
             "YOUTUBE_CLIENT_ID": "youtube_client_id",
             "YOUTUBE_CLIENT_SECRET": "youtube_client_secret",
             "YOUTUBE_REFRESH_TOKEN": "youtube_refresh_token"}

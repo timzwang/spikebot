@@ -81,6 +81,19 @@ rm -rf "$APP/.spikebot.old"
 chown -R spikebot:spikebot "$APP/spikebot" "$APP/requirements.txt"
 [ -d "$APP/venv" ] && chown -R spikebot:spikebot "$APP/venv"
 
+# Install/refresh the Tokyo Girl daily timer (added after the first install.sh run).
+# Never fatal: a problem here must not block the bot's own deploy.
+if [ -f "$REPO/deploy/spikebot-tokyo-girl.timer" ]; then
+    {
+        mkdir -p "$APP/exports" && chown spikebot:spikebot "$APP/exports"
+        sed "s#@APP@#$APP#g" "$REPO/deploy/spikebot-tokyo-girl.service" > /etc/systemd/system/spikebot-tokyo-girl.service
+        install -m 644 "$REPO/deploy/spikebot-tokyo-girl.timer" /etc/systemd/system/spikebot-tokyo-girl.timer
+        systemctl daemon-reload
+        systemctl is-enabled --quiet spikebot-tokyo-girl.timer \
+            || { systemctl enable --now spikebot-tokyo-girl.timer && log "enabled spikebot-tokyo-girl.timer"; }
+    } || log "WARNING: could not install the Tokyo Girl timer"
+fi
+
 systemctl restart "$SERVICE"
 echo "$HEAD" > "$STAMP"
 log "restarted $SERVICE on ${HEAD:0:7}"

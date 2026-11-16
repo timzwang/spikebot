@@ -10,6 +10,7 @@
 #   3. creates config.json and .env from the examples if they don't exist
 #   4. installs spikebot.service (runs in background, restarts on crash)
 #   5. installs spikebot-update.timer (git pull + redeploy every 5 minutes)
+#   6. installs spikebot-tokyo-girl.timer (daily Tokyo Girl edits, 06:47 UK)
 set -euo pipefail
 
 [ "$(id -u)" = 0 ] || { echo "Run as root: sudo bash $0"; exit 1; }
@@ -29,7 +30,7 @@ apt-get install -y python3 python3-venv python3-pip ffmpeg git fonts-dejavu-core
 
 echo "==> Creating service user and $APP"
 id -u spikebot >/dev/null 2>&1 || useradd --system --home "$APP" --shell /usr/sbin/nologin spikebot
-mkdir -p "$APP/data" "$APP/logs"
+mkdir -p "$APP/data" "$APP/logs" "$APP/exports"
 rm -rf "$APP/spikebot" && cp -r "$REPO/spikebot" "$APP/spikebot"
 find "$APP/spikebot" -name __pycache__ -prune -exec rm -rf {} +
 install -m 644 "$REPO/requirements.txt" "$APP/requirements.txt"
@@ -47,10 +48,13 @@ echo "==> Installing systemd units"
 sed "s#@APP@#$APP#g" "$REPO/deploy/spikebot.service" > "$UNITS/spikebot.service"
 sed "s#@REPO@#$REPO#g" "$REPO/deploy/spikebot-update.service" > "$UNITS/spikebot-update.service"
 install -m 644 "$REPO/deploy/spikebot-update.timer" "$UNITS/spikebot-update.timer"
+sed "s#@APP@#$APP#g" "$REPO/deploy/spikebot-tokyo-girl.service" > "$UNITS/spikebot-tokyo-girl.service"
+install -m 644 "$REPO/deploy/spikebot-tokyo-girl.timer" "$UNITS/spikebot-tokyo-girl.timer"
 chmod +x "$REPO/deploy/auto_update.sh" "$REPO/deploy/install.sh"
 systemctl daemon-reload
 systemctl enable spikebot
 systemctl enable --now spikebot-update.timer
+systemctl enable --now spikebot-tokyo-girl.timer
 
 # Mark the current commit as deployed, so the timer only restarts on new commits.
 git_ rev-parse HEAD > "$APP/.deployed_commit"
@@ -82,4 +86,8 @@ there are new commits.
   Next run / last run:     systemctl list-timers spikebot-update.timer
   Update log:              sudo journalctl -u spikebot-update -n 50
   Update now:              sudo systemctl start spikebot-update
+
+Tokyo Girl edits: made daily at 06:47 UK into $APP/exports/tokyo_girl/
+  Make them now:           sudo systemctl start spikebot-tokyo-girl
+  Log:                     sudo journalctl -u spikebot-tokyo-girl -n 50
 MSG

@@ -33,6 +33,16 @@
     "submissions_csv": "logs/lacy_submissions.csv"
   },
 
+  "tokyo_girl": {
+    "enabled": true,
+    "per_day": 2,
+    "bpm": 120,
+    "min_s": 15,
+    "max_s": 30,
+    "export_dir": "exports/tokyo_girl",
+    "media_dir": "data/tokyo_girl/media"
+  },
+
   "detector": {
     "window_s": 10,
     "warmup_s": 180,

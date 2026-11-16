@@ -130,6 +130,20 @@ it in sync when behaviour or config changes.
 - `tests/test_lacy.py`: Lacy config/env, GTA filter, titles, CSV + daily cap, layout,
   BRB detection, captions without watermark, end-to-end render on a synthetic stream
   (needs ffmpeg), and the category check at spike time inside `Bot`.
+- `spikebot/tokyo_girl.py`: **Tokyo Girl mode** (on by default; `TOKYO_GIRL_MODE`,
+  `TOKYO_GIRL_PER_DAY`, `tokyo_girl` config block). Standalone CLI, not part of `Bot`: run daily
+  by `spikebot-tokyo-girl.timer` (06:47 UK, `daily` tops up to `per_day`). Makes silent
+  (`-an`, no audio stream) 1080x1920 15-30 s edits from official Rockstar GTA VI trailers and
+  screenshots only (`fetch`: `ALLOWED_HOSTS`, yt-dlp limited to uploader Rockstar; plus a drop
+  folder `data/tokyo_girl/media/`). `Library` caches per-file analysis (scene cuts, YAVG,
+  letterbox crop) in `library.json`; `build_shots` trims trailer head/tail, dark shots and
+  `tags.json` excludes. `plan_clip` puts text cards on whole bars and cuts on beats
+  (`bpm`, default 120), picking least-used footage by the story's tags. `STORIES` hold the
+  on-screen text (last card is always a question; date windows relative to launch).
+  Output `exports/tokyo_girl/*.mp4` + `.txt` (IG/TikTok captions from `caption_ig` /
+  `caption_tiktok`). No logos/watermarks. State in `data/tokyo_girl/state.json`.
+- `tests/test_tokyo_girl.py`: stories, beat grid, shot picking, tags, captions, daily quota,
+  host guard, and an end-to-end silent render (needs ffmpeg).
 - `spikebot/messages.py`: pure Discord layouts (embeds) for #moments (`moment`), #status
   (`status`, colour by alert kind) and #daily-summary (`summary`). Times use Discord
   `<t:unix:style>` markup; `plain()` renders a payload as one log line in UK time. Chat
@@ -144,12 +158,13 @@ it in sync when behaviour or config changes.
   (`setup.sh` is a shim to it). Creates the `spikebot` user, copies the code to
   `/opt/spikebot`, builds the venv, creates `config.json`/`.env` from the examples if
   missing, and installs `spikebot.service` plus `spikebot-update.timer`
-  (templates in `deploy/`).
+  (templates in `deploy/`), and `spikebot-tokyo-girl.timer`.
 - `deploy/auto_update.sh`: run by the timer every 5 min. `git pull --ff-only` as the
   clone's owner; if HEAD differs from `/opt/spikebot/.deployed_commit` it stages the
   code, syntax-checks it, swaps it in, `pip install`s if `requirements.txt` changed and
-  restarts the bot. Never touches `config.json`, `.env` or `data/`.
-- `.env` / `.env.example`: `TWITCH_CLIENT_ID`, `TWITCH_CLIENT_SECRET`, `LACY_MODE`,
+  restarts the bot. It also installs/enables `spikebot-tokyo-girl.timer` if missing.
+  Never touches `config.json`, `.env`, `data/` or `exports/`.
+- `.env` / `.env.example`: `TWITCH_CLIENT_ID`, `TWITCH_CLIENT_SECRET`, `TOKYO_GIRL_MODE`, `TOKYO_GIRL_PER_DAY`, `LACY_MODE`,
   `LACY_MAX_UPLOADS_PER_DAY`, `LACY_AUTO_UPLOAD`, `YOUTUBE_CLIENT_ID/SECRET/REFRESH_TOKEN`. `main.apply_env()`
   overlays them on the config (environment > `.env` next to config > `.env` in cwd >
   `config.json`). Tested in `tests/test_env.py`.

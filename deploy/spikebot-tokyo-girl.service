@@ -1,0 +1,20 @@
+# Installed by deploy/install.sh (or auto_update.sh). Run daily by spikebot-tokyo-girl.timer.
+# Makes Tokyo Girl edits until today's count reaches per_day (default 2). Safe to re-run.
+# @APP@ is replaced with the install path (default /opt/spikebot).
+[Unit]
+Description=Make today's Tokyo Girl GTA 6 edits (exports/tokyo_girl)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=spikebot
+Group=spikebot
+WorkingDirectory=@APP@
+EnvironmentFile=-@APP@/.env
+Environment=PYTHONUNBUFFERED=1
+# Low priority so the chat bot never misses messages while ffmpeg renders.
+Nice=15
+IOSchedulingClass=idle
+ExecStart=@APP@/venv/bin/python -m spikebot.tokyo_girl --config @APP@/config.json daily
+TimeoutStartSec=2h

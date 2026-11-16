@@ -52,6 +52,7 @@ journalctl -u spikebot -f               # live log, Ctrl+C to exit
 |---|---|
 | `spikebot.service` | Runs the bot in the background from `/opt/spikebot`, starts on boot, restarts 10s after a crash |
 | `spikebot-update.timer` | Every 5 minutes runs `deploy/auto_update.sh` |
+| `spikebot-tokyo-girl.timer` | 06:47 UK daily: makes the Tokyo Girl edits (see below) |
 
 `deploy/auto_update.sh` does `git pull --ff-only` in the clone. **Only if there are new
 commits** it copies `spikebot/` to `/opt/spikebot`, updates the venv if `requirements.txt`
@@ -163,6 +164,83 @@ the upload still works and the review card says the thumbnail wasn't set. A Goog
 project that hasn't passed YouTube's API audit can only upload **private** videos (#25).
 Clips live in `data/lacy/jobs/<id>/`; video files are deleted after upload or reject.
 The Whisper model (~150 MB) downloads on the first render.
+
+## Tokyo Girl mode (TikTok / Instagram campaign edits)
+
+Makes short, **silent** GTA 6 edits for the Tokyo Girl sound campaign, which you post by
+hand. On by default, 2 a day (`TOKYO_GIRL_PER_DAY` in `.env`, or `tokyo_girl.per_day`).
+
+**What each edit is**
+
+- 1080x1920, 15-30 s, **no audio track at all**. Add the official "Tokyo Girl" sound in
+  TikTok/IG. Cuts sit on a 120 BPM grid (every 0.5 s) and the length is whole bars, so if
+  you start the sound on a beat the cuts land on the music.
+- Footage: only official Rockstar GTA VI trailers and screenshots. No stream clips, no
+  voices or dialogue. Vice City views, cars, Jason & Lucia.
+- Big on-screen text telling a short story (news, theory, meme or Jason & Lucia joke),
+  always ending in a question to get comments. Stories that mention the launch date only
+  run before 19 Nov 2026; "it's out" ones only after. List them with `stories`.
+- No logo, watermark or channel name. Rockstar's logo intro and end cards are cut off
+  (`trailer_head_s` / `trailer_tail_s`) and very dark shots (title cards) are skipped.
+- Saved as `/opt/spikebot/exports/tokyo_girl/<date>_<time>-N_<kind>_<story>.mp4` plus a
+  `.txt` with both captions:
+
+```
+IG: <hook> Song: Tokyo Girl by @PassiveBand #GTA6
+TikTok: <hook> Song: Tokyo Girl by @Passive #GTA6
+```
+
+The `<hook>` is the story's hook plus its question, e.g. "Leonida looks insane. Which spot
+are you visiting first?".
+
+**When**: `spikebot-tokyo-girl.timer` runs at 06:47 UK and tops up to `per_day` edits for
+that UK day (running it again the same day does nothing). The auto-update installs the
+timer by itself; `install.sh` does too.
+
+**Footage**: once a week it tries to download the official media: images from
+`rockstargames.com/VI/media` and the trailers from the Rockstar Games YouTube channel
+(video only, 1080p max; anything not uploaded by Rockstar is refused). Google Cloud IPs
+are sometimes blocked by YouTube, so if `scan` shows few shots, download the screenshots
+and trailers yourself from rockstargames.com/VI/media and copy them in:
+
+```bash
+gcloud compute scp ~/Downloads/*.jpg YOUR_VM:/tmp/ && \
+  gcloud compute ssh YOUR_VM -- 'sudo mv /tmp/*.jpg /opt/spikebot/data/tokyo_girl/media/ && sudo chown -R spikebot: /opt/spikebot/data/tokyo_girl'
+```
+
+Tags come from file names (`jason`, `lucia`, `vice`, `beach`, `car`, `chase`, ...). To tag
+parts of a trailer, skip a file or cut out a part, create
+`/opt/spikebot/data/tokyo_girl/media/tags.json`:
+
+```json
+{
+  "Grand_Theft_Auto_VI_Trailer_1_trailer_QdBZY2fkU-0.mp4": {
+    "ranges": [{"start": 20, "end": 31, "tags": ["cars"]}, {"start": 60, "end": 75, "tags": ["couple"]}],
+    "exclude": [[88, 95]]
+  },
+  "some_screenshot.jpg": {"skip": true}
+}
+```
+
+**Commands** (run in `/opt/spikebot` as `sudo -u spikebot venv/bin/python -m spikebot.tokyo_girl ...`):
+
+| Command | Does |
+|---|---|
+| `fetch` | Download official media now, then `scan` |
+| `scan` | Analyse new files (shot cuts, letterbox) and print shots per tag |
+| `make -n 3` | Make 3 edits now (on top of the daily ones) |
+| `make --story lucia-boss` | Make one edit with a specific story |
+| `stories` | All stories; LIVE = usable today |
+| `daily` | What the timer runs |
+
+Get today's edits onto your laptop/phone:
+
+```bash
+gcloud compute scp --recurse "YOUR_VM:/opt/spikebot/exports/tokyo_girl/$(date +%F)_*" ~/Downloads/
+```
+
+Before posting: watch it once (check nothing looks like a story spoiler), add the Tokyo
+Girl sound in the app, paste the matching caption line from the `.txt`.
 
 ## Useful commands
 

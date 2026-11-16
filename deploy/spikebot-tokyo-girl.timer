@@ -1,0 +1,11 @@
+# Installed by deploy/install.sh (or auto_update.sh).
+[Unit]
+Description=Make the daily Tokyo Girl edits before school (06:47 UK)
+
+[Timer]
+OnCalendar=*-*-* 06:47:00 Europe/London
+Persistent=true
+RandomizedDelaySec=60
+
+[Install]
+WantedBy=timers.target

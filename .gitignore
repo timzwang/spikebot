@@ -8,3 +8,4 @@ config.json
 .env
 logs/
 layout_check.jpg
+exports/
