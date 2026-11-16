@@ -23,6 +23,24 @@ CLIP_RE = re.compile(r"\bclip(ped|\s+it|\s+that)?\b", re.IGNORECASE)
 KICK_EMOTE_RE = re.compile(r"\[emote:\d+:([^\]]+)\]")
 
 
+# Spelling variants that mean the same thing collapse to one word for the alert.
+_VIBE_FAMILIES = [
+    (re.compile(r"^LO+L$"), "LOL"), (re.compile(r"^LMF?AO+$"), "LMAO"),
+    (re.compile(r"^LULW?$"), "LUL"), (re.compile(r"^NO+ WAY$"), "NO WAY"),
+    (re.compile(r"^NA+H+$"), "NAH"), (re.compile(r"^W+$"), "W"), (re.compile(r"^POG\w*$"), "POG"),
+    (re.compile(r"^O{3,}$"), "OOO"), (re.compile(r"^BRO+$"), "BRO"), (re.compile(r"^MONKAS$"), "monkaS"),
+]
+
+
+def vibe_word(token: str) -> str:
+    """Canonical form of a hype match: LOOOL -> LOL, lmfaooo -> LMAO, 😭 stays 😭."""
+    t = re.sub(r"\s+", " ", token).upper()
+    for rx, word in _VIBE_FAMILIES:
+        if rx.match(t):
+            return word
+    return t
+
+
 def normalise(text: str) -> str:
     """Turn Kick emote markup like [emote:123:KEKW] into plain KEKW."""
     return KICK_EMOTE_RE.sub(lambda m: f" {m.group(1)} ", text).strip()
@@ -62,6 +80,7 @@ class Spike:
     clip_start: float     # suggested clip window, unix time
     clip_end: float
     sample: list[str] = field(default_factory=list)
+    vibe: list[str] = field(default_factory=list)  # top hype words/emotes, variants merged
 
 
 @dataclass
@@ -99,6 +118,8 @@ class SpikeDetector:
             a["users"].add(msg.user)
             a["hype"] += msg.hype
             a["clip"] += msg.clip
+            if msg.hype:
+                a["vibe"].update({vibe_word(w) for w in HYPE_RE.findall(clean)})
             if len(clean) <= 80:
                 a["texts"][clean] += 1
 
@@ -159,6 +180,8 @@ class SpikeDetector:
             "hype": sum(m.hype for m in msgs),
             "clip": sum(m.clip for m in msgs),
             "texts": texts,
+            "vibe": Counter(w for m in msgs if m.hype
+                            for w in {vibe_word(t) for t in HYPE_RE.findall(m.text)}),
         }
 
     def _close(self, now: float) -> Spike:
@@ -200,4 +223,5 @@ class SpikeDetector:
             clip_start=clip_start,
             clip_end=clip_end,
             sample=[t for t, _ in a["texts"].most_common(8)],
+            vibe=[w for w, _ in a["vibe"].most_common(4)],
         )
