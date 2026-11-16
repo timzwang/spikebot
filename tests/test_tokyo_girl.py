@@ -252,8 +252,9 @@ class FakeDiscord:
     def __init__(self, codes=None):
         self.calls, self.codes = [], list(codes or [])
 
-    def __call__(self, url, payload, path):
-        self.calls.append({"url": url, "payload": payload, "file": path.read_bytes() if path else None})
+    def __call__(self, url, payload, path, filename=None):
+        self.calls.append({"url": url, "payload": payload, "file": path.read_bytes() if path else None,
+                           "filename": filename})
         return self.codes.pop(0) if self.codes else 204
 
 
@@ -264,9 +265,9 @@ class FakeGCS:
         self.bucket, self.key_file, self.uploaded, self.cleaned = bucket, key_file, None, False
         FakeGCS.made.append(self)
 
-    def upload(self, path, days):
-        self.uploaded = path.read_bytes()
-        return f"https://storage.googleapis.com/{self.bucket}/tokyo_girl/{path.name}?X-Goog-Signature=abc"
+    def upload(self, path, object_name, days):
+        self.uploaded, self.object_name = path.read_bytes(), object_name
+        return f"https://storage.googleapis.com/{self.bucket}/{object_name}?X-Goog-Signature=abc"
 
     def cleanup(self, keep_days, now):
         self.cleaned = True
@@ -275,7 +276,7 @@ class FakeGCS:
 
 def export(tmp_path, size: int, **kw):
     s = cfg(tmp_path, **kw)
-    s["webhook_url"] = "https://discord.example/webhook"
+    s["delivery"]["webhook_url"] = "https://discord.example/webhook"
     d = Path(s["export_dir"])
     d.mkdir(parents=True)
     mp4 = d / "2026-11-16_0647-1_couple_partners.mp4"
@@ -294,6 +295,7 @@ def test_small_edit_is_attached_untouched(tmp_path):
     (call,) = fake.calls
     assert call["file"] == original and mp4.read_bytes() == original      # byte-for-byte, no re-encode
     content = call["payload"]["content"]
+    assert content.startswith("**Tokyo Girl**") and call["filename"] == mp4.name
     assert "18s" in content and "partners" in content and "2.0 MB" in content
     assert "```Jason & Lucia: partners in crime, literally. Couple goals or red flag? Song: Tokyo Girl by @PassiveBand #GTA6```" in content
     assert "```Jason & Lucia: partners in crime, literally. Couple goals or red flag? Song: Tokyo Girl by @Passive #GTA6```" in content
@@ -308,6 +310,7 @@ def test_big_edit_goes_to_bucket_link(tmp_path):
     assert TG.deliver(s, mp4, now=1_800_000_000, post=fake, uploader_factory=FakeGCS) == "link"
     (gcs,) = FakeGCS.made
     assert gcs.uploaded == original and gcs.cleaned and gcs.key_file == str(tmp_path / "gcs-key.json")
+    assert gcs.object_name == f"videos/tokyo_girl/{mp4.name}"
     (call,) = fake.calls
     assert call["file"] is None                                             # link only, no attachment
     emb = call["payload"]["embeds"][0]
@@ -334,8 +337,7 @@ def test_big_edit_without_bucket_gets_a_card(tmp_path):
 def test_failed_delivery_is_retried_later(tmp_path, monkeypatch):
     s, mp4 = export(tmp_path, 1_000_000)
     now = datetime(2026, 11, 16, 6, 50, tzinfo=TG.UK).timestamp()
-    monkeypatch.setattr(TG, "post_webhook", FakeDiscord([500]))
-    monkeypatch.setattr(TG.deliver, "__defaults__", (None, TG.post_webhook, FakeGCS))
+    monkeypatch.setattr(TG.deliver, "__defaults__", (None, FakeDiscord([500]), FakeGCS))
     assert TG.deliver_safe(s, mp4, now) is None                             # Discord down: no crash
     assert "delivered" not in TG.load_state(Path(s["state_file"]))["made"][0]
     assert TG.deliver_pending(s, now + 86400) == [mp4.name]                 # next run sends it
@@ -345,16 +347,17 @@ def test_failed_delivery_is_retried_later(tmp_path, monkeypatch):
 
 def test_no_webhook_means_off(tmp_path):
     s, mp4 = export(tmp_path, 1000)
-    s["webhook_url"] = ""
+    s["delivery"]["webhook_url"] = ""
     assert TG.deliver(s, mp4, post=FakeDiscord()) == "off" and TG.deliver_pending(s) == []
 
 
-def test_delivery_settings():
+def test_old_tokyo_girl_delivery_names_still_work():
     from spikebot.main import apply_env
-    c = apply_env({"tokyo_girl_webhook_url": "https://d/x"}, [], {"TOKYO_GIRL_GCS_BUCKET": "gs://my-bucket/"})
-    s = TG.settings(c, Path("/opt/spikebot"))
-    assert s["gcs_bucket"] == "my-bucket" and s["webhook_url"] == "https://d/x"
-    assert s["gcs_key_file"] == "/opt/spikebot/gcs-key.json" and s["discord_max_mb"] == 10
+    c = apply_env({"tokyo_girl_webhook_url": "https://d/x", "tokyo_girl": {"discord_max_mb": 50}}, [],
+                  {"TOKYO_GIRL_GCS_BUCKET": "gs://my-bucket/"})
+    d = TG.settings(c, Path("/opt/spikebot"))["delivery"]
+    assert d["gcs_bucket"] == "my-bucket" and d["webhook_url"] == "https://d/x"
+    assert d["gcs_key_file"] == "/opt/spikebot/gcs-key.json" and d["discord_max_mb"] == 50
     with pytest.raises(ValueError):
         TG.settings({"tokyo_girl": {"gcs_link_days": 8}})
 
@@ -370,7 +373,7 @@ def test_signed_link_is_made_offline_with_a_key(tmp_path):
     kf.write_text(json.dumps({"type": "service_account", "project_id": "p", "private_key_id": "1",
                               "private_key": pem, "client_email": "up@p.iam.gserviceaccount.com",
                               "client_id": "1", "token_uri": "https://oauth2.googleapis.com/token"}))
-    up = TG.GCSUploader("tg-bucket", str(kf))
+    up = TG.delivery.GCSUploader("tg-bucket", str(kf))
     blob = up.bucket.blob("tokyo_girl/x.mp4")
     url = blob.generate_signed_url(version="v4", method="GET", expiration=7 * 86400,
                                    response_disposition='attachment; filename="x.mp4"')

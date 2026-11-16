@@ -43,7 +43,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 from zoneinfo import ZoneInfo
 
-from . import editor
+from . import delivery, editor
 
 log = logging.getLogger("tokyo_girl")
 UK = ZoneInfo("Europe/London")
@@ -73,14 +73,6 @@ DEFAULTS = {
     "font_size": 104,
     "caption_ig": "{hook} Song: Tokyo Girl by @PassiveBand #GTA6",
     "caption_tiktok": "{hook} Song: Tokyo Girl by @Passive #GTA6",
-    # Delivery to Discord (#tokyo-girl, top-level tokyo_girl_webhook_url). Files are never
-    # re-encoded: up to discord_max_mb they're attached as-is, bigger ones go to a private
-    # Google Cloud Storage bucket and Discord gets a signed download link.
-    "discord_max_mb": 10,               # 10 unboosted, 50 at boost level 2, 100 at level 3
-    "gcs_bucket": "",                   # empty = no upload; big files get a card + scp command
-    "gcs_key_file": "gcs-key.json",     # service account key, next to config.json (secret)
-    "gcs_link_days": 7,                 # 7 is the maximum for a signed URL
-    "gcs_keep_days": 8,                 # older uploads are deleted from the bucket
 }
 
 TRUE = {"1", "true", "yes", "on"}
@@ -101,15 +93,11 @@ def settings(cfg: dict, base: Path | None = None) -> dict:
         out["enabled"] = str(cfg["tokyo_girl_mode"]).strip().lower() in TRUE
     if cfg.get("tokyo_girl_per_day") not in (None, ""):
         out["per_day"] = int(cfg["tokyo_girl_per_day"])
-    if cfg.get("tokyo_girl_gcs_bucket") not in (None, ""):
-        out["gcs_bucket"] = str(cfg["tokyo_girl_gcs_bucket"]).strip().removeprefix("gs://").strip("/")
-    out["webhook_url"] = cfg.get("tokyo_girl_webhook_url") or ""
+    out["delivery"] = delivery.settings(cfg, base)  # #ready-to-post, shared by every mode
     if not 1 <= out["min_s"] <= out["max_s"]:
         raise ValueError("tokyo_girl: need 1 <= min_s <= max_s")
-    if not 1 <= out["gcs_link_days"] <= 7:
-        raise ValueError("tokyo_girl: gcs_link_days must be 1-7 (signed URL limit)")
     if base is not None:
-        for k in ("media_dir", "export_dir", "state_file", "gcs_key_file"):
+        for k in ("media_dir", "export_dir", "state_file"):
             p = Path(out[k])
             out[k] = str(p if p.is_absolute() else base / p)
     return out
@@ -775,127 +763,21 @@ def daily(lcfg: dict, now: float | None = None) -> list[Path]:
 
 
 # --------------------------------------------------------------------------
-# Delivery: Discord #tokyo-girl, original file attached or a GCS download link.
-# The exported file is never re-encoded or altered.
+# Delivery to Discord #ready-to-post (spikebot/delivery.py). Never re-encoded.
 # --------------------------------------------------------------------------
-def discord_limit_bytes(lcfg: dict) -> int:
-    """Largest file we try to attach (Discord counts MiB; leave room for the form)."""
-    return int(lcfg["discord_max_mb"] * 1024 * 1024) - 64 * 1024
-
-
-def mb(n: int) -> str:
-    return f"{n / 1_000_000:.1f} MB"
-
-
-def delivery_message(mp4: Path, meta: dict, size: int, link: str | None = None,
-                     expires: float | None = None, too_big: bool = False) -> dict:
-    """Discord payload: the two captions in code blocks (long-press to copy on a phone)
-    and, for a big file, a download link or the scp command."""
-    txt = mp4.with_suffix(".txt")
-    lines = txt.read_text(encoding="utf-8").splitlines() if txt.exists() else []
-    caps = {l.split(":", 1)[0]: l.split(":", 1)[1].strip() for l in lines if ":" in l}
-    bits = ["**Tokyo Girl edit**"]
-    if meta.get("seconds"):
-        bits.append(f"{meta['seconds']:g}s")
-    if meta.get("story"):
-        bits.append(meta["story"])
-    bits += [mb(size), "silent: add the Tokyo Girl sound in the app"]
-    head = " \u00b7 ".join(bits)
-    content = head
-    for k in ("IG", "TikTok"):
-        if k in caps:
-            content += f"\n{k}:\n```{caps[k]}```"
-    payload: dict = {"content": content[:1990], "allowed_mentions": {"parse": []}}
-    if link:
-        payload["embeds"] = [{"title": f"Download the original ({mb(size)})", "url": link,
-                              "description": f"{mp4.name}\nLink works until <t:{int(expires or 0)}:f>.",
-                              "color": 0xFF4FA3}]
-    elif too_big:
-        payload["embeds"] = [{"title": f"Too big for Discord ({mb(size)}) and no bucket set",
-                              "description": f"Copy it from the server:\n`/opt/spikebot/exports/tokyo_girl/{mp4.name}`",
-                              "color": 0xFF4FA3}]
-    return payload
-
-
-def post_webhook(url: str, payload: dict, path: Path | None = None) -> int:
-    """POST to a Discord webhook (multipart when a file is attached). HTTP status."""
-    from curl_cffi import requests as creq
-    if path is None:
-        r = creq.post(url, json=payload, timeout=30)
-        return r.status_code
-    import os
-    boundary = "tokyogirl" + os.urandom(8).hex()
-    head = (f"--{boundary}\r\nContent-Disposition: form-data; name=\"payload_json\"\r\n"
-            f"Content-Type: application/json\r\n\r\n{json.dumps(payload)}\r\n"
-            f"--{boundary}\r\nContent-Disposition: form-data; name=\"files[0]\";"
-            f" filename=\"{path.name}\"\r\nContent-Type: video/mp4\r\n\r\n").encode()
-    body = head + path.read_bytes() + f"\r\n--{boundary}--\r\n".encode()
-    r = creq.post(url, data=body, timeout=300,
-                  headers={"Content-Type": f"multipart/form-data; boundary={boundary}"})
-    if r.status_code >= 300:
-        log.warning("discord upload: HTTP %s %s", r.status_code, r.text[:200])
-    return r.status_code
-
-
-class GCSUploader:
-    """Private bucket + V4 signed GET links, with a service-account key file.
-    google-cloud-storage is imported here only, never by the chat bot."""
-
-    def __init__(self, bucket: str, key_file: str):
-        from google.cloud import storage  # lazy: Tokyo Girl delivery only
-        self.client = storage.Client.from_service_account_json(key_file)
-        self.bucket = self.client.bucket(bucket)
-
-    def upload(self, path: Path, link_days: int) -> str:
-        from datetime import timedelta
-        blob = self.bucket.blob(f"tokyo_girl/{path.name}")
-        blob.upload_from_filename(str(path), content_type="video/mp4", timeout=900)
-        return blob.generate_signed_url(version="v4", method="GET", expiration=timedelta(days=link_days),
-                                        response_disposition=f'attachment; filename="{path.name}"')
-
-    def cleanup(self, keep_days: int, now: float) -> int:
-        n = 0
-        for b in self.client.list_blobs(self.bucket, prefix="tokyo_girl/"):
-            if b.time_created and b.time_created.timestamp() < now - keep_days * 86400:
-                b.delete()
-                n += 1
-        return n
-
-
-def deliver(lcfg: dict, mp4: Path, now: float | None = None, post=post_webhook,
-            uploader_factory=GCSUploader) -> str:
-    """Send one export to #tokyo-girl. Returns how: attached / link / card / off.
-    Raises if nothing got through (the caller retries next run)."""
-    now = now or time.time()
-    url = lcfg.get("webhook_url")
-    if not url:
-        return "off"
+def deliver(lcfg: dict, mp4: Path, now: float | None = None, post=delivery.post_webhook,
+            uploader_factory=delivery.GCSUploader) -> str:
+    """Send one export with its captions. Returns attached / link / card / off;
+    raises if nothing got through (deliver_pending retries)."""
     state = load_state(Path(lcfg["state_file"]))
     meta = next((m for m in reversed(state.get("made", [])) if m.get("file") == mp4.name), {})
-    size = mp4.stat().st_size
-    if size <= discord_limit_bytes(lcfg):
-        code = post(url, delivery_message(mp4, meta, size), mp4)
-        if code < 300:
-            return "attached"
-        if code != 413:
-            raise RuntimeError(f"Discord upload failed: HTTP {code}")
-        log.info("%s: Discord says too large (%s), using a link instead", mp4.name, mb(size))
-    if lcfg["gcs_bucket"]:
-        up = uploader_factory(lcfg["gcs_bucket"], lcfg["gcs_key_file"])
-        link = up.upload(mp4, lcfg["gcs_link_days"])
-        try:
-            up.cleanup(lcfg["gcs_keep_days"], now)
-        except Exception as e:  # cleanup is housekeeping, never block delivery
-            log.warning("bucket cleanup failed: %s", e)
-        payload = delivery_message(mp4, meta, size, link, now + lcfg["gcs_link_days"] * 86400)
-        how = "link"
-    else:
-        payload = delivery_message(mp4, meta, size, too_big=True)
-        how = "card"
-    code = post(url, payload, None)
-    if code >= 300:
-        raise RuntimeError(f"Discord post failed: HTTP {code}")
-    return how
+    txt = mp4.with_suffix(".txt")
+    lines = txt.read_text(encoding="utf-8").splitlines() if txt.exists() else []
+    blocks = [(l.split(":", 1)[0], l.split(":", 1)[1].strip()) for l in lines if ":" in l]
+    bits = ([f"{meta['seconds']:g}s"] if meta.get("seconds") else []) + \
+           ([meta["story"]] if meta.get("story") else []) + ["silent: add the Tokyo Girl sound in the app"]
+    return delivery.send(lcfg["delivery"], mp4, "tokyo_girl", bits, blocks, now=now, post=post,
+                         uploader_factory=uploader_factory)
 
 
 def mark_delivered(lcfg: dict, name: str, how: str) -> None:
@@ -921,7 +803,7 @@ def deliver_safe(lcfg: dict, mp4: Path, now: float | None = None) -> str | None:
 
 def deliver_pending(lcfg: dict, now: float | None = None) -> list[str]:
     """Retry recent exports that never reached Discord (last 3 days)."""
-    if not lcfg.get("webhook_url"):
+    if not lcfg["delivery"].get("webhook_url"):
         return []
     now = now or time.time()
     export = Path(lcfg["export_dir"])
@@ -1057,8 +939,8 @@ def main(argv: list[str] | None = None) -> None:
         for p in make(lcfg, args.n, args.story, seed=args.seed):
             print(p)
     elif args.cmd == "deliver":
-        if not lcfg["webhook_url"]:
-            sys.exit("tokyo_girl_webhook_url is not set in config.json")
+        if not lcfg["delivery"]["webhook_url"]:
+            sys.exit("videos_webhook_url is not set in config.json")
         if args.files:
             for f in args.files:
                 p = Path(f) if Path(f).exists() else Path(lcfg["export_dir"]) / Path(f).name

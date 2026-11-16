@@ -12,7 +12,7 @@
   "discord_webhook_url": "",
   "status_webhook_url": "",
   "summary_webhook_url": "",
-  "tokyo_girl_webhook_url": "",
+  "videos_webhook_url": "",
 
   "twitch_client_id": "",
   "twitch_client_secret": "",
@@ -41,10 +41,15 @@
     "min_s": 15,
     "max_s": 30,
     "export_dir": "exports/tokyo_girl",
-    "media_dir": "data/tokyo_girl/media",
+    "media_dir": "data/tokyo_girl/media"
+  },
+
+  "videos": {
     "discord_max_mb": 10,
     "gcs_bucket": "",
-    "gcs_key_file": "gcs-key.json"
+    "gcs_key_file": "gcs-key.json",
+    "link_days": 7,
+    "keep_days": 8
   },
 
   "detector": {

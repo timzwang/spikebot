@@ -133,6 +133,8 @@ cd /opt/spikebot && sudo -u spikebot venv/bin/python -m spikebot.lacy list
 happened that UK day), sets the thumbnail and appends a row to
 `/opt/spikebot/logs/lacy_submissions.csv` (`uploaded_uk, youtube_url, title, ...`) ready to
 paste into Content Rewards. With `LACY_AUTO_UPLOAD=true` approval is skipped (still capped).
+The full-quality Short then goes to #ready-to-post for TikTok/Reels (see "Finished videos on
+your phone").
 
 **Setup**
 
@@ -193,50 +195,8 @@ TikTok: <hook> Song: Tokyo Girl by @Passive #GTA6
 The `<hook>` is the story's hook plus its question, e.g. "Leonida looks insane. Which spot
 are you visiting first?".
 
-**Getting the edits on your phone (Discord #tokyo-girl)**
-
-Each edit is posted to its own Discord channel with both captions in copyable code blocks
-(long-press to copy). The video is **never re-encoded or compressed**:
-
-- Up to `discord_max_mb` (10 MB on a server without boosts; set 50 or 100 if you boost to
-  level 2 or 3) the original file is attached.
-- Bigger files are uploaded, unchanged, to your own private Google Cloud Storage bucket, and
-  Discord gets a **Download the original** link that works for 7 days. Uploads older than 8
-  days are deleted from the bucket automatically. Cost: well under £1 a month.
-- With no bucket set, big files get a card with the file name instead.
-- If Discord or the upload fails, the next run (or `deliver`) sends it again.
-
-Setup:
-
-1. Discord: create a `#tokyo-girl` channel, then Edit Channel > Integrations > Webhooks > New
-   Webhook > Copy URL. Put it in `/opt/spikebot/config.json` as `"tokyo_girl_webhook_url"`.
-2. Bucket (once). Open **Cloud Shell** (the `>_` button at the top of console.cloud.google.com)
-   and paste:
-
-```bash
-PROJECT=$(gcloud config get-value project); B=$PROJECT-tokyo-girl; SA=spikebot-uploads@$PROJECT.iam.gserviceaccount.com
-gcloud storage buckets create gs://$B --location=europe-west2 --uniform-bucket-level-access --public-access-prevention
-gcloud iam service-accounts create spikebot-uploads --display-name="spikebot Tokyo Girl uploads"
-gcloud storage buckets add-iam-policy-binding gs://$B --member="serviceAccount:$SA" --role=roles/storage.objectAdmin
-gcloud iam service-accounts keys create gcs-key.json --iam-account=$SA && echo "Bucket name: $B"
-```
-
-   The key can only touch that one bucket. Copy it to the server, then delete the Cloud
-   Shell copy (use your VM's name and zone):
-
-```bash
-gcloud compute scp gcs-key.json YOUR_VM:/tmp/gcs-key.json --zone YOUR_ZONE && rm gcs-key.json
-```
-
-   On the server:
-
-```bash
-sudo install -o spikebot -g spikebot -m 600 /tmp/gcs-key.json /opt/spikebot/gcs-key.json && sudo rm /tmp/gcs-key.json
-```
-
-3. Add `TOKYO_GIRL_GCS_BUCKET=<the bucket name it printed>` to `/opt/spikebot/.env`.
-4. Test: `--check` sends a test message to #tokyo-girl, and
-   `sudo -u spikebot venv/bin/python -m spikebot.tokyo_girl deliver <file.mp4>` re-sends one edit.
+**On your phone**: each edit is posted to Discord #ready-to-post with both captions (see
+"Finished videos on your phone" below).
 
 **When**: `spikebot-tokyo-girl.timer` runs at 06:47 UK and tops up to `per_day` edits for
 that UK day (running it again the same day does nothing). The auto-update installs the
@@ -276,7 +236,7 @@ parts of a trailer, skip a file or cut out a part, create
 | `make -n 3` | Make 3 edits now (on top of the daily ones) |
 | `make --story lucia-boss` | Make one edit with a specific story |
 | `stories` | All stories; LIVE = usable today |
-| `deliver` | Send any edits that didn't reach Discord (or `deliver FILE.mp4` to resend one) |
+| `deliver` | Send any edits that didn't reach #ready-to-post (or `deliver FILE.mp4` to resend one) |
 | `daily` | What the timer runs |
 
 Or copy today's edits straight to a laptop:
@@ -287,6 +247,62 @@ gcloud compute scp --recurse "YOUR_VM:/opt/spikebot/exports/tokyo_girl/$(date +%
 
 Before posting: watch it once (check nothing looks like a story spoiler), add the Tokyo
 Girl sound in the app, paste the matching caption line from the `.txt`.
+
+## Finished videos on your phone (#ready-to-post)
+
+Every finished video from every mode goes to one Discord channel, labelled with the mode:
+
+- **Tokyo Girl**: each edit, with the IG and TikTok captions.
+- **Lacy**: each Short once it's uploaded to YouTube (after `approve`, or automatically
+  with auto-upload), with the title, a TikTok/Reels caption and the YouTube link, so you can
+  cross-post the same file.
+
+Text to copy is in code blocks (long-press to copy). The video is **never re-encoded or
+compressed**; you get the exact file the server made:
+
+- Up to `videos.discord_max_mb` (10 MB on a server without boosts; set 50 or 100 if you boost
+  to level 2 or 3) the original file is attached.
+- Bigger files are uploaded, unchanged, to your own private Google Cloud Storage bucket, and
+  Discord gets a **Download the original** link that works for 7 days. Uploads older than 8
+  days are deleted from the bucket automatically. Cost: well under £1 a month.
+- With no bucket set, big files get a card with their path on the server instead.
+- If Discord or the upload fails, nothing is lost: Tokyo Girl retries on the next run (or
+  `python -m spikebot.tokyo_girl deliver`), and a Lacy Short is kept on disk until
+  `python -m spikebot.lacy deliver ID` gets it through. The YouTube upload is never undone.
+
+Setup:
+
+1. Discord: create a `#ready-to-post` channel, then Edit Channel > Integrations > Webhooks >
+   New Webhook > Copy URL. Put it in `/opt/spikebot/config.json` as `"videos_webhook_url"`.
+   (The older name `tokyo_girl_webhook_url` still works.)
+2. Bucket (once). Open **Cloud Shell** (the `>_` button at the top of console.cloud.google.com)
+   and paste:
+
+```bash
+PROJECT=$(gcloud config get-value project); B=$PROJECT-videos; SA=spikebot-uploads@$PROJECT.iam.gserviceaccount.com
+gcloud storage buckets create gs://$B --location=europe-west2 --uniform-bucket-level-access --public-access-prevention
+gcloud iam service-accounts create spikebot-uploads --display-name="spikebot video uploads"
+gcloud storage buckets add-iam-policy-binding gs://$B --member="serviceAccount:$SA" --role=roles/storage.objectAdmin
+gcloud iam service-accounts keys create gcs-key.json --iam-account=$SA && echo "Bucket name: $B"
+```
+
+   The key can only touch that one bucket, and the bucket must hold nothing else (old files
+   in it are deleted). Copy the key to the server, then delete the Cloud Shell copy (use
+   your VM's name and zone):
+
+```bash
+gcloud compute scp gcs-key.json YOUR_VM:/tmp/gcs-key.json --zone YOUR_ZONE && rm gcs-key.json
+```
+
+   On the server:
+
+```bash
+sudo install -o spikebot -g spikebot -m 600 /tmp/gcs-key.json /opt/spikebot/gcs-key.json && sudo rm /tmp/gcs-key.json
+```
+
+3. Add `VIDEOS_GCS_BUCKET=<the bucket name it printed>` to `/opt/spikebot/.env`.
+4. Test: `--check` sends a test message to #ready-to-post, and
+   `sudo -u spikebot venv/bin/python -m spikebot.tokyo_girl deliver <file.mp4>` re-sends one edit.
 
 ## Useful commands
 

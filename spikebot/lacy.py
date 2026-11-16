@@ -356,8 +356,10 @@ def render_job(job: dict, lcfg: dict, jobs: Jobs, used_titles: set[str],
 
 
 def upload_job(job: dict, lcfg: dict, jobs: Jobs, subs: Submissions, yt,
-               now: float | None = None) -> dict:
-    """Upload a ready job (respecting the daily cap) and log it to the CSV."""
+               now: float | None = None, send=None) -> dict:
+    """Upload a ready job (respecting the daily cap) and log it to the CSV.
+    `send(path, job)` (if given) then posts the full-quality Short to #ready-to-post
+    for TikTok/Reels; the file is only deleted once that worked."""
     now = now or time.time()
     if job.get("status") != "ready":
         raise ValueError(f"job {job['id']} is {job.get('status')}, not ready")
@@ -384,10 +386,51 @@ def upload_job(job: dict, lcfg: dict, jobs: Jobs, subs: Submissions, yt,
         job["reason"] = f"uploaded, but thumbnail not set: {e}"
     subs.append({"uploaded_uk": uk_stamp(now), "youtube_url": url, "title": job["title"],
                  "video_id": vid, "job_id": job["id"], "source_vod": job.get("vod_link") or ""})
-    for f in ("short.mp4", "preview.mp4"):  # free disk; YouTube has it now
-        (d / f).unlink(missing_ok=True)
-    jobs.save(job)
+    jobs.save(job)  # the upload is recorded even if the Discord step fails
+    if send is not None:
+        deliver_job(job, jobs, send)
+    else:
+        free_disk(jobs, job)
     return job
+
+
+def free_disk(jobs: Jobs, job: dict) -> None:
+    for f in ("short.mp4", "preview.mp4"):  # YouTube (and #ready-to-post) have it now
+        (jobs.dir(job["id"]) / f).unlink(missing_ok=True)
+
+
+def deliver_job(job: dict, jobs: Jobs, send) -> str | None:
+    """Post the finished Short to #ready-to-post. On failure the file is kept and
+    `python -m spikebot.lacy deliver ID` retries."""
+    path = jobs.dir(job["id"]) / "short.mp4"
+    if not path.exists():
+        raise ValueError(f"{path} is gone (already delivered or deleted)")
+    try:
+        how = send(path, job)
+    except Exception as e:  # noqa: BLE001 - YouTube upload already done; never undo that
+        job["delivered"] = None
+        job["reason"] = (f"{job['reason']}; " if job.get("reason") else "") + \
+            f"not sent to #ready-to-post ({e}); retry: python -m spikebot.lacy deliver {job['id']}"
+        jobs.save(job)
+        log.warning("lacy job %s: delivery failed: %s", job["id"], e)
+        return None
+    job["delivered"] = how
+    free_disk(jobs, job)
+    jobs.save(job)
+    return how
+
+
+def video_blocks(job: dict) -> list[tuple[str, str]]:
+    tag = "#GTA6" if game_tag(job.get("category") or "") == "GTA 6" else "#GTA5"
+    return [("Title", job["title"]), ("TikTok / Reels caption", f"{job['title']} #Lacy {tag} #GTA")]
+
+
+def send_video(dcfg: dict, path: Path, job: dict, **kw) -> str:
+    """#ready-to-post message for an uploaded Lacy Short (original file, no re-encode)."""
+    from . import delivery
+    bits = ([f"{job['duration']:g}s"] if job.get("duration") else []) + \
+           ([f"YouTube: <{job['youtube_url']}>"] if job.get("youtube_url") else [])
+    return delivery.send(dcfg, path, "lacy", bits, video_blocks(job), name=f"lacy_{job['id']}.mp4", **kw)
 
 
 # --------------------------------------------------------------------------
@@ -496,6 +539,7 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("list", help="show clips and their status")
     for name, hlp in (("render", "make the Short for a queued job"),
                       ("approve", "upload a ready clip to YouTube"),
+                      ("deliver", "send an uploaded clip to #ready-to-post again"),
                       ("reject", "drop a clip")):
         sub.add_parser(name, help=hlp).add_argument("job")
     lay = sub.add_parser("layout", help="still image of the vertical layout, to check the facecam box")
@@ -547,12 +591,25 @@ def main(argv: list[str] | None = None) -> int:
             (jobs.dir(job["id"]) / f).unlink(missing_ok=True)
         print(f"{job['id']}: rejected")
         return 0
+    from . import delivery
+    dcfg = delivery.settings(cfg, Path(args.config).resolve().parent)
+    send = (lambda path, j: send_video(dcfg, path, j)) if dcfg["webhook_url"] else None
+    if args.cmd == "deliver":
+        if send is None:
+            print("videos_webhook_url is not set in config.json")
+            return 1
+        if job.get("status") != "uploaded":
+            print(f"{job['id']} is {job.get('status')}; only uploaded clips are sent")
+            return 1
+        how = deliver_job(job, jobs, send)
+        print(f"{job['id']}: {how or 'FAILED: ' + job['reason']}")
+        return 0 if how else 1
     if args.cmd == "approve":
         from .youtube import YouTube, YouTubeError
         try:
             yt = YouTube(cfg.get("youtube_client_id", ""), cfg.get("youtube_client_secret", ""),
                          cfg.get("youtube_refresh_token", ""))
-            job = upload_job(job, lcfg, jobs, subs, yt)
+            job = upload_job(job, lcfg, jobs, subs, yt, send=send)
         except (ValueError, YouTubeError) as e:
             print(f"NOT uploaded: {e}")
             return 1
@@ -560,6 +617,8 @@ def main(argv: list[str] | None = None) -> int:
         if job.get("reason"):
             print(job["reason"])
         print(f"Logged to {lcfg['submissions_csv']}")
+        if send is not None:
+            print(f"#ready-to-post: {job.get('delivered') or 'FAILED (file kept, see reason)'}")
         return 0
     return 2
 

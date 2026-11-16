@@ -57,14 +57,14 @@ window and, if it qualifies, posted to a Discord webhook. The chat bot never dow
 video; only Lacy mode (below) cuts clip-length segments from Lacy's VODs, because his
 programme allows clipping.
 
-It posts to three Discord webhooks, which must stay separate:
+It posts to four Discord webhooks, which must stay separate:
 
 | Config field | Channel | What goes there |
 |---|---|---|
 | `discord_webhook_url` | #moments | Clip moments only (`candidate` spikes) |
 | `status_webhook_url` | #status | Bot health: start/restart, streamer live/offline (with category), chat down >5 min and reconnected, Kick 4001 key error, disk <20% free |
 | `summary_webhook_url` | #daily-summary | 22:00 UK daily summary: moments per streamer + top 3 by score (last 24h) |
-| `tokyo_girl_webhook_url` | #tokyo-girl | Finished Tokyo Girl edits: original file attached, or a GCS download link if too big |
+| `videos_webhook_url` | #ready-to-post | Every finished video (Tokyo Girl edits, uploaded Lacy Shorts), labelled by mode: original file attached, or a GCS download link if too big. Old name `tokyo_girl_webhook_url` still read |
 
 An empty field disables that channel; the message is still logged.
 
@@ -144,11 +144,16 @@ it in sync when behaviour or config changes.
   on-screen text (last card is always a question; date windows relative to launch).
   Output `exports/tokyo_girl/*.mp4` + `.txt` (IG/TikTok captions from `caption_ig` /
   `caption_tiktok`). No logos/watermarks. State in `data/tokyo_girl/state.json`.
-  Delivery (`deliver`, called after each export; `deliver_pending` retries for 3 days): never
-  re-encodes. Files <= `discord_max_mb` are attached to #tokyo-girl; bigger ones go to the
-  private bucket `TOKYO_GIRL_GCS_BUCKET` via `GCSUploader` (google-cloud-storage, lazy import,
-  key `gcs-key.json` next to config) and Discord gets a 7-day V4 signed link; a Discord 413
-  also falls back to the link. Uploads older than `gcs_keep_days` are deleted.
+  `deliver` (after each export; `deliver_pending` retries for 3 days) sends it to
+  #ready-to-post via `delivery.send`.
+- `spikebot/delivery.py`: #ready-to-post for every mode (`MODES` labels/colours). Never
+  re-encodes: files <= `videos.discord_max_mb` are attached; bigger ones (or a Discord 413)
+  go to the private bucket `VIDEOS_GCS_BUCKET` via `GCSUploader` (google-cloud-storage, lazy
+  import, key `gcs-key.json` next to config, objects `videos/<mode>/<name>`) and Discord gets
+  a 7-day V4 signed link. Objects older than `keep_days` are deleted (dedicated bucket).
+  `settings()` also reads the old Tokyo Girl names. Lacy: `upload_job(send=...)` posts the
+  Short after the YouTube upload and only then deletes it; `lacy deliver ID` retries.
+  Tested in `tests/test_delivery.py`.
 - `tests/test_tokyo_girl.py`: stories, beat grid, shot picking, tags, captions, daily quota,
   host guard, and an end-to-end silent render (needs ffmpeg).
 - `spikebot/messages.py`: pure Discord layouts (embeds) for #moments (`moment`), #status
@@ -197,7 +202,7 @@ python3 -m venv .venv && .venv/bin/pip install -r requirements.txt -r requiremen
   Restarting sends a "restarted" alert to #status (at most one per 30 min).
 - Service: `systemctl status spikebot`, logs with `journalctl -u spikebot -f`.
 - Live data: `/opt/spikebot/data/`. Don't write test spikes into it.
-- The live `config.json` and `.env` contain real secrets (three Discord webhooks, Twitch secret). Don't print
+- The live `config.json` and `.env` contain real secrets (four Discord webhooks, Twitch secret; `gcs-key.json` next to them). Don't print
   them or paste them into commits, logs or external requests.
 
 ### Conventions
