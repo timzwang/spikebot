@@ -19,7 +19,7 @@ GREEN, BLUE, BLURPLE = 0x2ECC71, 0x3498DB, 0x5865F2
 
 # Colours for #status alerts, by alert kind.
 STATUS_COLOURS = {"start": BLUE, "live": GREEN, "offline": GREY, "reconnected": GREEN,
-                  "disconnected": RED, "key_error": RED, "disk": ORANGE}
+                  "disconnected": RED, "key_error": RED, "disk": ORANGE, "lacy": ORANGE}
 
 NO_MENTIONS = {"parse": []}  # chat text must never ping @everyone
 
@@ -144,6 +144,38 @@ def moment(rec: dict, display: str) -> dict:
     foot.append(ts(rec["onset"]))
     lines += ["", " · ".join(foot)]
     return embed("\n".join(lines), score_colour(score), title=title, url=link)
+
+
+# --------------------------------------------------------------------------
+# Lacy mode (#moments): review card and upload confirmation
+# --------------------------------------------------------------------------
+APPROVE_CMD = "cd /opt/spikebot && sudo -u spikebot venv/bin/python -m spikebot.lacy"
+
+
+def lacy_review(job: dict, uploads_today: int, max_uploads: int) -> dict:
+    """Card for a rendered Lacy Short, posted with the small preview video."""
+    lines = [f"**Title** {escape(job.get('title') or '')}",
+             f"**Game** {escape(job.get('category') or '')} · {job.get('duration', '?')}s"
+             f" · chat score {job.get('score')}"]
+    if job.get("vod_link"):
+        lines.append(f"**[▶ Source VOD]({job['vod_link']})**")
+    lines += ["", "Check before approving: no cutscene, ending or story spoiler (Rockstar policy),"
+              " Lacy on screen, no gambling.",
+              f"Uploads today: **{uploads_today}/{max_uploads}**"]
+    if job.get("reason"):
+        lines.append(f"⚠️ {escape(job['reason'])}")
+    lines += ["", f"`{APPROVE_CMD} approve {job['id']}`",
+              f"`{APPROVE_CMD} reject {job['id']}`", "", ts(job["onset"], "f")]
+    return embed("\n".join(lines), BLURPLE, title="🎬 Lacy Short ready for review")
+
+
+def lacy_uploaded(job: dict) -> dict:
+    lines = [f"**{escape(job.get('title') or '')}**", job.get("youtube_url") or "",
+             "Logged to lacy_submissions.csv: paste the link into Content Rewards."]
+    if job.get("reason"):
+        lines.append(f"⚠️ {escape(job['reason'])}")
+    return embed("\n".join(lines), GREEN, title="✅ Lacy Short uploaded",
+                 url=job.get("youtube_url"))
 
 
 # --------------------------------------------------------------------------

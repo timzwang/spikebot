@@ -5,7 +5,9 @@ and flags moments when chat suddenly explodes (laughing, "NO WAY", "clip it").
 Each moment is logged with a suggested clip window and, optionally, sent to a
 Discord channel on your phone.
 
-It only reads public chat. It does not download or record any video.
+The chat bot only reads public chat and never downloads video. The one exception is
+**Lacy mode** (below), which cuts short segments from Lacy's own Twitch VODs because
+his clipping programme allows it.
 
 ## What it records for each moment
 
@@ -94,6 +96,73 @@ sudo bash ~/spikebot/deploy/auto_update.sh --force   # redeploy even with no new
   `pre_roll_s` / `post_roll_s` control how much footage either side of the reaction.
 
 After editing `config.json` or `.env`: `systemctl restart spikebot`.
+
+## Lacy mode (Lacy clipping campaign)
+
+Turns Lacy's GTA chat spikes into finished Shorts for the Lacy campaign (Reach / Content
+Rewards). Off by default. It only ever touches `twitch.tv/lacy`.
+
+**What it does**
+
+1. When chat spikes on Lacy's stream, it asks Twitch (Helix Get Streams) for his category
+   **right then**. Only `Grand Theft Auto V` and `Grand Theft Auto VI` count (exact match,
+   `lacy.allowed_categories`). Anything else, or Twitch keys missing, means no clip.
+2. About 5 minutes later (`vod_delay_s`, so the VOD has caught up) it cuts that moment
+   (max 59s) from his Twitch VOD. It does not download the whole VOD.
+3. Skips the clip if it shows a BRB/away screen (screen or facecam frozen), his camera is
+   off (facecam black), the speech isn't English, or there's almost no speech.
+4. Renders 1080x1920: **his facecam full-width on top for the whole clip**, gameplay
+   below, the title as on-screen text and word-by-word captions. **No watermark, logo or
+   "6" overlay** in Lacy mode.
+5. Title always contains "Lacy" and is neutral or funny (it never uses negative,
+   mocking or drama words; see `TITLES` / `BANNED` in `spikebot/lacy.py`). Description
+   includes `#Lacy #Shorts`.
+6. Thumbnail is a frame from that clip (near the chat peak). It's compared with every
+   earlier thumbnail and a different frame is picked if it looks too similar.
+7. Posts a **review card with a small preview video** to #moments. Watch it, check for
+   story spoilers/cutscenes (Rockstar policy), then on the server:
+
+```bash
+cd /opt/spikebot && sudo -u spikebot venv/bin/python -m spikebot.lacy approve 20261119-061502
+cd /opt/spikebot && sudo -u spikebot venv/bin/python -m spikebot.lacy reject 20261119-061502
+cd /opt/spikebot && sudo -u spikebot venv/bin/python -m spikebot.lacy list
+```
+
+`approve` uploads to YouTube (refused once `LACY_MAX_UPLOADS_PER_DAY` uploads have
+happened that UK day), sets the thumbnail and appends a row to
+`/opt/spikebot/logs/lacy_submissions.csv` (`uploaded_uk, youtube_url, title, ...`) ready to
+paste into Content Rewards. With `LACY_AUTO_UPLOAD=true` approval is skipped (still capped).
+
+**Setup**
+
+1. `.env`: `LACY_MODE=true`, `LACY_MAX_UPLOADS_PER_DAY=3`, Twitch keys (required), and the
+   YouTube keys below. `.env` values override the `lacy` block in `config.json`.
+2. YouTube keys: in Google Cloud Console enable **YouTube Data API v3**, create an OAuth
+   client of type **Desktop app**, put its id/secret in `.env` as `YOUTUBE_CLIENT_ID` /
+   `YOUTUBE_CLIENT_SECRET`, then get the refresh token (saved into `.env`, not printed):
+
+```bash
+ssh -L 8765:127.0.0.1:8765 YOUR_USER@YOUR_SERVER_IP
+cd /opt/spikebot && sudo -u spikebot venv/bin/python -m spikebot.youtube auth --env .env
+```
+
+   Open the link it prints on your laptop and sign in as the channel's Google account.
+3. Facecam position: `lacy.facecam` is the box around his camera as fractions of the
+   frame (`x`, `y` = top-left, `w`, `h` = size). The default is the top-left quarter. Check
+   it against a real clip (any Lacy VOD segment saved as an mp4) and adjust:
+
+```bash
+cd /opt/spikebot && sudo -u spikebot venv/bin/python -m spikebot.lacy layout clip.mp4 --out /tmp/check.jpg
+```
+
+4. `systemctl restart spikebot`, then `--check` shows "Lacy mode ON" and whether ffmpeg,
+   yt-dlp, faster-whisper and the YouTube keys are present.
+
+Notes: YouTube only shows custom thumbnails once the channel is phone-verified; until then
+the upload still works and the review card says the thumbnail wasn't set. A Google Cloud
+project that hasn't passed YouTube's API audit can only upload **private** videos (#25).
+Clips live in `data/lacy/jobs/<id>/`; video files are deleted after upload or reject.
+The Whisper model (~150 MB) downloads on the first render.
 
 ## Useful commands
 

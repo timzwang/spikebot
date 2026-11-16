@@ -29,7 +29,8 @@ per phase).
 
 ## Still to build
 
-- **Editor:** vertical 1080x1920, word-level captions, programme watermark/hashtags,
+- **Editor:** vertical 1080x1920, word-level captions, programme watermark/hashtags (Lacy mode
+  already has a Lacy-only version in `editor.py`/`lacy.py`),
   optional AI voiceover hook.
 - **Review queue:** Tim approves each clip.
 - **Uploader:** YouTube, plus the same edit to TikTok and Reels.
@@ -51,7 +52,9 @@ per phase).
 Spike bot for the GTA 6 Clipped YouTube channel. It reads live public chat on Kick and
 Twitch, learns each channel's normal chat rate, and flags moments when chat suddenly
 surges (laughing, "NO WAY", "clip it"). Each moment is saved with a suggested VOD clip
-window and, if it qualifies, posted to a Discord webhook. It never downloads video.
+window and, if it qualifies, posted to a Discord webhook. The chat bot never downloads
+video; only Lacy mode (below) cuts clip-length segments from Lacy's VODs, because his
+programme allows clipping.
 
 It posts to three Discord webhooks, which must stay separate:
 
@@ -107,6 +110,26 @@ it in sync when behaviour or config changes.
   `status_loop()` (every 30s or on an event) sends #status alerts and checks disk every
   5 min; `summary_loop()` posts the daily summary. All Discord posts
   go through `post_discord()`, which takes a payload dict (or wraps plain text).
+- `spikebot/lacy.py`: **Lacy mode** (off unless `LACY_MODE=true` / `lacy.enabled`). For
+  `twitch/lacy` only, `Bot.handle()` re-checks the category with Helix Get Streams at the
+  spike (`fresh_state`) and, for exactly Grand Theft Auto V/VI, `LacyMode.enqueue()` writes
+  `data/lacy/jobs/<id>/job.json`. `LacyMode.worker()` waits `vod_delay_s`, looks up the VOD
+  and runs `python -m spikebot.lacy render ID` as a subprocess (`render_job`: hard guards
+  for channel/programme/category, cut segment, BRB/away/camera-off skip, English-only
+  Whisper check, render, preview, unique thumbnail). A review card + preview goes to
+  #moments; `python -m spikebot.lacy approve ID` runs `upload_job` (daily cap from the CSV,
+  title/hashtag checks, YouTube upload, thumbnail, append to `logs/lacy_submissions.csv`).
+  Titles come from `TITLES` and must pass `title_ok` (contains Lacy, no `BANNED` words,
+  English). Never add a watermark/logo in Lacy mode (`build_ass(watermark=None)`).
+- `spikebot/editor.py`: ffmpeg/yt-dlp helpers used only by Lacy mode: `fetch_segment` (only
+  the clip range of a VOD), `layout` (facecam stacked over gameplay for the whole clip),
+  `away_reason`, `build_ass` (word captions), `render`, `review_copy`, `pick_thumbnail`
+  (dHash vs. `data/lacy/thumbnails.json`), `transcribe` (faster-whisper, lazy import).
+- `spikebot/youtube.py`: YouTube Data API upload (resumable), `set_thumbnail`, and the
+  one-time `python -m spikebot.youtube auth --env .env` that saves `YOUTUBE_REFRESH_TOKEN`.
+- `tests/test_lacy.py`: Lacy config/env, GTA filter, titles, CSV + daily cap, layout,
+  BRB detection, captions without watermark, end-to-end render on a synthetic stream
+  (needs ffmpeg), and the category check at spike time inside `Bot`.
 - `spikebot/messages.py`: pure Discord layouts (embeds) for #moments (`moment`), #status
   (`status`, colour by alert kind) and #daily-summary (`summary`). Times use Discord
   `<t:unix:style>` markup; `plain()` renders a payload as one log line in UK time. Chat
@@ -126,7 +149,8 @@ it in sync when behaviour or config changes.
   clone's owner; if HEAD differs from `/opt/spikebot/.deployed_commit` it stages the
   code, syntax-checks it, swaps it in, `pip install`s if `requirements.txt` changed and
   restarts the bot. Never touches `config.json`, `.env` or `data/`.
-- `.env` / `.env.example`: `TWITCH_CLIENT_ID`, `TWITCH_CLIENT_SECRET`. `main.apply_env()`
+- `.env` / `.env.example`: `TWITCH_CLIENT_ID`, `TWITCH_CLIENT_SECRET`, `LACY_MODE`,
+  `LACY_MAX_UPLOADS_PER_DAY`, `LACY_AUTO_UPLOAD`, `YOUTUBE_CLIENT_ID/SECRET/REFRESH_TOKEN`. `main.apply_env()`
   overlays them on the config (environment > `.env` next to config > `.env` in cwd >
   `config.json`). Tested in `tests/test_env.py`.
 - `config.example.json`: config template. A real `config.json` holds the Discord webhook
@@ -157,7 +181,8 @@ python3 -m venv .venv && .venv/bin/pip install -r requirements.txt -r requiremen
 ### Conventions
 
 - Python 3.11+ syntax (`X | None`), `from __future__ import annotations`, asyncio throughout.
-- Dependencies are kept minimal (`websockets`, `curl_cffi`); add new ones to `requirements.txt`.
+- Dependencies are kept minimal (`websockets`, `curl_cffi`; `yt-dlp` and `faster-whisper`
+  only for Lacy mode, imported in the render subprocess); add new ones to `requirements.txt`.
 - Keep `detector.py` free of I/O so it stays testable with simulated timestamps.
 - Network failures should log and retry rather than crash the service (systemd restarts
   it anyway). Status/summary code must never take the bot down.

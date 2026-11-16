@@ -21,6 +21,18 @@
 
   "data_dir": "data",
 
+  "lacy": {
+    "enabled": false,
+    "channel": "lacy",
+    "allowed_categories": ["Grand Theft Auto V", "Grand Theft Auto VI"],
+    "max_uploads_per_day": 3,
+    "auto_upload": false,
+    "facecam": {"x": 0.0, "y": 0.0, "w": 0.25, "h": 0.30},
+    "privacy": "public",
+    "whisper_model": "base",
+    "submissions_csv": "logs/lacy_submissions.csv"
+  },
+
   "detector": {
     "window_s": 10,
     "warmup_s": 180,

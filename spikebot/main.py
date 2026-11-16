@@ -11,6 +11,7 @@ import asyncio
 import json
 import logging
 import os
+import shutil
 import socket
 import sqlite3
 import time
@@ -21,6 +22,7 @@ from zoneinfo import ZoneInfo
 
 from curl_cffi.requests import AsyncSession
 
+from . import lacy as lacy_
 from . import messages as msg_
 from . import status as st_
 from .detector import DetectorConfig, Spike, SpikeDetector
@@ -109,8 +111,27 @@ async def post_discord(url: str, payload: str | dict) -> None:
         log.warning("discord post failed: %s", e)
 
 
+async def post_discord_file(url: str, payload: dict, path: Path) -> None:
+    """Send a webhook message with one file attached (multipart/form-data)."""
+    boundary = "spikebot" + os.urandom(8).hex()
+    head = (f"--{boundary}\r\nContent-Disposition: form-data; name=\"payload_json\"\r\n"
+            f"Content-Type: application/json\r\n\r\n{json.dumps(payload)}\r\n"
+            f"--{boundary}\r\nContent-Disposition: form-data; name=\"files[0]\";"
+            f" filename=\"{path.name}\"\r\nContent-Type: video/mp4\r\n\r\n").encode()
+    try:
+        body = head + path.read_bytes() + f"\r\n--{boundary}--\r\n".encode()
+        async with AsyncSession() as s:
+            r = await s.post(url, data=body, timeout=120,
+                             headers={"Content-Type": f"multipart/form-data; boundary={boundary}"})
+            if r.status_code >= 300:
+                log.warning("discord upload failed: HTTP %s %s", r.status_code, r.text[:200])
+                await post_discord(url, payload)  # e.g. file too big: send the card anyway
+    except Exception as e:  # noqa: BLE001
+        log.warning("discord upload failed: %s", e)
+
+
 class Bot:
-    def __init__(self, cfg: dict):
+    def __init__(self, cfg: dict, config_path: str | None = None):
         self.cfg = cfg
         self.det_cfg = DetectorConfig(**cfg.get("detector", {}))
         self.store = Store(Path(cfg.get("data_dir", "data")))
@@ -138,6 +159,14 @@ class Bot:
         self.conn = st_.ConnectionWatch(self.detectors, time.time())
         self.live = st_.LiveWatch()
         self.status_events: asyncio.Queue | None = None
+
+        # Lacy mode: Shorts for the Lacy campaign (spikebot/lacy.py)
+        self.lacy = None
+        if lacy_.settings(cfg)["enabled"]:
+            self.lacy = lacy_.LacyMode(cfg, self.data_dir, config_path)
+            if not self.helix:
+                log.warning("Lacy mode is on but Twitch keys are missing: no Lacy clips"
+                            " (the GTA category can't be checked)")
 
     def on_msg(self, key):
         det = self.detectors[key]
@@ -186,10 +215,26 @@ class Bot:
     async def handle(self, key, spike: Spike) -> None:
         st = self.state.get(key) or {}
         meta = self.meta[key]
+        lacy_key = bool(self.lacy and self.lacy.applies(key))
+        lacy_ok = False
+        if lacy_key:
+            # Lacy mode: check his category with Helix Get Streams right now, not
+            # the 2-minute poll. The polled value (closer to the chat onset) must
+            # also be GTA if we have one.
+            polled = st.get("category")
+            fresh = await self.fresh_state(key)
+            if fresh is not None:
+                st = fresh
+                self.state[key] = fresh
+            lacy_ok = (fresh is not None and fresh.get("live")
+                       and self.lacy.category_ok(fresh.get("category"))
+                       and (not polled or self.lacy.category_ok(polled)))
         start = parse_time(st.get("started_at"))
         category = st.get("category") or ""
         status = "candidate"
         if self.required and category and not any(r in category.lower() for r in self.required):
+            status = "filtered_category"
+        elif lacy_key and category and not lacy_ok:
             status = "filtered_category"
         elif spike.score < self.min_score:
             status = "low_score"
@@ -212,6 +257,23 @@ class Bot:
                  rec["onset_uk"], rec["stream_offset_start"])
         if status == "candidate":
             await self.alert(rec)
+        if lacy_key and lacy_ok and status == "candidate":
+            try:
+                self.lacy.enqueue(rec, st)
+            except Exception as e:  # noqa: BLE001 - never take the bot down
+                log.warning("lacy enqueue failed: %s", e)
+        elif lacy_key:
+            log.info("lacy: no clip for this spike (status=%s, category=%r)", status, category)
+
+    async def fresh_state(self, key) -> dict | None:
+        """Live/category from Helix Get Streams at this moment, or None if unknown."""
+        if not self.helix:
+            return None
+        try:
+            return await self.helix.stream_state(key[1])
+        except Exception as e:  # noqa: BLE001
+            log.info("fresh Helix lookup %s failed: %s", key[1], e)
+            return None
 
     async def vod_link(self, key, st: dict, clip_start: float, stream_start: float | None) -> str | None:
         """Link to the VOD at the clip start, or None if it isn't published yet.
@@ -240,6 +302,31 @@ class Bot:
             return
         key = (rec["platform"], rec["channel"])
         await post_discord(url, msg_.moment(rec, self.names.get(key, rec["channel"])))
+
+    # ---- Lacy mode ---------------------------------------------------------
+    async def lacy_review(self, job: dict, preview: Path) -> None:
+        payload = msg_.lacy_review(job, self.lacy_uploads_today(), self.lacy.cfg["max_uploads_per_day"])
+        log.info("lacy: %s", msg_.plain(payload))
+        url = self.cfg.get("discord_webhook_url")
+        if url and preview.exists() and preview.stat().st_size < 9_500_000:
+            await post_discord_file(url, payload, preview)
+        elif url:
+            await post_discord(url, payload)
+
+    async def lacy_uploaded(self, job: dict) -> None:
+        payload = msg_.lacy_uploaded(job)
+        log.info("lacy: %s", msg_.plain(payload))
+        if self.cfg.get("discord_webhook_url"):
+            await post_discord(self.cfg["discord_webhook_url"], payload)
+
+    async def lacy_failed(self, job: dict) -> None:
+        await self.notifier.send("lacy_failed", f"🎬 Lacy clip `{job['id']}` failed:"
+                                 f" {msg_.escape(job.get('reason') or 'unknown error')}",
+                                 kind="lacy")
+
+    def lacy_uploads_today(self) -> int:
+        subs = lacy_.Submissions(Path(self.lacy.cfg["submissions_csv"]))
+        return subs.uploads_on(lacy_.uk_day(time.time()))
 
     # ---- status alerts -----------------------------------------------------
     def on_status(self, key):
@@ -366,8 +453,12 @@ class Bot:
 
     async def run(self) -> None:
         await self.startup_alert()
+        extra = []
+        if self.lacy:
+            extra.append(self.lacy.worker(self.helix, self.lacy_review, self.lacy_uploaded,
+                                          self.lacy_failed))
         await asyncio.gather(self.ticker(), self.poll_state(), self.status_loop(),
-                             self.summary_loop(), *self.chat_tasks())
+                             self.summary_loop(), *self.chat_tasks(), *extra)
 
     async def check(self, seconds: int = 60) -> None:
         tasks = [asyncio.create_task(t) for t in self.chat_tasks(with_status=False)]
@@ -389,6 +480,21 @@ class Bot:
                 print(f"  {key[0]}/{key[1]} live={st['live']} category={st['category']!r}")
             except Exception as e:  # noqa: BLE001
                 print(f"  {key[0]}/{key[1]} info lookup failed: {e}")
+        if self.lacy:
+            lc = self.lacy.cfg
+            print(f"  Lacy mode ON: twitch/{lc['channel']}, categories {lc['allowed_categories']},"
+                  f" uploads today {self.lacy_uploads_today()}/{lc['max_uploads_per_day']},"
+                  f" auto_upload={lc['auto_upload']}")
+            print(f"    ffmpeg: {'OK' if shutil.which('ffmpeg') else 'MISSING (apt install ffmpeg)'}")
+            print(f"    yt-dlp: {'OK' if _has('yt_dlp') else 'MISSING (pip install -r requirements.txt)'}")
+            print(f"    faster-whisper: {'OK' if _has('faster_whisper') else 'MISSING (pip install -r requirements.txt)'}")
+            yt = all(self.cfg.get(k) for k in ("youtube_client_id", "youtube_client_secret",
+                                                "youtube_refresh_token"))
+            print(f"    YouTube keys: {'set' if yt else 'MISSING (see README: Lacy mode)'}")
+            if not self.helix:
+                print("    WARNING: Twitch keys missing, so no Lacy clips will be made")
+        else:
+            print("  Lacy mode off")
         free = st_.disk_free_share(self.data_dir)
         print(f"  disk free: {free:.0%} (status alert below {st_.DISK_MIN_FREE:.0%})")
         preview = msg_.plain(self.summary_message(time.time())).replace(" | ", "\n")
@@ -406,8 +512,19 @@ class Bot:
                 print(f"  {field} not set: {chan} messages are disabled.")
 
 
+def _has(module: str) -> bool:
+    import importlib.util
+    return importlib.util.find_spec(module) is not None
+
+
 ENV_KEYS = {"TWITCH_CLIENT_ID": "twitch_client_id",
-            "TWITCH_CLIENT_SECRET": "twitch_client_secret"}
+            "TWITCH_CLIENT_SECRET": "twitch_client_secret",
+            "LACY_MODE": "lacy_mode",
+            "LACY_MAX_UPLOADS_PER_DAY": "lacy_max_uploads_per_day",
+            "LACY_AUTO_UPLOAD": "lacy_auto_upload",
+            "YOUTUBE_CLIENT_ID": "youtube_client_id",
+            "YOUTUBE_CLIENT_SECRET": "youtube_client_secret",
+            "YOUTUBE_REFRESH_TOKEN": "youtube_refresh_token"}
 
 
 def load_dotenv(path: Path) -> dict[str, str]:
@@ -431,7 +548,7 @@ def load_dotenv(path: Path) -> dict[str, str]:
 
 
 def apply_env(cfg: dict, env_files: list[Path], environ: dict[str, str]) -> dict:
-    """Overlay Twitch credentials onto the config. Precedence: real environment
+    """Overlay Twitch/YouTube credentials and LACY_* switches onto the config. Precedence: real environment
     (e.g. systemd EnvironmentFile) > .env files (first found wins) > config.json."""
     file_vals: dict[str, str] = {}
     for f in reversed(env_files):
@@ -454,7 +571,7 @@ def main() -> None:
     # .env next to config.json, then in the working directory
     env_files = list(dict.fromkeys([cfg_path.resolve().parent / ".env", Path.cwd() / ".env"]))
     apply_env(cfg, env_files, dict(os.environ))
-    bot = Bot(cfg)
+    bot = Bot(cfg, str(cfg_path.resolve()))
     asyncio.run(bot.check() if args.check else bot.run())
 
 

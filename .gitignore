@@ -6,3 +6,5 @@ venv/
 config.json
 *.log
 .env
+logs/
+layout_check.jpg
