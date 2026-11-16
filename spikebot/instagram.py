@@ -18,6 +18,14 @@ For every Lacy Short, right after the YouTube upload:
      refresh_access_token and written back to .env. The token is always read from the
      .env file first, so the running bot picks up the new one without a restart.
 
+Two kinds of token, picked automatically by its prefix:
+  - IGAA... (Instagram Login, older apps): graph.instagram.com, 60-day token,
+    refreshed as above;
+  - EAA...  (Unified login = Facebook Login for Business, the only option Meta gives
+    new apps): graph.facebook.com, IG_USER_ID is the Instagram account id from
+    /me/assigned_instagram_accounts, the token doesn't expire by default, so it is
+    checked daily instead of refreshed (#status alert if it stops working).
+
 CLI:  python -m spikebot.instagram check | refresh | retry [JOB]
 """
 from __future__ import annotations
@@ -36,6 +44,16 @@ from pathlib import Path
 log = logging.getLogger("instagram")
 
 GRAPH = "https://graph.instagram.com"
+FB_GRAPH = "https://graph.facebook.com"
+
+
+def instagram_login(token: str) -> bool:
+    """IGAA... tokens come from Instagram Login; anything else (EAA...) from Unified login."""
+    return token.startswith("IG")
+
+
+def host_for(token: str) -> str:
+    return GRAPH if instagram_login(token) else FB_GRAPH
 DEFAULTS = {
     "enabled": True,             # still needs IG_USER_ID + IG_ACCESS_TOKEN to do anything
     "max_per_day": 3,            # UK calendar day; .env IG_MAX_REELS_PER_DAY overrides
@@ -114,14 +132,14 @@ class Instagram:
         if http is None:
             from curl_cffi import requests as http  # noqa: N813
         self.user_id, self.token, self.http = user_id, token, http
-        self.base = f"{GRAPH}/{version}"
+        self.version = version
 
     def _call(self, method: str, path: str, **kw) -> dict:
         tok = self.token.get()
         if not tok:
             raise InstagramError("IG_ACCESS_TOKEN is not set in .env")
         try:
-            r = getattr(self.http, method)(f"{self.base}/{path}", timeout=60,
+            r = getattr(self.http, method)(f"{host_for(tok)}/{self.version}/{path}", timeout=60,
                                            headers={"Authorization": f"Bearer {tok}"}, **kw)
         except Exception as e:  # noqa: BLE001 - never let a URL/token leak via the message
             raise InstagramError(f"{method.upper()} {path.split('?')[0]}: {type(e).__name__}") from None
@@ -136,7 +154,20 @@ class Instagram:
         return j
 
     def me(self) -> dict:
+        """Instagram Login only: the token's own account."""
         return self._call("get", "me", params={"fields": "user_id,username"})
+
+    def assigned_accounts(self) -> list[dict]:
+        """Unified login: Instagram accounts this token may use (id = IG_USER_ID)."""
+        return self._call("get", "me/assigned_instagram_accounts",
+                          params={"fields": "id,username"}).get("data") or []
+
+    def account(self) -> dict:
+        """IG_USER_ID's account, read with this token (works for both kinds)."""
+        fields = "user_id,username" if instagram_login(self.token.get()) else "id,username"
+        j = self._call("get", self.user_id, params={"fields": fields})
+        j.setdefault("user_id", j.get("id"))
+        return j
 
     def create_reel(self, video_url: str, caption: str, share_to_feed: bool = True) -> str:
         j = self._call("post", f"{self.user_id}/media", json={
@@ -204,12 +235,15 @@ RETRY_REFRESH_S = 6 * 3600
 
 def maybe_refresh(icfg: dict, token: Token, state: State, now: float | None = None,
                   refresh=None, force: bool = False) -> str:
-    """Refresh when due. Returns none / new_token / not_due / refreshed / failed: <why>.
-    A token we haven't seen before (pasted by hand) counts as just issued."""
+    """Refresh when due. Returns none / unified / new_token / not_due / refreshed /
+    failed: <why>. A token we haven't seen before (pasted by hand) counts as just issued.
+    Unified login (EAA...) tokens have no refresh endpoint: see check_token()."""
     now = now or time.time()
     tok = token.get()
     if not tok:
         return "none"
+    if not instagram_login(tok):
+        return "unified"
     st = state.load()
     if st.get("token_fp") != fingerprint(tok):
         st = {"token_fp": fingerprint(tok), "refreshed_at": now, "expires_at": now + 60 * 86400}
@@ -230,6 +264,27 @@ def maybe_refresh(icfg: dict, token: Token, state: State, now: float | None = No
     state.save({"token_fp": fingerprint(new), "refreshed_at": now, "expires_at": now + expires_in})
     log.info("instagram token refreshed; valid until %s", _uk(now + expires_in))
     return "refreshed"
+
+
+CHECK_EVERY_S = 86400
+
+
+def check_token(icfg: dict, token: Token, state: State, ig, now: float | None = None) -> str:
+    """Daily check that the token can still read IG_USER_ID. ok / not_due / failed: <why>."""
+    now = now or time.time()
+    st = state.load()
+    if now - st.get("last_check", 0) < CHECK_EVERY_S:
+        return "not_due"
+    st["last_check"] = now
+    try:
+        ig.account()
+        st.pop("last_error", None)
+        res = "ok"
+    except InstagramError as e:
+        st["last_error"] = str(e)
+        res = f"failed: {e}"
+    state.save(st)
+    return res
 
 
 # --------------------------------------------------------------------------
@@ -547,31 +602,64 @@ def main(argv: list[str] | None = None) -> int:
     icfg, token = xp.icfg, xp.token
     state = State(Path(cfg.get("data_dir", "data")))
     if args.cmd == "check":
+        ok = True
+        tok = token.get()
         print(f"IG_USER_ID: {'set' if icfg['user_id'] else 'MISSING'} · IG_ACCESS_TOKEN: "
-              f"{'set' if token.get() else 'MISSING'} · auto-post {'ON' if active(icfg, token) else 'OFF'}")
+              f"{'set' if tok else 'MISSING'} · auto-post {'ON' if active(icfg, token) else 'OFF'}")
         print(f"Reels today: {xp.posts.published_on(lacy.uk_day(time.time()))}/{icfg['max_per_day']}")
-        st = state.load()
-        if st.get("refreshed_at"):
-            print(f"Token last refreshed {_uk(st['refreshed_at'])}, expires about {_uk(st['expires_at'])}")
-        if token.get():
-            try:
-                me = Instagram(icfg["user_id"], token, icfg["api_version"]).me()
-                print(f"Token OK: @{me.get('username')} (user_id {me.get('user_id')})")
-                if icfg["user_id"] and str(me.get("user_id")) != icfg["user_id"]:
-                    print("WARNING: IG_USER_ID doesn't match the token's account")
-            except InstagramError as e:
-                print(f"Token check FAILED: {e}")
-                return 1
+        if tok:
+            ig = Instagram(icfg["user_id"], token, icfg["api_version"])
+            if instagram_login(tok):
+                print("Token type: Instagram Login (graph.instagram.com, refreshed every "
+                      f"{icfg['refresh_every_days']} days)")
+                st = state.load()
+                if st.get("refreshed_at"):
+                    print(f"Token last refreshed {_uk(st['refreshed_at'])}, expires about {_uk(st['expires_at'])}")
+                try:
+                    me = ig.me()
+                    print(f"Token OK: @{me.get('username')} (user_id {me.get('user_id')})")
+                    if icfg["user_id"] and str(me.get("user_id")) != icfg["user_id"]:
+                        print(f"WARNING: IG_USER_ID doesn't match the token's account: use {me.get('user_id')}")
+                        ok = False
+                except InstagramError as e:
+                    print(f"Token check FAILED: {e}")
+                    ok = False
+            else:
+                print("Token type: Unified login / Facebook Login for Business (graph.facebook.com,"
+                      " checked daily)")
+                try:
+                    accts = ig.assigned_accounts()
+                    for a in accts:
+                        mark = "  <- IG_USER_ID" if str(a.get("id")) == icfg["user_id"] else ""
+                        print(f"  account @{a.get('username')}: id {a.get('id')}{mark}")
+                    if not accts:
+                        print("  No Instagram accounts on this token. Add business_management to the"
+                              " login configuration (README: Instagram Reels) and generate a new token.")
+                    elif icfg["user_id"] not in {str(a.get("id")) for a in accts}:
+                        print("  WARNING: IG_USER_ID isn't one of these: set it to the id above")
+                except InstagramError as e:
+                    print(f"  Account list FAILED: {e}")
+                if icfg["user_id"]:
+                    try:
+                        a = ig.account()
+                        print(f"Token OK: can use @{a.get('username')} (id {a.get('id')})")
+                    except InstagramError as e:
+                        print(f"Token check FAILED for IG_USER_ID: {e}")
+                        ok = False
         try:
             host = host_from_config(cfg, base, icfg)
             print("Bucket upload + signed link + delete: "
                   + bucket_selftest(host, Path(cfg.get("data_dir", "data")) / "instagram"))
         except Exception as e:  # noqa: BLE001
             print(f"Bucket test FAILED: {type(e).__name__}: {str(e)[:300]}")
-            return 1
-        return 0
+            ok = False
+        return 0 if ok and tok and icfg["user_id"] else 1
     if args.cmd == "refresh":
         res = maybe_refresh(icfg, token, state, force=True)
+        if res == "unified":
+            print("Unified login tokens (EAA...) don't use refresh; they don't expire by default."
+                  " `check` shows whether it still works.")
+            return 0
         print(f"Token: {res}" + (" (saved to .env)" if res == "refreshed" else ""))
         return 0 if res == "refreshed" else 1
     data_dir = Path(cfg.get("data_dir", "data"))

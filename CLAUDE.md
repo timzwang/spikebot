@@ -172,8 +172,12 @@ it in sync when behaviour or config changes.
   GTA hashtags. Cap `max_per_day` (3, `IG_MAX_REELS_PER_DAY`) per UK day from
   `logs/instagram_posts.csv`; over cap = `instagram_status: waiting`, failures retried up to
   `max_attempts`; `Bot.instagram_loop()` runs hourly (`retry_pending` + `maybe_refresh`).
-  Token: `Token` reads `.env` before the process env (systemd's copy goes stale); refreshed
-  every 50 days via `refresh_access_token` and saved with `youtube.set_env_value` (atomic).
+  Token: `Token` reads `.env` before the process env (systemd's copy goes stale). Host by
+  prefix (`host_for`): `IGAA` = Instagram Login on graph.instagram.com, refreshed every 50 days
+  via `refresh_access_token`, saved with `youtube.set_env_value` (atomic); `EAA` = Unified login
+  (Facebook Login for Business, the only option for new Meta apps) on graph.facebook.com, no
+  refresh, `check_token` daily; `IG_USER_ID` comes from `/me/assigned_instagram_accounts`
+  (needs `business_management` in the login configuration).
   `data/instagram/state.json` holds only a token fingerprint and times. The token goes in the
   `Authorization` header and is scrubbed from errors. CLI: `python -m spikebot.instagram
   check | refresh | retry [JOB]`. Tested in `tests/test_instagram.py`.

@@ -347,7 +347,15 @@ class Bot:
         if not ig_.active(self.ig.icfg, self.ig.token):
             return
         res = await asyncio.to_thread(ig_.maybe_refresh, self.ig.icfg, self.ig.token, state, now)
-        if res.startswith("failed"):
+        if res == "unified":  # no refresh endpoint: check it still works once a day
+            res = await asyncio.to_thread(ig_.check_token, self.ig.icfg, self.ig.token, state,
+                                          self.ig.ig_factory(), now)
+            if res.startswith("failed"):
+                await self.notifier.send(
+                    "instagram_token", f"📸 Instagram token stopped working ({res[8:]}). Generate a new"
+                    " one (README: Instagram Reels), put it in .env as IG_ACCESS_TOKEN, then run"
+                    " `python -m spikebot.instagram check`.", kind="lacy")
+        elif res.startswith("failed"):
             exp = state.load().get("expires_at") or now
             await self.notifier.send(
                 "instagram_token", f"📸 Instagram token refresh {res}. It expires about "

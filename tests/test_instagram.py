@@ -276,3 +276,55 @@ def test_bot_tick_alerts_on_failed_refresh(tmp_path):
     finally:
         I.refresh_token = orig
     assert sent and sent[0][0] == "instagram_token" and TOKEN not in sent[0][1]
+
+
+# ---- Unified login (EAA... tokens, graph.facebook.com) --------------------------------
+FB = "EAAQfb_secret_789"
+
+
+class FakeFB(FakeHTTP):
+    def __init__(self, accounts=(("1784", "gta6.clipped"),), **kw):
+        super().__init__(**kw)
+        self.accounts = accounts
+
+    def post(self, url, timeout=None, headers=None, json=None, **kw):
+        assert url.startswith("https://graph.facebook.com/v23.0/")
+        return super().post(url, timeout, {"Authorization": f"Bearer {TOKEN}"}, json)
+
+    def get(self, url, timeout=None, headers=None, params=None, **kw):
+        self.calls.append(("get", url, headers, params))
+        assert headers["Authorization"] == f"Bearer {FB}" and url.startswith("https://graph.facebook.com/")
+        if url.endswith("/me/assigned_instagram_accounts"):
+            return Resp(200, {"data": [{"id": i, "username": u} for i, u in self.accounts]})
+        if url.endswith("/1784") and params == {"fields": "id,username"}:
+            return Resp(200, {"id": "1784", "username": "gta6.clipped"})
+        self.calls.pop()
+        return super().get(url, timeout, headers, params)
+
+
+def test_unified_login_token_uses_graph_facebook_and_publishes(tmp_path):
+    p = env(tmp_path, FB)
+    tok = I.Token(p)
+    http = FakeFB()
+    ig = I.Instagram("1784", tok, http=http)
+    assert ig.assigned_accounts() == [{"id": "1784", "username": "gta6.clipped"}]
+    assert ig.account()["user_id"] == "1784"
+    host = FakeHost()
+    clip = tmp_path / "c.mp4"
+    clip.write_bytes(b"v")
+    res = I.post_reel(ig, host, clip, "cap", I.settings({}, tmp_path), sleep=lambda s: None)
+    assert res["permalink"] == "https://www.instagram.com/reel/ABC123/" and host.deleted == 1
+    assert all(c[1].startswith("https://graph.facebook.com/v23.0/") for c in http.calls)
+
+
+def test_unified_login_token_is_checked_daily_not_refreshed(tmp_path):
+    ic = I.settings({"ig_user_id": "1784"}, tmp_path)
+    tok, state = I.Token(env(tmp_path, FB)), I.State(tmp_path / "data")
+    assert I.maybe_refresh(ic, tok, state, T, refresh=lambda t: pytest.fail("no refresh")) == "unified"
+    ig = I.Instagram("1784", tok, http=FakeFB())
+    assert I.check_token(ic, tok, state, ig, T) == "ok"
+    assert I.check_token(ic, tok, state, ig, T + 3600) == "not_due"
+    bad = I.Instagram("9999", tok, http=FakeFB())
+    res = I.check_token(ic, tok, state, bad, T + 86400)  # can't read that account
+    assert res.startswith("failed") and FB not in res and state.load()["last_error"]
+    assert I.host_for(TOKEN) == "https://graph.instagram.com" and I.host_for(FB) == "https://graph.facebook.com"

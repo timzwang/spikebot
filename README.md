@@ -200,23 +200,34 @@ After each Lacy Short is on YouTube (`approve`, or auto-upload):
    - each attempt is logged to `logs/instagram_posts.csv`
      (`posted_uk, status, job_id, mode, instagram_url, media_id, hook, error`) and the Reel
      link is added to `instagram_url` in `logs/lacy_submissions.csv` for Content Rewards.
-3. **Token:** long-lived tokens last 60 days. The bot refreshes it every 50 days
+3. **Token:** Instagram Login (`IGAA...`) tokens last 60 days. The bot refreshes it every 50 days
    (`refresh_access_token`) and writes the new one back into `.env` (it always reads the
    token from `.env`, so no restart is needed). If a refresh fails, #status gets an alert
-   and it retries every 6 hours.
+   and it retries every 6 hours. Unified login
+   (`EAA...`) tokens don't expire by default and are checked once a day instead.
 
 **Setup (once)**
 
 1. The Instagram account must be a **Professional** account (Creator or Business). Switch in
    the Instagram app: Settings > Account type and tools.
-2. At developers.facebook.com create an app (use case **"Manage messaging & content on
-   Instagram"**, i.e. the Instagram API with Instagram Login). Under App roles > Roles add
-   the Instagram account as an **Instagram Tester** and accept the invite in the Instagram
-   app (Settings > Website permissions > Apps and websites > Tester invites). The app can stay
-   in Development mode because it only posts to your own account: no App Review needed.
-3. In the app: Instagram > API setup with Instagram login > **Generate access token** for the
-   account (permissions `instagram_business_basic` and `instagram_business_content_publish`).
-   It shows a long-lived token and the account's user ID.
+2. At developers.facebook.com create an app with the **Instagram API** use case. Under App
+   roles > Roles add the Instagram account as an **Instagram Tester** and accept the invite in
+   the Instagram app (Settings > Website permissions > Apps and websites > Tester invites). The
+   app can stay in Development mode because it only posts to your own account.
+3. Get a token. New apps only get **API setup with Unified login** (Facebook Login for
+   Business). Its tokens start with `EAA` and work on graph.facebook.com; the bot picks the host
+   from the token. In Use cases > Instagram API > Customize > API setup with Unified login:
+   - the login configuration must include `instagram_basic`, `instagram_content_publish` and
+     `business_management`. The Unified login editor doesn't offer `business_management`: add
+     the **Facebook Login for Business** product, then edit the same configuration under
+     Facebook Login for Business > Configurations;
+   - **2. Generate access tokens** > add the Instagram account > generate the token;
+   - `python -m spikebot.instagram check` then lists the Instagram accounts the token can use,
+     with the id to put in `IG_USER_ID`.
+   These tokens don't expire by default, so the bot checks the token daily instead of
+   refreshing it and alerts #status if it stops working. (Older apps that still have **API
+   setup with Instagram login** give `IGAA...` tokens: graph.instagram.com, refreshed every 50
+   days as described above.)
 4. In `/opt/spikebot/.env`: `IG_USER_ID=...`, `IG_ACCESS_TOKEN=...` (and `VIDEOS_GCS_BUCKET`,
    see "Finished videos on your phone"). Then check and restart:
 
