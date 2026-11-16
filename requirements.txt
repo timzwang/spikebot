@@ -1,0 +1,2 @@
+websockets>=13,<16
+curl_cffi>=0.7

@@ -1,0 +1,32 @@
+{
+  "channels": [
+    {"platform": "kick", "name": "adinross", "programme": "Adin Ross clipping programme"},
+    {"platform": "kick", "name": "sealstats", "programme": "Seal (Content Rewards)"},
+    {"platform": "twitch", "name": "lacy", "programme": "Lacy (Reach pool)"},
+    {"platform": "twitch", "name": "kaicenat", "programme": null}
+  ],
+
+  "require_category_contains": ["Grand Theft Auto"],
+  "min_score_to_alert": 3,
+
+  "discord_webhook_url": "",
+
+  "twitch_client_id": "",
+  "twitch_client_secret": "",
+
+  "kick_pusher_key": "",
+  "kick_pusher_cluster": "",
+
+  "data_dir": "data",
+
+  "detector": {
+    "window_s": 10,
+    "warmup_s": 180,
+    "min_rate": 1.0,
+    "ratio": 2.5,
+    "z": 3.0,
+    "cooldown_s": 45,
+    "pre_roll_s": 30,
+    "post_roll_s": 15
+  }
+}
