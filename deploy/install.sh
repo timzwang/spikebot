@@ -2,7 +2,7 @@
 # One-command server setup for spikebot (Ubuntu/Debian). Run as root from a git
 # clone of the repo:
 #
-#   cd /root/spikebot && sudo bash deploy/install.sh
+#   cd ~/spikebot && sudo bash deploy/install.sh
 #
 # It is safe to re-run. It:
 #   1. installs system packages and creates the `spikebot` user
