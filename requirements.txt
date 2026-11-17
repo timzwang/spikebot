@@ -11,3 +11,5 @@ discord.py>=2.5,<3
 scenedetect[opencv-headless]>=0.6.4,<0.7
 # /feedback and the #inspiration artistic read (Claude API); optional, imported lazily
 anthropic>=1.17,<2
+# Tokyo Girl: beat map of the song the edit is cut to (render subprocess only; ~200 MB with numba)
+librosa>=0.10,<0.12

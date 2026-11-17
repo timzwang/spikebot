@@ -62,6 +62,10 @@ DEFAULTS = {
     # official GTA VI logo (transparent PNG from Rockstar's own media) for the "logo" intro;
     # kept outside media_dir so it is never picked as a shot. Missing file = no intro.
     "logo_file": "data/brand/gta6_logo.png",
+    # songs to sync cuts to (only measured; edits stay silent). Newest is used unless
+    # "song" names one (file stem). Empty folder = the fixed `bpm` grid.
+    "music_dir": "data/music",
+    "song": "",
     "export_dir": "exports/tokyo_girl",
     "state_file": "data/tokyo_girl/state.json",
     "sources": [
@@ -107,7 +111,7 @@ def settings(cfg: dict, base: Path | None = None) -> dict:
     if not 1 <= out["min_s"] <= out["max_s"]:
         raise ValueError("tokyo_girl: need 1 <= min_s <= max_s")
     if base is not None:
-        for k in ("media_dir", "export_dir", "state_file", "logo_file"):
+        for k in ("media_dir", "export_dir", "state_file", "logo_file", "music_dir"):
             p = Path(out[k])
             out[k] = str(p if p.is_absolute() else base / p)
     out["media_dir"] = str(migrate_media_dir(Path(out["media_dir"])))
@@ -573,7 +577,9 @@ def beat_pattern(n_bars: int, rng: random.Random, pace: str = "normal") -> list[
 
 def plan_clip(story: Story, shots: list[Shot], lcfg: dict, today: date, rng: random.Random,
               uses: dict[str, int] | None = None, pace: str = "normal", transition: str = "flash",
-              cards: list[str] | None = None) -> Plan:
+              cards: list[str] | None = None, beats: list[float] | None = None) -> Plan:
+    """`beats`: real beat times (seconds from the edit start, from music.grid) so cuts
+    follow the song; None = an even grid at lcfg["bpm"]."""
     if not shots:
         raise editor.EditError("no usable media: run `fetch`, or drop official Rockstar "
                                f"screenshots/trailers into {lcfg['media_dir']}")
@@ -581,6 +587,13 @@ def plan_clip(story: Story, shots: list[Shot], lcfg: dict, today: date, rng: ran
     bpm = lcfg["bpm"]
     beat = beat_s(bpm)
     texts = [fill(c, today) for c in (cards or story.cards)]
+    if beats:
+        bpm = 60.0 / statistics.median([b - a for a, b in zip(beats, beats[1:])])
+        beat = beat_s(bpm)
+
+    def at(i: int) -> float:
+        return beats[i] if beats and i < len(beats) else i * beat
+
     bars = card_bars(len(texts), bpm, lcfg["min_s"], lcfg["max_s"], rng)
     pattern = beat_pattern(sum(bars), rng, pace)
     cards, slots, t, bar_i = [], [], 0, 0
@@ -588,10 +601,10 @@ def plan_clip(story: Story, shots: list[Shot], lcfg: dict, today: date, rng: ran
     used_here: set[str] = set()
     k = 0
     for ci, (text, nb) in enumerate(zip(texts, bars)):
-        cstart = t * beat
+        cstart = at(t)
         for _ in range(nb):
-            for j, beats in enumerate(pattern[bar_i]):
-                dur = beats * beat
+            for j, n_beats in enumerate(pattern[bar_i]):
+                dur = at(t + n_beats) - at(t)
                 tag = want[k % len(want)]
                 k += 1
                 shot = choose_shot(shots, tag, dur, used_here, uses, rng)
@@ -602,15 +615,15 @@ def plan_clip(story: Story, shots: list[Shot], lcfg: dict, today: date, rng: ran
                     offset = shot.start + room * rng.uniform(0.2, 0.8)
                 else:
                     offset = 0.0
-                first_of_card = (t * beat == cstart)
-                slots.append(Slot(shot, round(offset, 3), beats, round(t * beat, 3), dur, ci,
+                first_of_card = (at(t) == cstart)
+                slots.append(Slot(shot, round(offset, 3), n_beats, round(at(t), 3), dur, ci,
                                   flash=first_of_card and ci > 0 and transition == "flash",
                                   pan=rng.choice((-1, 1)),
                                   punch=first_of_card and transition == "zoom"))
-                t += beats
+                t += n_beats
             bar_i += 1
-        cards.append((cstart, t * beat, text))
-    return Plan(story, cards, slots, t * beat)
+        cards.append((cstart, at(t), text))
+    return Plan(story, cards, slots, at(t))
 
 
 def choose_shot(shots: list[Shot], tag: str, dur: float, used_here: set[str],
@@ -708,7 +721,8 @@ def slot_filter(slot: Slot, zoom: float) -> str:
 
 def render_slot(slot: Slot, media: Path, out: Path) -> None:
     src = str((media / slot.shot.src).resolve())
-    frames = round(slot.dur * FPS)
+    # frame count from the slot's edges, so uneven real beats never drift over a whole edit
+    frames = round((slot.start + slot.dur) * FPS) - round(slot.start * FPS)
     if slot.shot.kind == "video":
         inp = ["-ss", f"{slot.offset:.3f}", "-t", f"{slot.dur + 0.2:.3f}", "-i", src]
         zoom = 1.0 if slot.shot.w / max(slot.shot.h, 1) > 1.2 else 1.08
@@ -882,6 +896,12 @@ class ReviewAdapter:
         state_path = Path(self.lcfg["state_file"])
         state = load_state(state_path)
         taken = {v["story"] for r in item["rounds"] for v in r["variants"]} if n > 1 else set()
+        from . import music
+        song = None
+        try:
+            song = music.Library(self.lcfg["music_dir"]).current(self.lcfg.get("song") or None)
+        except (music.MusicError, OSError) as e:
+            log.warning("song beat map unavailable, using the %s BPM grid: %s", self.lcfg["bpm"], e)
         out = []
         for spec in specs:
             r = st.resolve(spec["style"])
@@ -902,15 +922,20 @@ class ReviewAdapter:
             pace = spec["style"].get("pace", "normal")
             if r["pace"].get("shot_s"):
                 pace = pace_for_shot(r["pace"]["shot_s"], self.lcfg["bpm"])
+            beats, song_start = None, None
+            if song:
+                song_start = music.start_for(song)
+                beats = music.grid(song, song_start, float(self.lcfg["max_s"]) + 8)
             plan = plan_clip(story, self.shots(), self.lcfg, today, random.Random(seed), state.get("uses"),
-                             pace=pace, transition=r["transition"], cards=cards)
+                             pace=pace, transition=r["transition"], cards=cards, beats=beats)
             stem = f"r{n}_{spec['label']}"
             mp4 = folder / f"{stem}.mp4"
             logo = Path(self.lcfg.get("logo_file") or "")
             intro_s = 0.0
             if r["intro"] == "logo":
                 if logo.is_file():
-                    intro_s = bar_s(self.lcfg["bpm"])
+                    # one bar; with a song the logo fades away exactly on the drop
+                    intro_s = beats[music.BUILD_BEATS] if beats else bar_s(self.lcfg["bpm"])
                 else:
                     log.warning("logo intro asked for but %s is missing: rendering without it", logo)
             shown = cards_for_level(plan.cards, r["text_level"], intro_s)
@@ -934,7 +959,10 @@ class ReviewAdapter:
                         "tags": ["GTA 6", "GTA VI", "Shorts", "Vice City"], "hook": title,
                         "captions": caps, "file": mp4.name, "preview": prev.name,
                         "duration": round(plan.duration, 1), "cuts": len(plan.slots) - 1, "silent": True,
-                        "text_cards": len(shown), "intro": "logo" if intro_s else "none"})
+                        "text_cards": len(shown), "intro": "logo" if intro_s else "none",
+                        "music": ({"song": song["name"], "start_s": song_start, "bpm": song["bpm"]}
+                                  if song else None),
+                        "music_note": music.note(song, song_start) if song else None})
         save_state(state_path, state)
         return out
 
@@ -958,8 +986,9 @@ class ReviewAdapter:
         export.mkdir(parents=True, exist_ok=True)
         stem = f"{item['id']}_{v['story']}"
         shutil.copyfile(src, export / f"{stem}.mp4")
-        (export / f"{stem}.txt").write_text(f"IG: {v['captions']['instagram']}\nTikTok: {v['captions']['tiktok']}\n",
-                                            encoding="utf-8")
+        extra = (v.get("music_note") or "").replace("**", "").replace("🎵 ", "")
+        (export / f"{stem}.txt").write_text(f"IG: {v['captions']['instagram']}\nTikTok: {v['captions']['tiktok']}\n"
+                                            + (f"{extra}\n" if extra else ""), encoding="utf-8")
 
 
 def make_review(lcfg: dict, n: int = 1, now: float | None = None, shots: list[Shot] | None = None) -> list[str]:

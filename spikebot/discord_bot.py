@@ -90,7 +90,8 @@ def round_payload(item: dict, rnd: dict, extra: str = "") -> dict:
         caps = v.get("captions") or {}
         embeds.append({
             "title": name[:250], "color": VARIANT_COLOUR.get(v["label"][0], 0x99AAB5),
-            "description": f"{v.get('duration', '?')}s · {v.get('cuts', 0)} cuts\n{st.describe(v['style'])}"[:1500],
+            "description": (f"{v.get('duration', '?')}s · {v.get('cuts', 0)} cuts\n{st.describe(v['style'])}"
+                            + (f"\n{v['music_note']}" if v.get("music_note") else ""))[:1500],
             "fields": [{"name": "YouTube title", "value": code(v.get("title", ""), 120), "inline": False},
                        {"name": "Instagram caption", "value": code(caps.get("instagram", "")), "inline": False},
                        {"name": "TikTok caption", "value": code(caps.get("tiktok", "")), "inline": False}],
@@ -124,7 +125,8 @@ def manual_payload(item: dict, v: dict, platforms: list[str], link: str | None =
     names = [review.NAMES[p] for p in platforms]
     lines = [f"📱 **{label}** `{item['id']}` approved ({v['label']}) · post on **{', '.join(names)}**"]
     if v.get("silent"):
-        lines.append("Silent edit: add the official Tokyo Girl sound in the app.")
+        lines.append(v["music_note"] if v.get("music_note")
+                     else "Silent edit: add the official Tokyo Girl sound in the app.")
     caps = v.get("captions") or {}
     blocks = []
     if "tiktok" in platforms:
@@ -724,6 +726,12 @@ class ReviewBot:
         if not self.allowed(message.author):
             return
         from . import inspiration
+        songs = [a for a in message.attachments
+                 if (a.content_type or "").startswith("audio/")
+                 or a.filename.lower().endswith((".mp3", ".m4a", ".aac", ".wav", ".ogg", ".flac", ".opus"))]
+        if songs:
+            await self.add_songs(message, songs)
+            return
         videos = [a for a in message.attachments
                   if (a.content_type or "").startswith("video/") or a.filename.lower().endswith((".mp4", ".mov", ".webm", ".mkv"))]
         urls = inspiration.links(message.content)
@@ -771,6 +779,39 @@ class ReviewBot:
                                   "**Please upload the video file directly here in this thread** and I'll analyse it.")
             else:
                 await thread.send(f"⚠️ Analysis failed: {res.get('error')}")
+
+    async def add_songs(self, message, songs) -> None:
+        """Audio in #inspiration = the song to cut Tokyo Girl edits to. Only measured (beats,
+        drop); edits stay silent and Tim adds the sound in the app."""
+        for a in songs:
+            name = presets_.parse_name(message.content) or Path(a.filename).stem
+            tmp = self.data_dir / "music" / ".incoming"
+            tmp.mkdir(parents=True, exist_ok=True)
+            path = tmp / f"{uuid.uuid4().hex}{Path(a.filename).suffix.lower() or '.mp3'}"
+            await a.save(path)
+            out = tmp / f"{uuid.uuid4().hex}.json"
+            try:
+                p = await asyncio.create_subprocess_exec(
+                    sys.executable, "-m", "spikebot.music", "--config", self.config_path, "add", str(path),
+                    "--name", name, "--json", str(out), stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.STDOUT)
+                text, _ = await asyncio.wait_for(p.communicate(), 600)
+                res = json.loads(out.read_text(encoding="utf-8")) if out.exists() else \
+                    {"ok": False, "error": text.decode(errors="replace")[-200:]}
+            except asyncio.TimeoutError:
+                res = {"ok": False, "error": "analysis took over 10 minutes"}
+            finally:
+                path.unlink(missing_ok=True)
+                out.unlink(missing_ok=True)
+            if res.get("ok"):
+                from .music import mmss
+                await message.reply(
+                    f"🎵 **{res['name']}** is now the song for Tokyo Girl edits: {res['bpm']:.0f} BPM, drop at"
+                    f" {mmss(res['drop_s'])}. Cuts will land on its beats and the drop; each card says where to"
+                    f" start the sound (about {mmss(res['start_s'])}). The edits stay silent: add the sound in the"
+                    " app.", mention_author=False)
+            else:
+                await message.reply(f"⚠️ Couldn't read that song: {res.get('error')}", mention_author=False)
 
     async def analyse(self, name: str, copy: list[str], url: str | None = None, file: Path | None = None,
                       note: str = "") -> dict:
