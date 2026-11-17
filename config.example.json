@@ -22,6 +22,18 @@
 
   "data_dir": "data",
 
+  "discovery": {
+    "enabled": false,
+    "categories": ["Grand Theft Auto VI"],
+    "languages": ["en"],
+    "min_viewers": 3000,
+    "max_channels": 40,
+    "interval_s": 300,
+    "drop_after_s": 1800,
+    "exclude": [],
+    "max_alerts_per_hour": 12
+  },
+
   "lacy": {
     "enabled": false,
     "channel": "lacy",

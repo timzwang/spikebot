@@ -12,6 +12,7 @@ import random
 import re
 import time
 from typing import AsyncIterator, Callable
+from urllib.parse import urlencode
 
 import websockets
 from curl_cffi.requests import AsyncSession
@@ -238,6 +239,173 @@ async def run_twitch_chat(channel: str, on_msg: ChatCallback,
             backoff = min(backoff * 2, 120)
 
 
+def _parse_privmsg_chan(line: str) -> tuple[str, str, str] | None:
+    """(channel, user, text) from an IRC PRIVMSG line, channel without '#'."""
+    if " PRIVMSG #" not in line:
+        return None
+    if line.startswith("@"):
+        _, line = line.split(" ", 1)
+    try:
+        prefix, rest = line[1:].split(" PRIVMSG #", 1)
+        chan, text = rest.split(" :", 1)
+        return chan.strip().lower(), prefix.split("!", 1)[0], text
+    except (IndexError, ValueError):
+        return None
+
+
+def _parse_join(line: str) -> str | None:
+    """Channel from our own ':justinfanN!... JOIN #chan' confirmation."""
+    if " JOIN #" not in line or not line.startswith(":justinfan"):
+        return None
+    return line.rsplit(" JOIN #", 1)[1].strip().lower()
+
+
+class JoinLimiter:
+    """Shared JOIN budget across all pool connections. Twitch allows anonymous
+    users about 20 JOINs per 10 s; we stay under it."""
+
+    def __init__(self, per_window: int = 15, window_s: float = 11.0, clock=time.monotonic):
+        self.per_window, self.window_s, self.clock = per_window, window_s, clock
+        self.stamps: list[float] = []
+        self.lock = asyncio.Lock()
+
+    async def acquire(self) -> None:
+        async with self.lock:
+            while True:
+                now = self.clock()
+                self.stamps = [t for t in self.stamps if now - t < self.window_s]
+                if len(self.stamps) < self.per_window:
+                    self.stamps.append(now)
+                    return
+                await asyncio.sleep(self.window_s - (now - self.stamps[0]) + 0.05)
+
+
+class _PoolConn:
+    def __init__(self, pool: "TwitchChatPool", idx: int):
+        self.pool, self.idx = pool, idx
+        self.channels: set[str] = set()
+        self.joined: set[str] = set()
+        self.ws = None
+        self.wake = asyncio.Event()
+
+    async def run(self) -> None:
+        url = "wss://irc-ws.chat.twitch.tv:443"
+        backoff = 2
+        while True:
+            try:
+                async with websockets.connect(url, ping_interval=None, open_timeout=20,
+                                              max_queue=4096) as ws:
+                    self.ws, self.joined = ws, set()
+                    await ws.send("PASS SCHMOOPIIE")
+                    await ws.send(f"NICK justinfan{random.randint(10000, 99999)}")
+                    log.info("twitch pool #%s connected (%s channels)", self.idx, len(self.channels))
+                    backoff = 2
+                    sync = asyncio.create_task(self._sync(ws))
+                    try:
+                        async for raw in ws:
+                            for line in raw.split("\r\n"):
+                                if line:
+                                    await self._line(ws, line)
+                    finally:
+                        sync.cancel()
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:  # noqa: BLE001
+                log.warning("twitch pool #%s disconnected (%s); retry in %ss", self.idx, e, backoff)
+            for chan in list(self.channels):
+                self.pool._status(chan, "disconnected", "pool connection lost")
+            self.ws, self.joined = None, set()
+            await asyncio.sleep(backoff)
+            backoff = min(backoff * 2, 120)
+
+    async def _sync(self, ws) -> None:
+        """Keep JOINs/PARTs in line with self.channels, within the join budget."""
+        while True:
+            self.wake.clear()  # before diffing, so an add() during the sends isn't lost
+            for chan in sorted(self.channels - self.joined):
+                await self.pool.limiter.acquire()
+                if chan in self.channels:
+                    await ws.send(f"JOIN #{chan}")
+                    self.joined.add(chan)
+            for chan in sorted(self.joined - self.channels):
+                await ws.send(f"PART #{chan}")
+                self.joined.discard(chan)
+            if self.channels == self.joined:
+                await self.wake.wait()
+
+    async def _line(self, ws, line: str) -> None:
+        if line.startswith("PING"):
+            await ws.send("PONG :tmi.twitch.tv")
+            return
+        parsed = _parse_privmsg_chan(line)
+        if parsed:
+            chan, user, text = parsed
+            cb = self.pool.subs.get(chan)
+            if cb:
+                cb[0](time.time(), user, text)
+            return
+        chan = _parse_join(line)
+        if chan and chan in self.channels:
+            self.pool._status(chan, "connected", "")
+
+
+class TwitchChatPool:
+    """Anonymous read-only Twitch chat for many channels over a few shared
+    websockets (`per_conn` channels each), instead of one socket per channel.
+    Channels can be added and removed while running."""
+
+    def __init__(self, per_conn: int = 50, limiter: JoinLimiter | None = None):
+        self.per_conn = per_conn
+        self.limiter = limiter or JoinLimiter()
+        self.subs: dict[str, tuple[ChatCallback, StatusCallback]] = {}
+        self.conns: list[_PoolConn] = []
+        self.tasks: list[asyncio.Task] = []
+        self.running = False
+
+    def _status(self, chan: str, event: str, detail: str) -> None:
+        cb = self.subs.get(chan)
+        if cb:
+            cb[1](event, detail)
+
+    def add(self, channel: str, on_msg: ChatCallback,
+            on_status: StatusCallback = _no_status) -> None:
+        chan = channel.lower()
+        self.subs[chan] = (on_msg, on_status)
+        if any(chan in c.channels for c in self.conns):
+            return
+        conn = next((c for c in self.conns if len(c.channels) < self.per_conn), None)
+        if conn is None:
+            conn = _PoolConn(self, len(self.conns))
+            self.conns.append(conn)
+            if self.running:
+                self.tasks.append(asyncio.create_task(conn.run()))
+        conn.channels.add(chan)
+        conn.wake.set()
+
+    def remove(self, channel: str) -> None:
+        chan = channel.lower()
+        self.subs.pop(chan, None)
+        for c in self.conns:
+            if chan in c.channels:
+                c.channels.discard(chan)
+                c.wake.set()
+
+    def channels(self) -> set[str]:
+        return set().union(*(c.channels for c in self.conns)) if self.conns else set()
+
+    async def run(self) -> None:
+        """Run every connection forever (new ones start as channels are added)."""
+        self.running = True
+        self.tasks = [asyncio.create_task(c.run()) for c in self.conns]
+        try:
+            while True:
+                await asyncio.sleep(3600)
+        finally:
+            self.running = False
+            for t in self.tasks:
+                t.cancel()
+
+
 class TwitchHelix:
     """Optional: stream start time and category via the official Helix API.
     Needs a free Twitch developer app (client id + secret)."""
@@ -258,10 +426,11 @@ class TwitchHelix:
         self._token, self._expires = j["access_token"], time.time() + j["expires_in"]
         return self._token
 
-    async def _get(self, path: str, params: dict) -> list:
+    async def _get(self, path: str, params: dict | list) -> list:
+        query = urlencode(params)  # a list of pairs allows repeated keys (user_login=a&user_login=b)
         async with AsyncSession() as s:
             tok = await self._auth(s)
-            r = await s.get(f"https://api.twitch.tv/helix/{path}", params=params,
+            r = await s.get(f"https://api.twitch.tv/helix/{path}?{query}",
                             headers={"Client-Id": self.client_id, "Authorization": f"Bearer {tok}"},
                             timeout=20)
             r.raise_for_status()
@@ -275,6 +444,51 @@ class TwitchHelix:
         return {"live": True, "started_at": d.get("started_at"),
                 "category": d.get("game_name", ""), "title": d.get("title"),
                 "stream_id": d.get("id"), "user_id": d.get("user_id")}
+
+    async def stream_states(self, logins: list[str]) -> dict[str, dict]:
+        """stream_state for many channels in one request per 100 logins.
+        Every login gets an entry; offline channels get live=False."""
+        out = {}
+        logins = [l.lower() for l in logins]
+        for i in range(0, len(logins), 100):
+            chunk = logins[i:i + 100]
+            data = await self._get("streams", [("user_login", l) for l in chunk] + [("first", 100)])
+            for d in data:
+                out[(d.get("user_login") or "").lower()] = {
+                    "live": True, "started_at": d.get("started_at"),
+                    "category": d.get("game_name", ""), "title": d.get("title"),
+                    "stream_id": d.get("id"), "user_id": d.get("user_id"),
+                    "viewers": d.get("viewer_count")}
+        offline = {"live": False, "started_at": None, "category": "", "title": None}
+        return {l: out.get(l, dict(offline)) for l in logins}
+
+    async def game_ids(self, names: list[str]) -> list[str]:
+        if not names:
+            return []
+        return [g["id"] for g in await self._get("games", [("name", n) for n in names])]
+
+    async def top_streams(self, game_ids: list[str], languages: list[str],
+                          pages: int = 2) -> list[dict]:
+        """Live streams in these categories, most viewers first (Helix order)."""
+        if not game_ids:
+            return []
+        base = [("game_id", g) for g in game_ids] + [("type", "live"), ("first", 100)]
+        base += [("language", l) for l in languages]
+        out, cursor = [], None
+        for _ in range(pages):
+            async with AsyncSession() as s:
+                tok = await self._auth(s)
+                q = base + ([("after", cursor)] if cursor else [])
+                r = await s.get(f"https://api.twitch.tv/helix/streams?{urlencode(q)}",
+                                headers={"Client-Id": self.client_id,
+                                         "Authorization": f"Bearer {tok}"}, timeout=20)
+                r.raise_for_status()
+                j = r.json()
+            out += j.get("data") or []
+            cursor = (j.get("pagination") or {}).get("cursor")
+            if not cursor:
+                break
+        return out
 
     async def stream_vod(self, user_id: str, stream_id: str) -> dict | None:
         """The archive VOD of a live stream: {"url", "started_at"}, or None."""
