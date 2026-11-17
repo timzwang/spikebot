@@ -16,7 +16,7 @@ revenue on a budget of about £20/month. Give all times in UK time.
 - Every Short must add original value (captions, hook, context). Never raw re-uploads,
   so it stays within YouTube's reused content rules.
 - Never commit or print secrets (Discord webhook, Discord bot token, Twitch secret, Google
-  OAuth JSON, `gcs-key.json`, Instagram access token).
+  OAuth JSON, `gcs-key.json`, Instagram access token, Anthropic API key).
 - Nothing is published to YouTube/Instagram/TikTok without Tim's Approve in Discord.
 - #inspiration downloads other creators' Shorts **only to measure style**: delete the file
   right after analysis, never reuse their footage, audio or wording.
@@ -34,7 +34,8 @@ per phase).
 ## Still to build
 
 - **Editor:** vertical 1080x1920, word-level captions, programme watermark/hashtags (Lacy mode
-  already has a Lacy-only version in `editor.py`/`lacy.py`),
+  already has a Lacy-only version in `editor.py`/`lacy.py`; captions follow `text_level`:
+  `minimal` = 2.5 s hook + captions only around the payoff, `none` = no text),
   optional AI voiceover hook.
 - **Stream-clip editor** for the other programme channels: plug it into the review queue
   with a `ReviewAdapter` (see `review.adapter_for`), like Lacy and Tokyo Girl.
@@ -168,7 +169,7 @@ it in sync when behaviour or config changes.
   (`bpm`, default 120), picking least-used footage by the story's tags. `STORIES` hold the
   on-screen text (last card is always a question; date windows relative to launch).
   Output `exports/tokyo_girl/*.mp4` + `.txt` (IG/TikTok captions from `caption_ig` /
-  `caption_tiktok`). No logos/watermarks. State in `data/tokyo_girl/state.json`.
+  `caption_tiktok`). No channel logo/watermark; the optional `intro: logo` only fades in Rockstar's official GTA VI logo (`logo_file`, default `data/brand/gta6_logo.png`, skipped if missing). Text cards follow `text_level` (`cards_for_level`). State in `data/tokyo_girl/state.json`.
   With review on (default) `daily` makes `per_day` review items (`make_review`, 3 variants:
   own story/hook kind, `PACE_PATTERNS`, grade, text style, transition `flash`/`zoom`/`cut`);
   approved edits are copied to `exports/tokyo_girl/`. With review off the old `make` +
@@ -210,7 +211,10 @@ it in sync when behaviour or config changes.
 - `tests/test_tokyo_girl.py`: stories, beat grid, shot picking, tags, captions, daily quota,
   host guard, and an end-to-end silent render (needs ffmpeg).
 - `spikebot/style.py` (pure): variant dimensions (grade, pace, font, size, position, colour,
-  transition, hook tone per mode, Lacy ending) + exact `custom` values; `resolve()` -> render
+  transition, hook tone per mode, `text_level` none/minimal/full, Lacy ending, Tokyo Girl `intro`
+  none/logo) + exact `custom` values (incl. film look `grain`/`vignette`/`letterbox`, `look_filter`);
+  pins `dim` (all modes) or `dim:mode`; `custom_pins`; `rules` (from /feedback, `add_rule` /
+  `remove_rule` restores earlier pins, `taste()` feeds the AI); `resolve()` -> render
   numbers, `grade_filter()`; `Profile` = `data/style_profile.json` (shown/approved/passed/rejected
   per option, pins from `/style`, decisions, feedback notes + intent counts, preset stats);
   `pick_variants()`: A best-scoring, B from a most-approved preset in rotation (else weighted
@@ -229,12 +233,21 @@ it in sync when behaviour or config changes.
   `Publisher.publish()` respects windows (UK), `youtube_max_per_day`, the Lacy CSV cap, the IG
   cap; retries 3x; Lacy also gets thumbnail, submissions CSV row and job status. Never posts a
   platform twice. CLI `list | render | approve ITEM LABEL | reject | publish` (fallback only).
+- `spikebot/ai.py`: Claude API (optional; `ANTHROPIC_API_KEY` from `.env` next to config, then env;
+  model `claude-opus-5-5`, `SPIKEBOT_AI_MODEL`; lazy `anthropic` import). `ask_json` = one
+  structured-output request with server-side refusal fallback; `interpret_feedback` (feedback ->
+  settings rows with scope this_edit/always, notes, unsupported, hook_text) and `study_reference`
+  (frames + measured numbers -> what makes it good, techniques, text use, look settings).
+  `settings_menu()` lists every setting the editor really has: keep it in sync with style.py.
+- `spikebot/feedback.py`: `learn()` (/feedback -> `Profile.add_rule`, pins settings per mode,
+  stores notes) and `for_variant()` (review Feedback button: re-render changes, lasting ones become
+  a rule). Falls back to `style.parse_feedback` without a key or on API failure.
 - `spikebot/discord_bot.py`: `ReviewBot` (started by `Bot.run` when the token is set; reconnects,
   never crashes the bot). Pure layouts `round_payload` / `buttons` / `manual_payload` /
   `style_overview`; custom ids `rv|action|item|round|label` handled in `on_interaction` (survive
   restarts). Loops: `scan` (post ready rounds + thread, queue requests, report failures, expire,
   #tiktok-queue, finish), `render_worker` (one subprocess at a time), `publish_loop` (60 s, under
-  `publish_lock`). Feedback/Edit caption use modals. `/style [setting] [value]`, `/preset apply |
+  `publish_lock`). Feedback/Edit caption use modals. `/style [setting] [value]`, `/feedback text [mode]`, `/rules [remove]`, `/preset apply |
   list | show | rename | edit | delete | combine`. #inspiration `on_message` (approvers only).
 - `spikebot/inspiration.py`: style analysis in a subprocess (`python -m spikebot.inspiration
   analyse --url|--file --name --copy --json`). yt-dlp only for tiktok/instagram/youtube hosts,

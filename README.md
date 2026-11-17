@@ -367,7 +367,7 @@ seeing new ideas. A thread opens under each clip for everything that follows.
 | **Approve A/B/C** | That version is posted: YouTube Shorts + Instagram Reels automatically (posting windows and daily caps; queued if needed), TikTok file + caption to #tiktok-queue. Live links are replied in the thread. |
 | **Redo** | 3 new variants (avoiding the looks you just saw). |
 | **Reject** | Dropped; files deleted. |
-| **Feedback** | Pick a variant, type notes, it is re-rendered and posted in the thread for approval. Understood: bigger/smaller text, text higher/lower/middle, faster/slower, more/less colour, more/less contrast, warmer/cooler, a colour (yellow, green, blue, red, pink), a font (montserrat, roboto, narrow, dejavu), no flashes / add zoom / add flash, end with a CTA / a question, and `hook: new wording` (or the new hook in quotes). Anything else is logged and the reply says what wasn't understood. |
+| **Feedback** | Pick a variant, type notes in your own words, it is re-rendered and posted in the thread for approval. With `ANTHROPIC_API_KEY` set, Claude reads the notes (anything: "too much text", "feels cheap", "darker and slower", a new hook in quotes); anything you say should apply *from now on* is also saved as a rule (see `/feedback`). Without a key the rule parser understands: bigger/smaller text, text higher/lower/middle, faster/slower, more/less colour or contrast, warmer/cooler, a colour, a font, no flashes / add zoom / add flash, no captions / less text / full captions, logo intro, end with a CTA / a question, and `hook: new wording`. The reply says what changed and what it can't do yet. |
 | **Edit caption** | Change the YouTube title and IG/TikTok captions before approving (Lacy rules still checked). The burned-in hook only changes via Feedback `hook: ...`. |
 
 Unapproved clips **expire 48 hours** after their latest round (buttons grey out, files deleted).
@@ -383,6 +383,28 @@ official Tokyo Girl sound in each app). To auto-post them anyway set
 `data/style_profile.json`. `/style` shows what variant A uses now per mode, the approval
 counts, recurring feedback and presets ranked by approvals. Pin a setting with
 `/style setting:font value:montserrat` (all variants then use it); `value:auto` unpins.
+
+**`/feedback text:<anything> [mode]`**: tell the editor what you think in plain words, e.g.
+*"the captions are AI slop, only caption when he says something that matters"* or *"open the
+trailer edits on the GTA 6 logo, add film grain, cut harder on the beat"*. It becomes a rule
+that every future edit follows (all three variants): settings are pinned (per mode if you
+pick one), taste notes are remembered and given to Claude next time, and the reply says
+plainly what it can't do yet. `/rules` lists the rules; `/rules remove:3` undoes rule 3 and
+puts the earlier settings back.
+
+Needs `ANTHROPIC_API_KEY` in `/opt/spikebot/.env` (console.anthropic.com > API keys; model
+`claude-opus-5-5`, override with `SPIKEBOT_AI_MODEL`). Each `/feedback` costs about 1-2p and
+each #inspiration analysis about 5-8p. Without a key the rule parser is used (fewer phrasings).
+
+**On-screen text** (`text_level`, varied across A/B/C and learned like the others):
+`none` = no captions, hook or end card at all; `minimal` = a 2.5 s opening hook and captions
+only for the lines around the payoff (Lacy) / only the opening card (Tokyo Girl); `full` =
+every word (Lacy) / every story card (Tokyo Girl). **Logo intro** (`intro: logo`, Tokyo Girl):
+the official GTA VI logo fades in over darkened footage for one bar, then fades away into the
+edit. Put Rockstar's official transparent logo PNG at `/opt/spikebot/data/brand/gta6_logo.png`;
+without the file the intro is skipped. **Film look** (exact values, via `/feedback`,
+`/style`-like pins or presets): `grain` (0-30), `vignette` (0/1), `letterbox` (0/1, cinema bars,
+Tokyo Girl only).
 
 **Set up the bot (once, ~10 minutes)**
 
@@ -412,7 +434,8 @@ DISCORD_APPROVER_IDS=...            # your user id (only you can press buttons)
 ```
 
 6. `sudo systemctl restart spikebot`. `--check` shows "Discord approval bot: token set" and the
-   channel ids. The bot comes online and `/style` and `/preset` appear when you type `/`.
+   channel ids. The bot comes online and `/style`, `/feedback`, `/rules` and `/preset` appear
+   when you type `/`.
 
 Without a token, clips still render and wait in `data/review/`; nothing posts. Fallback
 commands on the server (only while the bot is off, so nothing posts twice):
@@ -427,7 +450,8 @@ cd /opt/spikebot && sudo -u spikebot venv/bin/python -m spikebot.review publish
 
 Post a TikTok / Instagram / YouTube link, or upload the video, in #inspiration. Optional notes
 in the same message: `copy: pacing, colour` (parts: pacing, colour, text, transitions, hook,
-structure, music-sync; default all) and `name: night-drive`. The bot opens a thread, measures
+structure, music-sync, look; default all), `name: night-drive`, and anything about what you
+like in it ("love that there's no text until the drop"). The bot opens a thread, measures
 the style and replies with a breakdown and a thumbnail strip, and saves the preset to
 `data/presets/<name>.json`. If a link can't be downloaded (Instagram often needs a login) it
 asks you to upload the file in the thread instead.
@@ -436,6 +460,14 @@ It measures **style only** and never reuses their footage, audio or words: the v
 deleted straight after the analysis and the preset holds numbers (average shot length, cuts on
 the beat, grade, text size/position/colour, hook *type* such as POV/question, hook length,
 where the payoff lands, ending type, zoom/shake/flash).
+
+With `ANTHROPIC_API_KEY` set it also does an **artistic read**: Claude looks at ~8 small frames
+plus the measured numbers (and your note) and writes a second reply, **Why it works**: how it
+opens, the rhythm, how text is used or deliberately left out, mood, the techniques it uses
+(marked ✅ when our editor can do them, otherwise "not in our editor yet"), and what to avoid.
+The closest text level / logo intro / grain / vignette / cinema bars are saved as the preset's
+`look` part. It describes the *type* of choice only, never their words or footage, and the
+frames are never stored.
 
 - `/preset list` · `/preset show name` · `/preset rename name new_name` · `/preset delete name`
 - `/preset edit name setting value`: e.g. `pace fast`, `saturation 1.3`, `text_px 96`,

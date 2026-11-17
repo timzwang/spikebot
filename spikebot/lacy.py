@@ -504,15 +504,6 @@ class ReviewAdapter:
             cut_words = editor.remap_words(words, segs)
             length = editor.cut_length(segs)
             stem = f"r{n}_{spec['label']}"
-            ass = folder / f"{stem}.ass"
-            # Lacy mode: never a watermark, channel logo or "6" overlay.
-            ass.write_text(editor.build_ass(cut_words, title, length, lay.cam_h, watermark=None, style=r),
-                           encoding="utf-8")
-            mp4 = folder / f"{stem}.mp4"
-            editor.render_variant(seg, mp4, lay, ass, w, h, segs, st.grade_filter(r["grade"]),
-                                  r["transition"], audio=bool(job.get("audio", True)))
-            ass.unlink(missing_ok=True)
-            prev = editor.preview(mp4, folder / f"{stem}_preview.mp4", preview_bytes, length)
             peak_cut = None
             if peak is not None:
                 off = 0.0
@@ -520,6 +511,21 @@ class ReviewAdapter:
                     if a <= peak < b:
                         peak_cut = off + peak - a
                     off += b - a
+            ass = None
+            if r["text_level"] != "none" or r["ending"] != "none":
+                ass = folder / f"{stem}.ass"
+                # Lacy mode: never a watermark, channel logo or "6" overlay.
+                ass.write_text(editor.build_ass(cut_words, title, length, lay.cam_h, watermark=None, style=r,
+                                                focus=editor.caption_focus(peak_cut)),
+                               encoding="utf-8")
+            mp4 = folder / f"{stem}.mp4"
+            look = st.grade_filter(r["grade"])
+            fx = st.look_filter(r["look"], "lacy")
+            editor.render_variant(seg, mp4, lay, ass, w, h, segs, ",".join(x for x in (look, fx) if x),
+                                  r["transition"], audio=bool(job.get("audio", True)))
+            if ass is not None:
+                ass.unlink(missing_ok=True)
+            prev = editor.preview(mp4, folder / f"{stem}_preview.mp4", preview_bytes, length)
             out.append({"label": spec["label"], "style": spec["style"], "preset": spec.get("preset"),
                         "experimental": spec.get("experimental", False), "title": title,
                         "description": description(title, job["category"], job["channel"]),

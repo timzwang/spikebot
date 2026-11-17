@@ -59,6 +59,12 @@ COLOURS = {  # main text, highlighted word
     "pink": ("#FFFFFF", "#FF5FC8"),
 }
 TRANSITIONS = ("cut", "flash", "zoom")
+# How much on-screen text an edit carries. "none": no captions, no hook box, no end
+# card (a clean edit); "minimal": a short hook at the start and captions only where
+# the payoff is said (Lacy) / only the opening card (Tokyo Girl); "full": every word
+# (Lacy) / every story card (Tokyo Girl).
+TEXT_LEVELS = ("none", "minimal", "full")
+INTROS = ("none", "logo")   # Tokyo Girl: official GTA VI logo fading into the edit
 ENDINGS = ("none", "question", "cta")
 HOOKS = {
     "lacy": ("matched", "funny", "shock", "hype", "neutral"),
@@ -66,7 +72,7 @@ HOOKS = {
 }
 DEFAULT = {"grade": "natural", "pace": "normal", "font": "dejavu", "size": "m",
            "position": "low", "colour": "classic", "transition": "flash",
-           "ending": "none"}
+           "ending": "none", "text_level": "minimal", "intro": "none"}
 
 # Exact values a preset or feedback can set (shown and editable with /preset edit).
 CUSTOM_KEYS = {
@@ -74,6 +80,8 @@ CUSTOM_KEYS = {
     "warmth": (-0.2, 0.2), "text_px": (36, 160), "text_y": (0.15, 0.85),
     "outline": (0, 14), "shadow": (0, 8), "hook_s": (1.0, 60.0), "payoff": (0.2, 0.9),
     "shot_s": (0.2, 6.0), "words": (1, 6),
+    # film look: grain strength, vignette on/off, cinema bars on/off (Tokyo Girl only)
+    "grain": (0, 30), "vignette": (0, 1), "letterbox": (0, 1),
 }
 CUSTOM_STR = {"text_colour", "highlight", "hook_style"}
 
@@ -82,9 +90,12 @@ def dims(mode: str) -> dict[str, tuple[str, ...]]:
     """Every dimension a variant varies in for this mode, with its options."""
     out = {"grade": tuple(GRADES), "pace": tuple(PACES), "font": tuple(FONTS),
            "size": tuple(SIZES), "position": POSITIONS, "colour": tuple(COLOURS),
-           "transition": TRANSITIONS, "hook": HOOKS.get(mode, ("matched",))}
+           "transition": TRANSITIONS, "hook": HOOKS.get(mode, ("matched",)),
+           "text_level": TEXT_LEVELS}
     if mode == "lacy":
         out["ending"] = ENDINGS
+    if mode == "tokyo_girl":
+        out["intro"] = INTROS
     return out
 
 
@@ -98,6 +109,8 @@ def default_style(mode: str) -> dict:
     s["hook"] = HOOKS.get(mode, ("matched",))[0]
     if mode != "lacy":
         s.pop("ending")
+    if mode != "tokyo_girl":
+        s.pop("intro")
     return s
 
 
@@ -141,6 +154,10 @@ def resolve(style: dict) -> dict:
         "ending": style.get("ending") if style.get("ending") in ENDINGS else "none",
         "hook_s": c.get("hook_s"), "payoff": c.get("payoff"),
         "hook_style": c.get("hook_style"),
+        "text_level": style.get("text_level") if style.get("text_level") in TEXT_LEVELS else "full",
+        "intro": style.get("intro") if style.get("intro") in INTROS else "none",
+        "look": {"grain": float(c.get("grain") or 0), "vignette": bool(c.get("vignette")),
+                 "letterbox": bool(c.get("letterbox"))},
     }
 
 
@@ -156,12 +173,32 @@ def grade_filter(g: dict) -> str:
     return ",".join(parts)
 
 
+def look_filter(look: dict, mode: str, width: int = 1080, height: int = 1920) -> str:
+    """Film-look ffmpeg filters (grain, vignette, cinema bars) for a resolved style.
+    Cinema bars only in Tokyo Girl: the Lacy layout needs the full frame."""
+    parts = []
+    if (look or {}).get("vignette"):
+        parts.append("vignette=angle=PI/5")
+    g = float((look or {}).get("grain") or 0)
+    if g > 0:
+        parts.append(f"noise=alls={int(round(g))}:allf=t")
+    if (look or {}).get("letterbox") and mode == "tokyo_girl":
+        bar = int(height * 0.11) // 2 * 2
+        parts.append(f"drawbox=x=0:y=0:w={width}:h={bar}:color=black:t=fill,"
+                     f"drawbox=x=0:y={height - bar}:w={width}:h={bar}:color=black:t=fill")
+    return ",".join(parts)
+
+
 def describe(style: dict) -> str:
     """One line for the Discord card."""
     c = style.get("custom") or {}
     bits = [f"grade **{style.get('grade')}**", f"pace **{style.get('pace')}**",
             f"text **{style.get('font')}/{style.get('size')}/{style.get('position')}/{style.get('colour')}**",
             f"transition **{style.get('transition')}**", f"hook **{style.get('hook')}**"]
+    if style.get("text_level"):
+        bits.append(f"on-screen text **{style['text_level']}**")
+    if style.get("intro") not in (None, "none"):
+        bits.append(f"intro **{style['intro']}**")
     if style.get("ending") not in (None, "none"):
         bits.append(f"ending **{style['ending']}**")
     if c:
@@ -174,7 +211,7 @@ def describe(style: dict) -> str:
 # --------------------------------------------------------------------------
 def _blank() -> dict:
     return {"version": 1, "pinned": {}, "stats": {}, "presets": {}, "decisions": [],
-            "feedback": {"notes": [], "intents": {}}}
+            "feedback": {"notes": [], "intents": {}}, "custom_pins": {}, "rules": []}
 
 
 class Profile:
@@ -274,14 +311,76 @@ class Profile:
         return max(options, key=lambda o: (self.score(key, o), o == d))
 
     def pinned(self, mode: str) -> dict:
-        """/style pins. Hook pins are per mode ("hook:lacy")."""
+        """/style and /feedback pins. "dim" pins apply to every mode, "dim:mode" pins
+        (e.g. "hook:lacy", "text_level:tokyo_girl") only to that mode and win over the
+        global one. Values that aren't options in this mode are ignored."""
         p = dict(self.data["pinned"])
         out = {k: v for k, v in p.items() if ":" not in k}
-        if f"hook:{mode}" in p:
-            out["hook"] = p[f"hook:{mode}"]
-        if out.get("hook") not in HOOKS.get(mode, ()):
-            out.pop("hook", None)
+        for k, v in p.items():
+            if ":" in k and k.split(":", 1)[1] == mode:
+                out[k.split(":", 1)[0]] = v
+        opts = dims(mode)
+        return {k: v for k, v in out.items() if k in opts and v in opts[k]}
+
+    def custom_pins(self, mode: str) -> dict:
+        """Exact values from /feedback (e.g. saturation 1.2, grain 8) for every edit of this mode."""
+        cp = self.data.get("custom_pins") or {}
+        return dict(cp.get("all") or {}) | dict(cp.get(mode) or {})
+
+    # ---- lasting rules from /feedback -----------------------------------------------
+    def add_rule(self, text: str, summary: str, mode: str, settings: list[dict], notes: list[str],
+                 unsupported: list[str], now: float | None = None, source: str = "feedback") -> dict:
+        """Store a lasting rule and apply its settings as pins. `settings` are validated
+        {"mode", "setting", "value"} rows (apply_settings). Returns the rule."""
+        rules = self.data.setdefault("rules", [])
+        rid = max([r["id"] for r in rules] or [0]) + 1
+        prev = []
+        for row in settings:
+            prev.append(self._set_pin(row["mode"], row["setting"], row["value"]))
+        rule = {"id": rid, "ts": now or time.time(), "source": source, "mode": mode,
+                "text": text[:1000], "summary": summary[:300], "settings": settings,
+                "previous": prev, "notes": [n[:300] for n in notes][:12],
+                "unsupported": [u[:300] for u in unsupported][:12]}
+        rules.append(rule)
+        return rule
+
+    def remove_rule(self, rule_id: int) -> dict | None:
+        """Drop a rule and undo its pins (unless a later rule set the same thing)."""
+        rules = self.data.setdefault("rules", [])
+        rule = next((r for r in rules if r["id"] == rule_id), None)
+        if rule is None:
+            return None
+        rules.remove(rule)
+        later = {(s["mode"], s["setting"]) for r in rules if r["id"] > rule_id for s in r["settings"]}
+        for row, prev in zip(rule["settings"], rule.get("previous") or [None] * len(rule["settings"])):
+            if (row["mode"], row["setting"]) not in later:
+                self._set_pin(row["mode"], row["setting"], prev)
+        return rule
+
+    def taste(self, mode: str | None = None, n: int = 25) -> list[str]:
+        """Tim's lasting notes (for the AI's context): rule summaries and style notes."""
+        out = []
+        for r in self.data.get("rules", [])[-n:]:
+            if mode and r["mode"] not in ("all", mode):
+                continue
+            out.append(r["summary"])
+            out += r.get("notes") or []
         return out
+
+    def _set_pin(self, mode: str, setting: str, value):
+        """Set (value) or clear (None) one pin; returns the old value."""
+        if setting in CUSTOM_KEYS or setting in CUSTOM_STR:
+            bucket = self.data.setdefault("custom_pins", {}).setdefault(mode, {})
+            old = bucket.get(setting)
+            if value is None:
+                bucket.pop(setting, None)
+            else:
+                bucket[setting] = value
+            return old
+        key = setting if mode == "all" else f"{setting}:{mode}"
+        old = self.data["pinned"].get(key)
+        self.pin(key, value)
+        return old
 
     def pin(self, setting: str, value: str | None) -> None:
         if value in (None, "", "auto"):
@@ -360,8 +459,9 @@ def pick_variants(profile: Profile, mode: str, rng: random.Random,
             else:
                 weights = [profile.score(key, o) ** 2 for o in unseen]
                 style[dim] = rng.choices(unseen, weights=weights)[0]
-        if base.get("custom"):
-            style["custom"] = dict(base["custom"])
+        custom = dict(base.get("custom") or {}) | profile.custom_pins(mode)
+        if custom:
+            style["custom"] = custom
         out.append({"label": label, "style": style, "preset": preset, "experimental": experimental})
     return out
 
@@ -398,6 +498,11 @@ RULES: list[tuple[str, str]] = [  # (intent, regex)
     ("cta", r"\b(add|end with) (a )?(cta|call to action|follow)\b"),
     ("question", r"\b(end|finish) (with|on) a question\b"),
     ("no_ending", r"\bno (end card|ending|cta)\b"),
+    ("no_text", r"\b(no|remove|drop|without|get rid of|ditch|kill)\b.*\b(captions?|subtitles?|text|words)\b"
+                r"|\b(captions?|text)\b.*\b(slop|pointless|unnecessary|not needed|useless|meaningless)\b"),
+    ("less_text", r"\b(less|fewer|minimal|only key|only important)\b.*\b(captions?|text)\b"),
+    ("full_text", r"\b(caption everything|full captions|every word|more captions)\b"),
+    ("logo_intro", r"\blogo\b.*\b(intro|start|open\w*|fade\w*)\b|\b(intro|start|open\w*)\b.*\blogo\b"),
 ]
 COLOUR_WORDS = {"yellow": "classic", "green": "lime", "lime": "lime", "blue": "ice", "cyan": "ice",
                 "red": "fire", "orange": "fire", "pink": "pink", "purple": "pink"}
@@ -478,6 +583,10 @@ def parse_feedback(text: str, mode: str) -> tuple[dict, dict, list[str], list[st
             changes["ending"] = intent
         elif intent == "no_ending" and mode == "lacy":
             changes["ending"] = "none"
+        elif intent in ("no_text", "less_text", "full_text"):
+            changes["text_level"] = {"no_text": "none", "less_text": "minimal", "full_text": "full"}[intent]
+        elif intent == "logo_intro" and mode == "tokyo_girl":
+            changes["intro"] = "logo"
     return changes, texts, list(dict.fromkeys(intents)), unknown
 
 
@@ -541,6 +650,37 @@ def set_value(style: dict, setting: str, value: str, mode: str) -> dict:
         s.setdefault("custom", {})[setting] = ("#" + value.lstrip("#").upper()) if setting != "hook_style" else value
         return s
     raise ValueError(f"unknown setting {setting!r}")
+
+
+def apply_settings(rows: list[dict], default_mode: str = "all") -> tuple[list[dict], list[str]]:
+    """Validate [{"mode", "setting", "value"}] (from /feedback or the AI) against the
+    real options. Returns (clean rows, reasons for the ones dropped). A setting that
+    only exists in one mode (ending: Lacy, intro: Tokyo Girl) is moved to that mode."""
+    only = {"ending": "lacy", "intro": "tokyo_girl"}
+    ok, bad = [], []
+    for row in rows or []:
+        setting = str(row.get("setting") or "").strip()
+        value = str(row.get("value") if row.get("value") is not None else "").strip()
+        mode = row.get("mode") if row.get("mode") in ("all", "lacy", "tokyo_girl") else default_mode
+        if setting in only:
+            mode = only[setting]
+        if setting == "hook" and mode == "all":
+            bad.append(f"hook tone needs a mode (Lacy or Tokyo Girl): {value}")
+            continue
+        try:
+            set_value(default_style(mode if mode != "all" else "lacy") | {"intro": "none"}, setting, value,
+                      mode if mode != "all" else "tokyo_girl" if setting == "intro" else "lacy")
+        except ValueError as e:
+            bad.append(str(e))
+            continue
+        if setting in CUSTOM_KEYS:
+            v: float | str = float(value)
+        elif setting in CUSTOM_STR and setting != "hook_style":
+            v = "#" + value.lstrip("#").upper()
+        else:
+            v = value
+        ok.append({"mode": mode, "setting": setting, "value": v})
+    return ok, bad
 
 
 # --------------------------------------------------------------------------

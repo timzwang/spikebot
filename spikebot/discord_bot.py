@@ -20,13 +20,16 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import logging
 import sys
+import threading
 import time
 import uuid
 from datetime import datetime
 from pathlib import Path
 
+from . import feedback as fb
 from . import presets as presets_
 from . import review
 from . import style as st
@@ -179,13 +182,13 @@ def style_overview(profile: st.Profile, presets: dict[str, dict]) -> str:
 
 
 STYLE_SETTINGS = ["grade", "pace", "font", "size", "position", "colour", "transition", "ending",
-                  "hook:lacy", "hook:tokyo_girl"]
+                  "text_level", "intro", "hook:lacy", "hook:tokyo_girl"]
 
 
 def style_options(setting: str) -> list[str]:
     if setting.startswith("hook:"):
         return list(st.HOOKS.get(setting[5:], ()))
-    opts = st.dims("lacy").get(setting, ())
+    opts = st.dims("lacy").get(setting) or st.dims("tokyo_girl").get(setting, ())
     return list(opts)
 
 
@@ -207,6 +210,7 @@ class ReviewBot:
         self.queued: set[str] = set()
         self.wake = asyncio.Event()
         self.publish_lock = asyncio.Lock()   # one publish pass at a time: never double-upload
+        self.profile_lock = threading.Lock()   # /feedback writes the style profile from a thread
         self.pending_uploads: dict[int, dict] = {}   # inspiration thread id -> name/copy
         self.started = False
         self._publisher = None
@@ -726,8 +730,9 @@ class ReviewBot:
         if not videos and not urls:
             if not in_thread:
                 await message.reply("Send a TikTok / Instagram / YouTube link or upload a video. Optional notes:"
-                                    " `copy: pacing, colour, text, transitions, hook, structure, music-sync` and"
-                                    " `name: my-preset`.", mention_author=False)
+                                    " `copy: pacing, colour, text, transitions, hook, structure, music-sync, look`,"
+                                    " `name: my-preset`, and anything about what you like in it.",
+                                    mention_author=False)
             return
         pending = self.pending_uploads.pop(ch.id, None) if in_thread else None
         copy = presets_.parse_copy(message.content) if "copy:" in message.content.lower() or not pending \
@@ -751,10 +756,13 @@ class ReviewBot:
                 tmp.mkdir(parents=True, exist_ok=True)
                 path = tmp / f"{uuid.uuid4().hex}{Path(src.filename).suffix or '.mp4'}"
                 await src.save(path)
-            res = await self.analyse(name, copy, url=src if kind == "url" else None, file=path)
+            note = re.sub(r"https?://\S+|\b(copy|name)\s*:[^\n]*", " ", message.content or "", flags=re.I).strip()
+            res = await self.analyse(name, copy, url=src if kind == "url" else None, file=path, note=note)
             if res.get("ok"):
                 f = discord.File(res["strip"], filename=f"{res['name']}_strip.jpg") if res.get("strip") else None
                 await thread.send(res["text"], file=f) if f else await thread.send(res["text"])
+                if res.get("art"):
+                    await thread.send(res["art"])
                 if res.get("strip"):
                     Path(res["strip"]).unlink(missing_ok=True)
             elif res.get("ask_upload"):
@@ -764,11 +772,12 @@ class ReviewBot:
             else:
                 await thread.send(f"⚠️ Analysis failed: {res.get('error')}")
 
-    async def analyse(self, name: str, copy: list[str], url: str | None = None, file: Path | None = None) -> dict:
+    async def analyse(self, name: str, copy: list[str], url: str | None = None, file: Path | None = None,
+                      note: str = "") -> dict:
         out = self.data_dir / "inspiration" / f"result_{uuid.uuid4().hex}.json"
         out.parent.mkdir(parents=True, exist_ok=True)
         cmd = [sys.executable, "-m", "spikebot.inspiration", "--config", self.config_path, "analyse",
-               "--name", name, "--copy", ",".join(copy), "--json", str(out)]
+               "--name", name, "--copy", ",".join(copy), "--json", str(out), "--note", note[:800]]
         cmd += ["--url", url] if url else ["--file", str(file)]
         try:
             p = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE,
@@ -783,6 +792,15 @@ class ReviewBot:
             out.unlink(missing_ok=True)
             if file is not None:
                 Path(file).unlink(missing_ok=True)
+
+    def learn_feedback(self, text: str, mode: str = "all", client=None) -> tuple[dict, list[str]]:
+        """/feedback: read it (Claude, or the rule parser), save a rule, pin its settings.
+        Runs in a thread (the API call takes a few seconds)."""
+        with self.profile_lock:
+            profile = self.store.profile()
+            rule, problems = fb.learn(text, mode, profile, self.base, client=client)
+            profile.save()
+        return rule, problems
 
     # ---- slash commands -------------------------------------------------------------
     def register_commands(self, tree) -> None:
@@ -829,6 +847,51 @@ class ReviewBot:
             if setting:
                 text = (f"📌 {setting} → **{value}**\n" if value not in (None, "auto") else f"↩️ {setting} unpinned\n") + text
             await inter.response.send_message(text[:1990], ephemeral=False)
+
+        @tree.command(name="feedback", description="Tell the editor anything (plain words); it applies to every future edit")
+        @app_commands.describe(text="What to change, in your own words",
+                               mode="Which edits it's about (default: all)")
+        @app_commands.choices(mode=[app_commands.Choice(name="All edits", value="all"),
+                                    app_commands.Choice(name="Lacy clips", value="lacy"),
+                                    app_commands.Choice(name="Tokyo Girl trailer edits", value="tokyo_girl")])
+        async def feedback_cmd(inter: discord.Interaction, text: str, mode: str = "all"):
+            if not await guard(inter):
+                return
+            await inter.response.defer(thinking=True)
+            try:
+                rule, problems = await asyncio.to_thread(bot.learn_feedback, text, mode)
+            except Exception as e:  # noqa: BLE001 - never crash the bot on a command
+                log.warning("/feedback failed: %s", e)
+                await inter.followup.send(f"⚠️ Couldn't save that: {e}"[:1990])
+                return
+            msg = ["📝 Saved for every future edit" + (" (read by Claude)" if rule.get("engine") == "claude"
+                                                      else " (rule parser: set ANTHROPIC_API_KEY for full understanding)"),
+                   fb.format_rule(rule)]
+            if problems:
+                msg.append("Skipped: " + " | ".join(p[:100] for p in problems[:3]))
+            if not rule["settings"] and not rule.get("notes"):
+                msg.append("Nothing changed: try saying what to do differently, e.g. *no captions unless he says"
+                           " something funny*.")
+            msg.append("`/rules` lists everything I'm applying; `/rules remove:<n>` undoes one.")
+            await inter.followup.send("\n".join(msg)[:1990])
+
+        @tree.command(name="rules", description="What the editor has learned from /feedback (and undo one)")
+        @app_commands.describe(remove="Number of a rule to undo")
+        async def rules_cmd(inter: discord.Interaction, remove: int | None = None):
+            if not await guard(inter):
+                return
+            profile = bot.store.profile()
+            head = ""
+            if remove is not None:
+                gone = profile.remove_rule(remove)
+                profile.save()
+                head = f"↩️ Removed rule #{remove} and undid its settings.\n" if gone else f"No rule #{remove}.\n"
+            rules = profile.data.get("rules") or []
+            if not rules:
+                await inter.response.send_message(head + "No rules yet: use `/feedback`.", ephemeral=False)
+                return
+            body = "\n\n".join(fb.format_rule(r) for r in reversed(rules[-12:]))
+            await inter.response.send_message((head + body)[:1990], ephemeral=False)
 
         group = app_commands.Group(name="preset", description="Style presets from #inspiration")
 

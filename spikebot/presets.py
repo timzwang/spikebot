@@ -18,14 +18,15 @@ from pathlib import Path
 
 from . import style as st
 
-PARTS = ("pacing", "colour", "text", "transitions", "hook", "structure", "music-sync")
+PARTS = ("pacing", "colour", "text", "transitions", "hook", "structure", "music-sync", "look")
 ALIASES = {"pace": "pacing", "pacing": "pacing", "cuts": "pacing", "color": "colour",
            "colour": "colour", "grade": "colour", "text": "text", "captions": "text",
            "font": "text", "transition": "transitions", "transitions": "transitions",
            "hook": "hook", "hooks": "hook", "structure": "structure",
            "music": "music-sync", "music-sync": "music-sync", "music_sync": "music-sync",
            "musicsync": "music-sync", "beat": "music-sync", "beats": "music-sync",
-           "sync": "music-sync", "all": "all"}
+           "sync": "music-sync", "look": "look", "effects": "look", "fx": "look",
+           "cinematic": "look", "vibe": "look", "all": "all"}
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,39}$")
 # which preset settings each part may write into a style
 PART_KEYS = {
@@ -37,6 +38,8 @@ PART_KEYS = {
     "hook": {"hook_style"},
     "structure": {"hook_s", "payoff", "ending"},
     "music-sync": set(),   # Tokyo Girl always cuts on the official sound's beat
+    # artistic choices read from the frames by the AI (how much text, logo intro, film look)
+    "look": {"text_level", "intro", "grain", "vignette", "letterbox"},
 }
 
 
@@ -215,6 +218,9 @@ def summary(preset: dict, profile_row: dict | None = None) -> str:
         vals = sets.get(part)
         if vals:
             lines.append(f"• {part}: " + ", ".join(f"{k}={v}" for k, v in vals.items()))
+    art = preset.get("art") or {}
+    for g in (art.get("what_makes_it_good") or [])[:4]:
+        lines.append(f"★ {g}")
     if profile_row:
         lines.append(f"used {profile_row.get('shown', 0)}× · approved {profile_row.get('approved', 0)}"
                      f" · rejected {profile_row.get('rejected', 0)}")

@@ -15,6 +15,10 @@ Measured:
   structure   hook length, where the payoff lands (loudest moment), total length,
               ending (question / CTA / loop)
   motion      zoom and shake (OpenCV optical flow), flash / fade transitions
+  look        with ANTHROPIC_API_KEY: Claude studies ~8 small frames plus these numbers
+              and writes down the craft (opening, rhythm, how text is or isn't used,
+              mood, techniques), and picks the closest text level / logo intro / film
+              look for our editor (spikebot/ai.py). Frames are never stored.
 
 CLI (run by the Discord bot as a subprocess):
   python -m spikebot.inspiration analyse (--url URL | --file PATH) --name NAME
@@ -546,13 +550,91 @@ def breakdown(preset: dict) -> str:
     return "\n".join(L)[:1990]
 
 
-def make_preset(name: str, copy: list[str], analysis: dict, source: dict) -> dict:
-    return {"name": name, "created": time.time(), "source": source, "copy": copy,
-            "settings": settings_from(analysis), "analysis": analysis}
+def make_preset(name: str, copy: list[str], analysis: dict, source: dict, art: dict | None = None) -> dict:
+    sets = settings_from(analysis)
+    if art:
+        look = {}
+        ok, _bad = st.apply_settings(art.get("settings") or [], "all")
+        for row in ok:
+            if row["setting"] in presets_.PART_KEYS["look"]:
+                look[row["setting"]] = row["value"]
+        if look:
+            sets["look"] = look
+    out = {"name": name, "created": time.time(), "source": source, "copy": copy,
+           "settings": sets, "analysis": analysis}
+    if art:
+        out["art"] = art
+    return out
+
+
+def sample_frames(path: Path, duration: float, cuts: list[float], n: int = 8,
+                  width: int = 384) -> list[tuple[float, bytes]]:
+    """Small JPEG frames for the AI: the opening, then spread through the video (a
+    little after cuts where possible, so each frame is a different shot). Kept in
+    memory only and dropped with the reference video."""
+    times = [0.3, min(1.5, duration * 0.1)]
+    after_cuts = [c + 0.25 for c in cuts if 1.5 < c < duration - 0.5]
+    step = max(1, len(after_cuts) // max(1, n - 3))
+    times += after_cuts[::step][: n - 3]
+    while len(times) < n - 1:
+        times.append(duration * len(times) / n)
+    times.append(max(0.1, duration - 0.4))
+    out = []
+    for t in sorted({round(min(max(0.0, t), max(0.0, duration - 0.1)), 2) for t in times})[:n]:
+        p = subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-ss", f"{t:.2f}", "-i", str(path),
+                            "-frames:v", "1", "-vf", f"scale={width}:-2", "-q:v", "5", "-f", "image2",
+                            "-c:v", "mjpeg", "-"], capture_output=True, timeout=60)
+        if p.returncode == 0 and p.stdout:
+            out.append((t, p.stdout))
+    return out
+
+
+def study(src: Path, a: dict, note: str, base: Path | None, client=None) -> dict | None:
+    """The artistic read (spikebot/ai.py), or None without a key / on failure."""
+    from . import ai
+    if client is None and not ai.available(base):
+        return None
+    measured = {k: a.get(k) for k in ("duration", "pacing", "music", "colour", "motion", "transitions", "structure")}
+    t = a.get("text") or {}
+    measured["text"] = {k: t.get(k) for k in ("available", "found", "y", "font_px", "words_per_screen",
+                                               "frames_with_text", "frames") if k in t}
+    try:
+        frames = sample_frames(src, a["duration"], a.get("cut_times") or [])
+        if not frames:
+            return None
+        return ai.study_reference(frames, measured, note, base=base, client=client)
+    except (ai.AIError, subprocess.TimeoutExpired, OSError) as e:
+        log.warning("artistic analysis skipped: %s", e)
+        return None
+
+
+def art_text(preset: dict) -> str | None:
+    """Second #inspiration message: what makes the reference good (the craft, not the content)."""
+    art = preset.get("art")
+    if not art:
+        return None
+    L = [f"🎬 **Why it works** · {art.get('summary', '')}"]
+    for g in (art.get("what_makes_it_good") or [])[:6]:
+        L.append(f"• {g}")
+    if art.get("opening"):
+        L.append(f"**Opening:** {art['opening']}")
+    if art.get("text_use"):
+        L.append(f"**Text:** {art['text_use']}")
+    tech = art.get("techniques") or []
+    if tech:
+        L.append("**Techniques:** " + " · ".join(
+            f"{x['name']}{' ✅' if x.get('can_copy') else ' (not in our editor yet)'}" for x in tech[:8]))
+    if art.get("avoid"):
+        L.append("**Avoid:** " + "; ".join(art["avoid"][:3]))
+    look = (preset.get("settings") or {}).get("look")
+    if look:
+        L.append("**Look copied:** " + ", ".join(f"{k}={v}" for k, v in look.items()))
+    return "\n".join(L)[:1990]
 
 
 def run(name: str, copy: list[str], data_dir: Path, out_dir: Path, url: str | None = None,
-        file: Path | None = None, reader=None) -> dict:
+        file: Path | None = None, reader=None, note: str = "", base: Path | None = None,
+        ai_client=None) -> dict:
     """Download (if a link), analyse, save the preset, make the strip. The reference
     video is always deleted. Returns {ok, name, text, strip} or {ok: False, error, ask_upload}."""
     store = presets_.Presets(data_dir / "presets")
@@ -570,10 +652,12 @@ def run(name: str, copy: list[str], data_dir: Path, out_dir: Path, url: str | No
         except (InspirationError, editor.EditError) as e:
             return {"ok": False, "error": str(e), "ask_upload": False}
         name = store.unique_name(name)
-        preset = make_preset(name, copy, a, {"url": url, "platform": platform_of(url) if url else "upload"})
+        art = study(src, a, note, base, ai_client)
+        preset = make_preset(name, copy, a, {"url": url, "platform": platform_of(url) if url else "upload"}, art)
         store.save(preset)
         strip = thumbnail_strip(src, out_dir / f"{name}_strip.jpg", a["duration"])
-        return {"ok": True, "name": name, "text": breakdown(preset), "strip": str(strip) if strip else None}
+        return {"ok": True, "name": name, "text": breakdown(preset), "art": art_text(preset),
+                "strip": str(strip) if strip else None}
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
         if file is not None:
@@ -591,6 +675,7 @@ def main(argv: list[str] | None = None) -> int:
     an.add_argument("--name", required=True)
     an.add_argument("--copy", default="")
     an.add_argument("--json", help="write the result here")
+    an.add_argument("--note", default="", help="Tim's words about why he sent it")
     args = ap.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     from .review import load_cfg
@@ -600,7 +685,8 @@ def main(argv: list[str] | None = None) -> int:
     out_dir = data_dir / "inspiration"
     out_dir.mkdir(parents=True, exist_ok=True)
     res = run(presets_.clean_name(args.name), presets_.parse_copy("copy: " + args.copy) if args.copy
-              else list(presets_.PARTS), data_dir, out_dir, args.url, Path(args.file) if args.file else None)
+              else list(presets_.PARTS), data_dir, out_dir, args.url, Path(args.file) if args.file else None,
+              note=args.note, base=base)
     if args.json:
         Path(args.json).write_text(json.dumps(res), encoding="utf-8")
     print(res.get("text") or f"FAILED: {res.get('error')}")
