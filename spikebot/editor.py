@@ -96,21 +96,28 @@ class Layout:
                 f"[cam][game]vstack=inputs=2,fps=30")
 
 
-def layout(src_w: int, src_h: int, facecam: dict, cam_max_share: float = 0.42) -> Layout:
-    """Facecam box (fractions of the source frame: x, y, w, h) scaled to full width
-    on top, gameplay centre-cropped to fill the rest. The facecam is on screen for
-    the whole clip, never just an intro."""
+CAM_SHARE = 1 / 3   # facecam = top third, gameplay = bottom two thirds (Tim's rule)
+
+
+def layout(src_w: int, src_h: int, facecam: dict, cam_share: float = CAM_SHARE) -> Layout:
+    """Facecam box (fractions of the source frame: x, y, w, h) on top, filling exactly
+    `cam_share` of the height (default 1/3); gameplay centre-cropped to fill the rest
+    (2/3). The facecam box is trimmed around its centre to the right shape, so the
+    face is never squashed. The facecam is on screen for the whole clip."""
     cx, cy = facecam["x"] * src_w, facecam["y"] * src_h
     cw, ch = facecam["w"] * src_w, facecam["h"] * src_h
     if cw < 16 or ch < 16:
         raise EditError("facecam box is too small; check lacy.facecam in config")
-    cam_h = OUT_W * ch / cw
-    cam_cap = OUT_H * cam_max_share
-    if cam_h > cam_cap:  # very tall box: trim top and bottom equally, keep the face
-        new_ch = cw * cam_cap / OUT_W
+    cam_h = even(OUT_H * cam_share)
+    want = OUT_W / cam_h                     # output aspect of the facecam strip
+    if cw / ch > want:                       # box too wide: trim the sides
+        new_cw = ch * want
+        cx += (cw - new_cw) / 2
+        cw = new_cw
+    else:                                    # box too tall: trim top and bottom
+        new_ch = cw / want
         cy += (ch - new_ch) / 2
-        ch, cam_h = new_ch, cam_cap
-    cam_h = even(cam_h)
+        ch = new_ch
     game_h = OUT_H - cam_h
     gh = src_h
     gw = gh * OUT_W / game_h
@@ -227,6 +234,32 @@ MINIMAL_HOOK_S = 2.5          # "minimal" text: the hook is a short opener, not 
 FOCUS_BEFORE, FOCUS_AFTER = 5.0, 2.5   # "minimal": captions only this close to the payoff
 
 
+# Words that carry no meaning on their own: a caption made only of these adds nothing
+# (laughing, "bro", "what", "no no no"), so it is cut.
+FILLER = {
+    "uh", "um", "umm", "er", "ah", "ahh", "oh", "ohh", "ooh", "huh", "hmm", "mm", "ha", "haha", "hahaha",
+    "heh", "lol", "lmao", "bro", "bruh", "dude", "man", "yo", "yeah", "yea", "yes", "ya", "no", "nah",
+    "nope", "ok", "okay", "like", "what", "wait", "dawg", "chat", "yup", "wow", "whoa", "damn", "god",
+    "oh my god", "omg", "wha", "so", "and", "the", "a", "i", "it", "is", "go", "come", "on", "bro's",
+    "let's", "lets", "right", "well", "hey", "aye", "ayy", "sheesh", "gg",
+}
+MIN_MEANINGFUL_WORDS = 3   # fewer meaningful words than this in the shown lines = no captions
+
+
+def _norm(text: str) -> str:
+    return re.sub(r"[^a-z0-9']+", "", text.lower())
+
+
+def meaningful(word: str) -> bool:
+    t = _norm(word)
+    return len(t) > 1 and t not in FILLER and not re.fullmatch(r"(ha)+h?|a+h+|o+h+|(no)+", t)
+
+
+def worth_captioning(words: list[Word]) -> bool:
+    """Do these words say anything? Pure laughter / filler / one-word reactions don't."""
+    return sum(1 for w in words if meaningful(w.text)) >= MIN_MEANINGFUL_WORDS
+
+
 def caption_focus(peak: float | None) -> tuple[float, float] | None:
     return None if peak is None else (max(0.0, peak - FOCUS_BEFORE), peak + FOCUS_AFTER)
 
@@ -289,7 +322,13 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         lines.append(f"Dialogue: 2,{ass_time(end_at)},{end},End,,0,0,0,,{ass_escape(ending)}")
     if level == "minimal":
         words = [w for w in words if focus and focus[0] <= w.start <= focus[1]]
-    for g in group_words(words, max_words=int((r.get("pace") or {}).get("words") or 3)):
+    # captions only when they add value: none at all if the lines are just reactions,
+    # and any single caption made only of filler ("bro", "haha", "no no") is cut
+    groups = group_words(words, max_words=int((r.get("pace") or {}).get("words") or 3))
+    if not worth_captioning(words):
+        groups = []
+    groups = [g for g in groups if any(meaningful(w.text) for w in g)]
+    for g in groups:
         texts = [ass_escape(w.text.strip().upper()) for w in g]
         for i, w in enumerate(g):
             if w.start >= end_at:

@@ -86,17 +86,21 @@ def test_clip_window_trimmed_around_peak():
     assert L.clip_window({"clip_start": 0.0, "clip_end": 40.0}, 59) == (0.0, 40.0)
 
 
-def test_layout_stacks_facecam_over_gameplay():
+def test_layout_is_one_third_facecam_two_thirds_gameplay():
     lay = editor.layout(1920, 1080, {"x": 0.0, "y": 0.0, "w": 0.25, "h": 0.30})
-    assert lay.cam_h + lay.game_h == 1920
+    assert lay.cam_h == 640 and lay.game_h == 1280          # 1/3 facecam, 2/3 gameplay
     cw, ch, cx, cy = lay.cam
-    assert (cw, ch, cx, cy) == (480, 324, 0, 0)
+    assert cw == 480 and abs(cw / ch - 1080 / 640) < 0.02    # trimmed, never squashed
+    assert cy > 0 and cy + ch <= 324                          # trimmed around the box centre
     gw, gh, gx, gy = lay.game
     assert gx + gw <= 1920 and gy + gh <= 1080 and gh == 1080
     assert abs(gw / gh - 1080 / lay.game_h) < 0.01
-    # a tall box is capped so gameplay keeps most of the screen
-    tall = editor.layout(1920, 1080, {"x": 0.8, "y": 0.0, "w": 0.2, "h": 0.6})
-    assert tall.cam_h <= 1920 * 0.42 + 2 and tall.cam[2] + tall.cam[0] <= 1920
+    # a tall box and a wide box both end up exactly a third of the screen
+    for box in ({"x": 0.8, "y": 0.0, "w": 0.2, "h": 0.6}, {"x": 0.5, "y": 0.7, "w": 0.5, "h": 0.2}):
+        lay = editor.layout(1920, 1080, box)
+        cw, ch, cx, cy = lay.cam
+        assert lay.cam_h == 640 and abs(cw / ch - 1080 / 640) < 0.02
+        assert cx + cw <= 1920 and cy + ch <= 1080
 
 
 def test_freeze_and_black_parsers():
@@ -108,18 +112,29 @@ def test_freeze_and_black_parsers():
 
 
 def test_captions_have_lacy_hook_highlight_and_no_watermark():
-    words = [Word(0.0, 0.3, "no"), Word(0.35, 0.6, "way"), Word(0.65, 1.0, "bro."),
-             Word(2.5, 2.8, "what")]
+    words = [Word(0.0, 0.3, "he"), Word(0.35, 0.6, "stole"), Word(0.65, 1.0, "the plane."),
+             Word(2.5, 2.8, "unbelievable")]
     ass = editor.build_ass(words, "Lacy can't believe this happened in GTA", 10.0, 600)
     assert "Hook,,0,0,0,,Lacy can't believe this happened in GTA" in ass
     assert "MarginV" in ass and ",636,1" in ass  # hook sits just under the 600px facecam
-    assert "{\\c&H00FFFF&}NO{\\c&HFFFFFF&} WAY BRO." in ass
-    assert "WHAT" in ass and ass.count("Cap,,") == 4
+    assert "{\\c&H00FFFF&}HE{\\c&HFFFFFF&} STOLE THE PLANE." in ass
+    assert "UNBELIEVABLE" in ass and ass.count("Cap,,") == 4
     assert "Mark,," not in ass  # no watermark/logo line
     assert "Mark,,0,0,0,,GTA 6 Clipped" in editor.build_ass(words, "Lacy x", 10, 600,
                                                             watermark="GTA 6 Clipped")
     groups = editor.group_words(words)
     assert [len(g) for g in groups] == [3, 1]
+
+
+def test_captions_that_add_nothing_are_cut():
+    react = [Word(0.0, 0.3, "no"), Word(0.35, 0.6, "way"), Word(0.65, 1.0, "bro."),
+             Word(1.2, 1.5, "hahaha"), Word(2.5, 2.8, "what")]
+    assert not editor.worth_captioning(react)
+    assert "Cap,," not in editor.build_ass(react, "Lacy x", 10.0, 600)
+    mixed = [Word(0.0, 0.3, "bro"), Word(0.4, 0.6, "haha"), Word(0.7, 0.9, "yeah"),
+             Word(2.0, 2.3, "the"), Word(2.4, 2.7, "cops"), Word(2.8, 3.1, "followed"), Word(3.2, 3.5, "me")]
+    ass = editor.build_ass(mixed, "Lacy x", 10.0, 600)
+    assert "BRO" not in ass and "COPS" in ass   # the filler-only caption is dropped
 
 
 def test_dhash_and_thumbnail_times():

@@ -444,6 +444,11 @@ def pick_variants(profile: Profile, mode: str, rng: random.Random,
             if dim in pins and pins[dim] in opts:
                 style[dim] = pins[dim]
                 continue
+            if dim == "ending" and base.get("ending") not in opts:
+                # end cards ("Would you have done the same?") add nothing unless Tim asks
+                # for one (/feedback or /style) or a preset he chose has one
+                style[dim] = "none"
+                continue
             taken = {v["style"].get(dim) for v in out}
             fresh = [o for o in opts if o not in taken] or list(opts)
             unseen = [o for o in fresh if all(a.get(dim) != o for a in avoid)] or fresh
