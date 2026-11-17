@@ -13,6 +13,8 @@ Licence: Remotion is free for individuals and companies of up to 3 people.
 """
 from __future__ import annotations
 
+import contextlib
+import uuid
 import json
 import logging
 import os
@@ -147,6 +149,41 @@ def concurrency(lcfg: dict) -> int:
     return max(1, min(4, (os.cpu_count() or 2) // 2))
 
 
+def _alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+@contextlib.contextmanager
+def render_slot(work: Path):
+    """Register this render in work/active/ and yield how many renders are running now
+    (this one included), so parallel /trend runs split the CPUs and the frame cache
+    instead of each taking the whole machine. Entries of dead processes are ignored."""
+    d = work / "active"
+    d.mkdir(parents=True, exist_ok=True)
+    me = d / f"{os.getpid()}-{uuid.uuid4().hex[:6]}"
+    me.touch()
+    try:
+        n = 0
+        for f in d.iterdir():
+            try:
+                pid = int(f.name.split("-")[0])
+            except ValueError:
+                continue
+            if _alive(pid):
+                n += 1
+            else:
+                f.unlink(missing_ok=True)
+        yield max(1, n)
+    finally:
+        me.unlink(missing_ok=True)
+
+
 def render(plan, lcfg: dict, out: Path, r: dict, cards, logo: Path | None = None, intro_s: float = 0.0,
            root: Path = ROOT, timeout: float = 1200) -> Path:
     """Render one edit with Remotion. Raises RemotionError (the caller falls back to ffmpeg)."""
@@ -157,7 +194,7 @@ def render(plan, lcfg: dict, out: Path, r: dict, cards, logo: Path | None = None
     # same disk as the media (hard links), or `remotion_tmp` (e.g. /dev/shm, a RAM disk: files are copied)
     work = Path(lcfg.get("remotion_tmp") or Path(lcfg.get("data_dir") or out.parent) / ".remotion")
     work.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix="r-", dir=work) as tmp:
+    with render_slot(work) as sharing, tempfile.TemporaryDirectory(prefix="r-", dir=work) as tmp:
         pub = Path(tmp) / "public"
         pub.mkdir()
         for name, real in files.items():   # Remotion doesn't follow symlinks in its public folder
@@ -170,9 +207,13 @@ def render(plan, lcfg: dict, out: Path, r: dict, cards, logo: Path | None = None
         part = Path(tmp) / "edit.mp4"
         cmd = [str(root / "node_modules" / ".bin" / "remotion"), "render", "src/index.ts", "TrailerEdit",
                str(part), f"--props={pj}", f"--public-dir={pub}", "--muted", "--codec=h264", "--crf=19",
-               "--log=info", f"--concurrency={concurrency(lcfg)}"]
-        if lcfg.get("remotion_cache_mb"):   # decoded-frame cache for the trailer footage
-            cmd.append(f"--offthreadvideo-cache-size-in-bytes={int(lcfg['remotion_cache_mb']) * 1024 * 1024}")
+               "--log=info", f"--concurrency={max(1, concurrency(lcfg) // sharing)}"]
+        if lcfg.get("remotion_cache_mb"):   # decoded-frame cache, split between parallel renders
+            mb = max(256, int(lcfg["remotion_cache_mb"]) // sharing)
+            cmd.append(f"--offthreadvideo-cache-size-in-bytes={mb * 1024 * 1024}")
+        if sharing > 1:
+            log.info("%d Remotion renders running: this one gets %s of the frame slots", sharing,
+                     f"1/{sharing}")
         browser = os.environ.get("REMOTION_BROWSER") or lcfg.get("remotion_browser")
         if browser:   # a Chrome already on the machine, instead of Remotion's own download
             cmd.append(f"--browser-executable={browser}")

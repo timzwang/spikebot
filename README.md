@@ -300,7 +300,8 @@ hand. On by default, 2 a day (`TOKYO_GIRL_PER_DAY` in `.env`, or `tokyo_girl.per
   20 min, is killed and falls back to ffmpeg. `tokyo_girl.remotion_concurrency` sets frames
   rendered in parallel (default: half the CPUs, max 4).
   `remotion_cache_mb` sets Remotion's decoded-frame cache; `remotion_tmp` (e.g. `/dev/shm/spikebot-remotion`)
-  renders in a RAM disk (media is copied there per render). Remotion is free for individuals and teams of up to 3.
+  renders in a RAM disk (media is copied there per render). Several renders at once (e.g.
+  multiple `/trend`) split the frame slots and cache evenly instead of each taking all of it. Remotion is free for individuals and teams of up to 3.
 - Footage: only official Rockstar GTA VI trailers and screenshots. No stream clips, no
   voices or dialogue. Vice City views, cars, Jason & Lucia.
 - Big on-screen text telling a short story (news, theory, meme or Jason & Lucia joke),

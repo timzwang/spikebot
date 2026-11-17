@@ -445,3 +445,28 @@ def test_remotion_memory_options(tmp_path, monkeypatch):
     assert "--offthreadvideo-cache-size-in-bytes=2147483648" in seen["cmd"]
     assert "--concurrency=4" in seen["cmd"]
     assert seen["cmd"][4].startswith(str(ram))
+
+
+def test_parallel_remotion_renders_share_cpus_and_cache(tmp_path, monkeypatch):
+    from spikebot import remotion
+    seen = {}
+    monkeypatch.setattr(remotion, "available", lambda root=None: True)
+    monkeypatch.setattr(remotion, "props_for", lambda *a: ({}, {}))
+    monkeypatch.setattr(remotion.subprocess, "run", lambda *a, **k: None)
+
+    def fake_run(cmd, cwd, env, timeout):
+        seen["cmd"] = cmd
+        Path(cmd[4]).write_bytes(b"x")
+        return 0, ""
+    monkeypatch.setattr(remotion, "run_with_progress", fake_run)
+    work = tmp_path / "w"
+    lcfg = {"media_dir": str(tmp_path), "data_dir": str(tmp_path), "remotion_tmp": str(work),
+            "remotion_cache_mb": 4096, "remotion_concurrency": 4}
+    (work / "active").mkdir(parents=True)
+    (work / "active" / f"{os.getpid()}-other").touch()     # another live render
+    (work / "active" / "999999999-dead").touch()           # a crashed one: ignored + cleaned
+    remotion.render(None, lcfg, tmp_path / "o.mp4", {}, [])
+    assert "--concurrency=2" in seen["cmd"]
+    assert f"--offthreadvideo-cache-size-in-bytes={2048 * 1024 * 1024}" in seen["cmd"]
+    assert not (work / "active" / "999999999-dead").exists()
+    assert [f.name for f in (work / "active").iterdir()] == [f"{os.getpid()}-other"]
