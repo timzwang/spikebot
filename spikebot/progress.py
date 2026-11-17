@@ -68,6 +68,7 @@ class Job:
             return
         self._written = now
         self.data["updated"] = now
+        self.data["pid"] = os.getpid()   # the process doing the work (the bot can see if it died)
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             tmp = self.path.with_suffix(f".{os.getpid()}.tmp")
@@ -192,9 +193,21 @@ def clock(seconds: float) -> str:
     return f"{s // 3600}:{s % 3600 // 60:02d}:{s % 60:02d}" if s >= 3600 else f"{s // 60}:{s % 60:02d}"
 
 
+def alive(pid) -> bool:
+    try:
+        os.kill(int(pid), 0)
+    except ProcessLookupError:
+        return False
+    except (PermissionError, ValueError, TypeError, OverflowError):
+        return True
+    return True
+
+
 def state_of(d: dict, now: float) -> str:
     if d.get("state") == "running" and now - float(d.get("updated", now)) > STALE_S:
         return "stalled"
+    if d.get("state") == "running" and d.get("pid") and not alive(d["pid"]):
+        return "stalled"   # the worker died (restart, reboot, kill): don't show a frozen bar
     return d.get("state", "running")
 
 
@@ -208,7 +221,11 @@ def text(d: dict, now: float) -> str:
     if state == "skipped":
         return f"{head}\n⏭ Skipped after {took}: {d.get('detail') or 'not usable'}"[:1900]
     if state in ("failed", "stalled"):
-        why = d.get("detail") or ("stopped responding" if state == "stalled" else "failed")
+        if state == "stalled":
+            why = ("the process ended (bot restart or reboot?)" if d.get("pid") and not alive(d["pid"])
+                   else "stopped responding")
+        else:
+            why = d.get("detail") or "failed"
         return f"{head}\n❌ {'Failed' if state == 'failed' else 'Stopped'} after {took}: {why}"[:1900]
     stage = d.get("stage") or "working"
     detail = f" ({d['detail']})" if d.get("detail") else ""

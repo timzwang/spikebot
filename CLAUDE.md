@@ -285,7 +285,7 @@ it in sync when behaviour or config changes.
 - `spikebot/progress.py`: live progress for long jobs. `Job.create` writes data/progress/<id>.json;
   `current()` (contextvar, or `SPIKEBOT_PROGRESS` env from the bot for subprocesses), `update`,
   nested `span(lo, hi)`, `finish(ok, text, state)`; `review.render_round` makes one unless a
-  job is active (Lacy `render_job` has its own); `text()` / `bar()` for the message. Never raises.
+  job is active (Lacy `render_job` has its own); `text()` / `bar()` for the message; each write stores the worker `pid`, and `state_of` shows a job whose process died as stopped at once. Never raises.
 - `spikebot/inspiration.py`: style analysis in a subprocess (`python -m spikebot.inspiration
   analyse --url|--file --name --copy --json`). yt-dlp only for tiktok/instagram/youtube hosts,
   <= 4 min; the reference file is **always deleted** and only numbers are kept (hook *type*,

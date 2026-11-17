@@ -796,3 +796,15 @@ def test_stats_channels_are_created_once_then_renamed(tmp_path):
     asyncio.run(b.stats_tick(now + 600))
     assert len(g.chans) == 7                                  # no duplicates
     assert "🟢 Live streamers: 6/40" in [c.name for c in g.chans.values()]
+
+
+def test_progress_dead_worker_shows_stopped(tmp_path):
+    import os
+    from spikebot import progress
+    job = progress.Job.create(tmp_path, "Trend edit")
+    now = job.data["updated"]
+    assert progress.state_of(job.data, now) == "running"      # this process is alive
+    d = dict(job.data, pid=999999999)                          # no such process
+    assert progress.state_of(d, now) == "stalled"
+    assert "process ended" in progress.text(d, now)
+    assert job.data["pid"] == os.getpid()
