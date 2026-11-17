@@ -729,15 +729,24 @@ class ReviewBot:
         songs = [a for a in message.attachments
                  if (a.content_type or "").startswith("audio/")
                  or a.filename.lower().endswith((".mp3", ".m4a", ".aac", ".wav", ".ogg", ".flac", ".opus"))]
-        if songs:
-            await self.add_songs(message, songs)
-            return
+        from . import music
+        try:
+            sound_links = await asyncio.to_thread(music.song_links, message.content)
+        except Exception:  # noqa: BLE001 - a bad link must not stop #inspiration
+            log.exception("song link check failed")
+            sound_links = []
         videos = [a for a in message.attachments
                   if (a.content_type or "").startswith("video/") or a.filename.lower().endswith((".mp4", ".mov", ".webm", ".mkv"))]
-        urls = inspiration.links(message.content)
+        urls = [u for u in inspiration.links(message.content) if u not in {o for o, _ in sound_links}]
+        if songs or sound_links:
+            await self.add_songs(message, songs, [r for _, r in sound_links])
+            if not videos and not urls:
+                return
         if not videos and not urls:
             if not in_thread:
-                await message.reply("Send a TikTok / Instagram / YouTube link or upload a video. Optional notes:"
+                await message.reply("Send a TikTok / Instagram / YouTube link or upload a video. For a song,"
+                                    " paste a TikTok sound link (Share sound > Copy link), upload the audio,"
+                                    " or put `sound:` before a link to a video that uses it. Optional notes:"
                                     " `copy: pacing, colour, text, transitions, hook, structure, music-sync, look`,"
                                     " `name: my-preset`, and anything about what you like in it.",
                                     mention_author=False)
@@ -780,20 +789,31 @@ class ReviewBot:
             else:
                 await thread.send(f"⚠️ Analysis failed: {res.get('error')}")
 
-    async def add_songs(self, message, songs) -> None:
-        """Audio in #inspiration = the song to cut Tokyo Girl edits to. Only measured (beats,
-        drop); edits stay silent and Tim adds the sound in the app."""
-        for a in songs:
-            name = presets_.parse_name(message.content) or Path(a.filename).stem
-            tmp = self.data_dir / "music" / ".incoming"
-            tmp.mkdir(parents=True, exist_ok=True)
-            path = tmp / f"{uuid.uuid4().hex}{Path(a.filename).suffix.lower() or '.mp3'}"
-            await a.save(path)
+    async def add_songs(self, message, songs, urls=()) -> None:
+        """Audio in #inspiration (an upload, a TikTok sound link, or `sound:` + a video link)
+        = the song to cut Tokyo Girl edits to. Only measured (beats, drop); edits stay silent
+        and Tim adds the sound in the app."""
+        given = presets_.parse_name(message.content)
+        tmp = self.data_dir / "music" / ".incoming"
+        tmp.mkdir(parents=True, exist_ok=True)
+        jobs = [("file", a) for a in songs] + [("url", u) for u in urls]
+        for kind, src in jobs:
+            path = None
+            if kind == "file":
+                path = tmp / f"{uuid.uuid4().hex}{Path(src.filename).suffix.lower() or '.mp3'}"
+                await src.save(path)
+                args = [str(path), "--name", given or Path(src.filename).stem]
+            else:
+                try:
+                    await message.add_reaction("🎵")   # "fetching", the reply follows
+                except Exception:  # noqa: BLE001 - missing permission is fine
+                    pass
+                args = ["--url", src] + (["--name", given] if given else [])
             out = tmp / f"{uuid.uuid4().hex}.json"
             try:
                 p = await asyncio.create_subprocess_exec(
-                    sys.executable, "-m", "spikebot.music", "--config", self.config_path, "add", str(path),
-                    "--name", name, "--json", str(out), stdout=asyncio.subprocess.PIPE,
+                    sys.executable, "-m", "spikebot.music", "--config", self.config_path, "add", *args,
+                    "--json", str(out), stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.STDOUT)
                 text, _ = await asyncio.wait_for(p.communicate(), 600)
                 res = json.loads(out.read_text(encoding="utf-8")) if out.exists() else \
@@ -801,7 +821,8 @@ class ReviewBot:
             except asyncio.TimeoutError:
                 res = {"ok": False, "error": "analysis took over 10 minutes"}
             finally:
-                path.unlink(missing_ok=True)
+                if path:
+                    path.unlink(missing_ok=True)
                 out.unlink(missing_ok=True)
             if res.get("ok"):
                 from .music import mmss

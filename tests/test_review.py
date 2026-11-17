@@ -592,3 +592,31 @@ def test_inspiration_link_fails_then_upload_is_analysed(tmp_path, monkeypatch):
     assert calls[0][:3] == ("night-drive", ["colour", "pacing"], "https://www.instagram.com/reel/abc/")
     assert calls[1][0] == "night-drive" and calls[1][1] == ["colour", "pacing"] and calls[1][3] is not None
     assert len(calls) == 2
+
+
+def test_inspiration_sound_links_become_songs(tmp_path, monkeypatch):
+    from spikebot import music as M
+    store = R.Store(tmp_path / "data")
+    b, reg = bot_for(tmp_path, store)
+    b.rcfg["inspiration_channel_id"] = 300
+    insp = FakeChannel(300, reg)
+    page = "https://www.tiktok.com/music/Tokyo-Girl-7301234567890123456"
+    monkeypatch.setattr(M, "resolve_short", lambda u: page if "vm.tiktok" in u else u)
+    songs, analysed = [], []
+
+    async def add_songs(message, files, urls=()):
+        songs.append(list(urls))
+
+    async def analyse(name, copy, url=None, file=None, note=""):
+        analysed.append(url)
+        return {"ok": True, "name": name, "text": "saved", "strip": None}
+    monkeypatch.setattr(b, "add_songs", add_songs)
+    monkeypatch.setattr(b, "analyse", analyse)
+
+    async def go():
+        await b.on_message(FakeMessage(insp, "https://vm.tiktok.com/ZMabc/"))
+        await b.on_message(FakeMessage(insp, "sound: https://www.tiktok.com/@a/video/1"))
+        await b.on_message(FakeMessage(insp, "https://www.tiktok.com/@a/video/2"))
+    asyncio.run(go())
+    assert songs == [[page], ["https://www.tiktok.com/@a/video/1"]]
+    assert analysed == ["https://www.tiktok.com/@a/video/2"]

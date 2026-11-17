@@ -278,8 +278,11 @@ hand. On by default, 2 a day (`TOKYO_GIRL_PER_DAY` in `.env`, or `tokyo_girl.per
 **What each edit is**
 
 - 1080x1920, 15-30 s, **no audio track at all**. Add the official "Tokyo Girl" sound in
-  TikTok/IG. **Cuts follow the real song**: upload the audio file of the sound you'll use
-  in #inspiration (or put it in `/opt/spikebot/data/music/`). The bot finds its beats and
+  TikTok/IG. **Cuts follow the real song**: in #inspiration paste the TikTok sound link
+  (on the sound's page: Share > Copy link; `name: tokyo-girl` optional), or write `sound:`
+  before a link to any TikTok/Reel/Short that uses it (only its audio is pulled, the video is
+  thrown away), or upload an audio file (or put it in `/opt/spikebot/data/music/`). If
+  TikTok won't hand over the sound page's file, the bot says so: use the `sound:` way. The bot finds its beats and
   the drop (librosa), starts the edit one bar before the drop (the logo intro fades away
   exactly on it) and every card says **where to start the sound** in the app, e.g. "start
   it at 0:42". The newest song is used (`tokyo_girl.song` picks one by name). No song =
@@ -411,8 +414,9 @@ pick one), taste notes are remembered and given to Claude next time, and the rep
 plainly what it can't do yet. `/rules` lists the rules; `/rules remove:3` undoes rule 3 and
 puts the earlier settings back.
 
-Needs `ANTHROPIC_API_KEY` in `/opt/spikebot/.env` (console.anthropic.com > API keys; model
-`claude-opus-5-5`, override with `SPIKEBOT_AI_MODEL`). Each `/feedback` costs about 1-2p and
+Needs `ANTHROPIC_API_KEY` in `/opt/spikebot/.env` (console.anthropic.com > API keys). Feedback
+runs on `claude-sonnet-5-5` (override with `SPIKEBOT_FEEDBACK_MODEL`), #inspiration analysis on
+`claude-opus-5-5` (`SPIKEBOT_AI_MODEL`). Each `/feedback` costs under 1p and
 each #inspiration analysis about 5-8p. Without a key the rule parser is used (fewer phrasings).
 
 **On-screen text** (`text_level`, varied across A/B/C and learned like the others):

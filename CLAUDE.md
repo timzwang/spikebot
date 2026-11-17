@@ -179,7 +179,9 @@ it in sync when behaviour or config changes.
 - `spikebot/music.py`: song beat maps (librosa, lazy): `analyse` (bpm, beats filled back to 0,
   drop = biggest loudness rise), `Library` (`data/music/`, cache `library.json`, newest = current),
   `start_for` (one bar before the drop), `grid` (beat times from the start), `note` (where to
-  start the sound). Audio uploaded in #inspiration -> `python -m spikebot.music add`. Tokyo Girl
+  start the sound). Audio uploaded in #inspiration -> `python -m spikebot.music add`; TikTok sound
+  links (`/music/`, vm.tiktok short links resolved by `resolve_short`) or `sound:` + a video link
+  -> `add --url` (`song_links`, `fetch`: sound page `playUrl` via curl_cffi, else yt-dlp `-x` audio only). Tokyo Girl
   `plan_clip(beats=)` cuts on it; edits stay silent.
 - `spikebot/sfx.py`: whoosh/riser/hit from `data/sfx/<kind>/` for Lacy (`cues`, `mix_graph`,
   amix normalize=0 under the voice); custom `sfx` volume (0 = off). Tokyo Girl never gets SFX.
@@ -250,7 +252,8 @@ it in sync when behaviour or config changes.
   cap; retries 3x; Lacy also gets thumbnail, submissions CSV row and job status. Never posts a
   platform twice. CLI `list | render | approve ITEM LABEL | reject | publish` (fallback only).
 - `spikebot/ai.py`: Claude API (optional; `ANTHROPIC_API_KEY` from `.env` next to config, then env;
-  model `claude-opus-5-5`, `SPIKEBOT_AI_MODEL`; lazy `anthropic` import). `ask_json` = one
+  model `claude-opus-5-5` (`SPIKEBOT_AI_MODEL`) for #inspiration, `claude-sonnet-5-5`
+  (`SPIKEBOT_FEEDBACK_MODEL`) for feedback via `model_name(base, task)`; lazy `anthropic` import). `ask_json` = one
   structured-output request with server-side refusal fallback; `interpret_feedback` (feedback ->
   settings rows with scope this_edit/always, notes, unsupported, hook_text) and `study_reference`
   (frames + measured numbers -> what makes it good, techniques, text use, look settings).

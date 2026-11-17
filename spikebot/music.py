@@ -5,12 +5,17 @@ The song file is only *measured*: edits stay silent (Tim adds the licensed sound
 the TikTok / Instagram / YouTube app), so nothing of the song is ever burned in.
 Each review card says where in the song to start the sound so it lines up.
 
-Songs live in data/music/ (upload an audio file in #inspiration, or copy one in).
+Songs live in data/music/ (upload an audio file in #inspiration, paste a TikTok sound
+link, or copy one in). A TikTok sound link (tiktok.com/music/..., or the vm.tiktok.com
+link from "Share sound") is fetched from the sound page; any TikTok/Instagram/YouTube
+link with `sound:` in the message has just its audio track pulled (the video is never
+kept).
 The newest song is used unless `tokyo_girl.song` names one. Analysis (librosa,
 imported lazily in the render subprocess) is cached in data/music/library.json.
 
 CLI:
   python -m spikebot.music add FILE [--name NAME]   copy into data/music and analyse
+  python -m spikebot.music add --url URL [--name NAME]   fetch a sound link, then the same
   python -m spikebot.music list
 """
 from __future__ import annotations
@@ -21,11 +26,19 @@ import logging
 import re
 import shutil
 import statistics
+import subprocess
 import sys
+import tempfile
 from pathlib import Path
+from urllib.parse import urlparse
 
 log = logging.getLogger("music")
 AUDIO_EXT = {".mp3", ".m4a", ".aac", ".wav", ".ogg", ".flac", ".opus"}
+MAX_SONG_S = 600
+MAX_SONG_BYTES = 40 * 1024 * 1024
+SHORT_HOSTS = ("vm.tiktok.com", "vt.tiktok.com")
+SOUND_HINT = re.compile(r"\b(song|sound|audio)\s*:", re.I)
+PLAY_URL_RE = re.compile(r'"playUrl"\s*:\s*"(https?:[^"]+)"')
 BUILD_BEATS = 4   # the edit starts one bar before the drop: logo / build-up, then the drop hits
 
 
@@ -168,6 +181,116 @@ class Library:
 
 
 # --------------------------------------------------------------------------
+# Sound links (TikTok sound page, or the audio track of a video)
+# --------------------------------------------------------------------------
+def is_sound_page(url: str) -> bool:
+    u = urlparse(url)
+    host = (u.hostname or "").lower()
+    return (host == "tiktok.com" or host.endswith(".tiktok.com")) and u.path.startswith("/music/")
+
+
+def resolve_short(url: str, timeout: float = 10.0) -> str:
+    """vm.tiktok.com/xyz -> where it redirects (a sound page or a video). Other links unchanged;
+    on any failure the original link comes back."""
+    if (urlparse(url).hostname or "").lower() not in SHORT_HOSTS:
+        return url
+    try:
+        from curl_cffi import requests as http  # noqa: N813
+        r = http.get(url, impersonate="chrome", timeout=timeout, allow_redirects=True)
+        return str(r.url) or url
+    except Exception as e:  # noqa: BLE001 - network/Cloudflare: keep the link as it was
+        log.info("could not resolve %s: %s", url, e)
+        return url
+
+
+def song_links(text: str, resolve=None) -> list[tuple[str, str]]:
+    """(link as posted, link to fetch) for every song link in a #inspiration message:
+    TikTok sound pages always; any allowed link when the message says `sound:`/`song:`."""
+    from .inspiration import links
+    resolve = resolve or resolve_short
+    hint = bool(SOUND_HINT.search(text or ""))
+    out = []
+    for u in links(text):
+        r = resolve(u)
+        if hint or is_sound_page(r):
+            out.append((u, r))
+    return out
+
+
+def sound_title(url: str) -> str:
+    """tiktok.com/music/Tokyo-Girl-7301234567890123456 -> "Tokyo Girl"."""
+    slug = urlparse(url).path.rstrip("/").split("/")[-1]
+    slug = re.sub(r"-?\d{8,}$", "", slug)
+    return slug.replace("-", " ").strip() or "tiktok sound"
+
+
+def play_url(html: str) -> str | None:
+    m = PLAY_URL_RE.search(html or "")
+    if not m:
+        return None
+    return json.loads(f'"{m.group(1)}"')   # undo \u002F escapes
+
+
+def _fetch_sound_page(url: str, folder: Path) -> Path:
+    from curl_cffi import requests as http  # noqa: N813
+    try:
+        page = http.get(url, impersonate="chrome", timeout=20)
+        src = play_url(page.text) if page.status_code == 200 else None
+        if not src or urlparse(src).scheme != "https":
+            raise MusicError("TikTok didn't hand over the sound file")
+        r = http.get(src, impersonate="chrome", timeout=60, headers={"Referer": "https://www.tiktok.com/"})
+    except MusicError:
+        raise
+    except Exception as e:  # noqa: BLE001
+        raise MusicError(f"couldn't reach TikTok ({type(e).__name__})") from e
+    if r.status_code != 200 or len(r.content) < 20_000:
+        raise MusicError(f"TikTok's sound file didn't download (HTTP {r.status_code})")
+    if len(r.content) > MAX_SONG_BYTES:
+        raise MusicError("that sound file is too big")
+    path = folder / "sound.mp3"
+    path.write_bytes(r.content)
+    return path
+
+
+def _fetch_audio_track(url: str, folder: Path) -> tuple[Path, str]:
+    """Only the audio of a TikTok/Instagram/YouTube video (yt-dlp -x; the video is deleted)."""
+    from .inspiration import host_ok
+    if not host_ok(url):
+        raise MusicError("only TikTok, Instagram and YouTube links are accepted")
+    title_file = folder / "title.txt"
+    try:
+        p = subprocess.run([sys.executable, "-m", "yt_dlp", "--no-playlist", "--no-warnings", "-q",
+                            "-f", "bestaudio/best", "-x", "--audio-format", "mp3",
+                            "--match-filter", f"duration <= {MAX_SONG_S}", "--max-filesize", "300M",
+                            "--print-to-file", "%(track,title)s", str(title_file),
+                            "-o", str(folder / "sound.%(ext)s"), url],
+                           capture_output=True, text=True, timeout=300)
+    except subprocess.TimeoutExpired as e:
+        raise MusicError("the download took over 5 minutes") from e
+    files = [f for f in folder.glob("sound.*") if f.suffix.lower() in AUDIO_EXT]
+    if p.returncode != 0 or not files:
+        err = (p.stderr or p.stdout).strip().splitlines()
+        raise MusicError(err[-1][:300] if err else "yt-dlp could not fetch it")
+    for f in folder.glob("sound.*"):
+        if f not in files:
+            f.unlink(missing_ok=True)
+    title = title_file.read_text(encoding="utf-8").strip().splitlines()[0] if title_file.exists() else ""
+    return files[0], title or "sound"
+
+
+def fetch(url: str, folder: Path) -> tuple[Path, str]:
+    """Download the song behind a link into `folder` -> (audio file, suggested name)."""
+    url = resolve_short(url)
+    if is_sound_page(url):
+        try:
+            return _fetch_sound_page(url, folder), sound_title(url)
+        except MusicError as e:
+            raise MusicError(f"{e}. Send a link to any TikTok that uses this sound with `sound:` in "
+                             "front of it, or upload the audio file") from e
+    return _fetch_audio_track(url, folder)
+
+
+# --------------------------------------------------------------------------
 # Using a beat map
 # --------------------------------------------------------------------------
 def start_for(song: dict, build_beats: int = BUILD_BEATS) -> float:
@@ -208,7 +331,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--config", default="config.json")
     sub = ap.add_subparsers(dest="cmd", required=True)
     a = sub.add_parser("add")
-    a.add_argument("file")
+    a.add_argument("file", nargs="?")
+    a.add_argument("--url")
     a.add_argument("--name")
     a.add_argument("--json")
     sub.add_parser("list")
@@ -219,8 +343,16 @@ def main(argv: list[str] | None = None) -> int:
     cfg, base = load_cfg(args.config)
     lib = Library(tokyo_girl.settings(cfg, base)["music_dir"])
     if args.cmd == "add":
+        if not args.file and not args.url:
+            ap.error("add needs FILE or --url")
         try:
-            row = lib.add(Path(args.file), args.name)
+            if args.url:
+                lib.root.mkdir(parents=True, exist_ok=True)
+                with tempfile.TemporaryDirectory(dir=lib.root) as tmp:
+                    path, title = fetch(args.url, Path(tmp))
+                    row = lib.add(path, args.name or title)
+            else:
+                row = lib.add(Path(args.file), args.name)
             res = {"ok": True, "name": row["name"], "bpm": row["bpm"], "drop_s": row["drop_s"],
                    "duration": row["duration"], "start_s": start_for(row)}
         except MusicError as e:

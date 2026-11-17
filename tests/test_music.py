@@ -59,3 +59,50 @@ def test_plan_follows_real_beats():
     assert all(sl.start in on and round(sl.start + sl.dur, 3) in on for sl in plan.slots)
     assert plan.duration in on and 15 - 1 <= plan.duration <= 20 + 1
     assert all(c[0] in on for c in plan.cards)
+
+
+# ---- sound links ---------------------------------------------------------------------------
+def test_sound_links_are_recognised_and_named():
+    page = "https://www.tiktok.com/music/Tokyo-Girl-7301234567890123456?lang=en"
+    assert M.is_sound_page(page) and not M.is_sound_page("https://www.tiktok.com/@a/video/1")
+    assert M.sound_title(page) == "Tokyo Girl"
+    short = {"https://vm.tiktok.com/ZMabc/": page}
+    links = M.song_links("new trend https://vm.tiktok.com/ZMabc/ https://www.tiktok.com/@a/video/1",
+                         resolve=lambda u: short.get(u, u))
+    assert links == [("https://vm.tiktok.com/ZMabc/", page)]          # the video is not a song
+    hinted = M.song_links("sound: https://www.tiktok.com/@a/video/1", resolve=lambda u: u)
+    assert hinted == [("https://www.tiktok.com/@a/video/1",) * 2]
+    assert M.song_links("https://evil.example/music/x-12345678901", resolve=lambda u: u) == []
+
+
+def test_play_url_unescapes_and_bad_page_explains_the_fallback(tmp_path, monkeypatch):
+    html = '{"music":{"title":"x","playUrl":"https:\\u002F\\u002Fsf16.tiktokcdn.com\\u002Fobj\\u002Fa.mp3"}}'
+    assert M.play_url(html) == "https://sf16.tiktokcdn.com/obj/a.mp3"
+    assert M.play_url("<html>nothing</html>") is None
+
+    def no_file(url, folder):
+        raise M.MusicError("TikTok didn't hand over the sound file")
+    monkeypatch.setattr(M, "_fetch_sound_page", no_file)
+    with pytest.raises(M.MusicError, match="sound:"):
+        M.fetch("https://www.tiktok.com/music/Tokyo-Girl-7301234567890123456", tmp_path)
+
+
+@needs_ffmpeg
+def test_add_from_url_keeps_only_the_song(tmp_path, monkeypatch):
+    (tmp_path / "config.json").write_text("{}")
+    src = song(tmp_path / "src.mp3")
+
+    def fake_fetch(url, folder):
+        out = folder / "sound.mp3"
+        out.write_bytes(src.read_bytes())
+        return out, "Tokyo Girl"
+    monkeypatch.setattr(M, "fetch", fake_fetch)
+    monkeypatch.chdir(tmp_path)
+    out = tmp_path / "res.json"
+    assert M.main(["--config", "config.json", "add", "--url", "https://www.tiktok.com/music/x-1234567890",
+                   "--json", str(out)]) == 0
+    import json
+    res = json.loads(out.read_text())
+    assert res["ok"] and res["name"] == "tokyo-girl" and abs(res["bpm"] - BPM) < 3
+    music_dir = next(p.parent for p in tmp_path.rglob("tokyo-girl.mp3"))
+    assert [p.name for p in music_dir.iterdir() if p.is_dir()] == []      # temp download removed

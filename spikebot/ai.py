@@ -6,7 +6,8 @@ caller falls back to the rule-based parser (style.parse_feedback) and the measur
 numbers only. The `anthropic` package is imported lazily, so the chat bot never
 needs it.
 
-Cost: one /feedback is a few thousand tokens (about 1-2p); one #inspiration
+Models: /feedback runs on Sonnet 5.5 (SPIKEBOT_FEEDBACK_MODEL), #inspiration on Opus 5.5
+(SPIKEBOT_AI_MODEL). Cost: one /feedback is a few thousand tokens (under 1p); one #inspiration
 analysis with 8 small frames is roughly 10-15k tokens (about 5-8p).
 
 Privacy/policy: only frames and numbers are sent, never the reference file itself,
@@ -25,7 +26,8 @@ from . import style as st
 
 log = logging.getLogger("ai")
 
-MODEL = "claude-opus-5-5"
+MODEL = "claude-opus-5-5"            # #inspiration study (vision, harder judgement)
+FEEDBACK_MODEL = "claude-sonnet-5-5"  # /feedback and the review Feedback button
 FALLBACK_BETA = "server-side-fallback-2026-07-01"
 
 
@@ -56,12 +58,16 @@ def api_key(base: Path | None = None) -> str | None:
     return os.environ.get("ANTHROPIC_API_KEY") or None
 
 
-def model_name(base: Path | None = None) -> str:
+def model_name(base: Path | None = None, task: str = "study") -> str:
+    """`task="feedback"` -> SPIKEBOT_FEEDBACK_MODEL (default Sonnet 5.5); anything else ->
+    SPIKEBOT_AI_MODEL (default Opus 5.5). .env next to config wins over the environment."""
+    var, default = ("SPIKEBOT_FEEDBACK_MODEL", FEEDBACK_MODEL) if task == "feedback" \
+        else ("SPIKEBOT_AI_MODEL", MODEL)
     if base is not None:
-        v = _dotenv(Path(base) / ".env").get("SPIKEBOT_AI_MODEL")
+        v = _dotenv(Path(base) / ".env").get(var)
         if v:
             return v
-    return os.environ.get("SPIKEBOT_AI_MODEL") or MODEL
+    return os.environ.get(var) or default
 
 
 def available(base: Path | None = None) -> bool:
@@ -75,7 +81,7 @@ def available(base: Path | None = None) -> bool:
 
 
 def ask_json(system: str, content: list[dict] | str, schema: dict, base: Path | None = None,
-             max_tokens: int = 8000, client=None, effort: str = "medium") -> dict:
+             max_tokens: int = 8000, client=None, effort: str = "medium", task: str = "study") -> dict:
     """One structured-output request. Returns the parsed JSON. Raises AIError."""
     if client is None:
         try:
@@ -88,7 +94,7 @@ def ask_json(system: str, content: list[dict] | str, schema: dict, base: Path | 
         client = anthropic.Anthropic(api_key=key, timeout=120.0)
     try:
         resp = client.beta.messages.create(
-            model=model_name(base), max_tokens=max_tokens, system=system,
+            model=model_name(base, task), max_tokens=max_tokens, system=system,
             messages=[{"role": "user", "content": content}],
             output_config={"effort": effort, "format": {"type": "json_schema", "schema": schema}},
             betas=[FALLBACK_BETA], fallbacks="default")
@@ -195,7 +201,7 @@ def interpret_feedback(text: str, mode: str, base: Path | None = None, current: 
         parts.append("Earlier feedback already applied:\n- " + "\n- ".join(taste[-20:]))
     parts.append("Feedback:\n" + text.strip()[:3000])
     out = ask_json(FEEDBACK_SYSTEM.format(menu=settings_menu()), "\n\n".join(parts), FEEDBACK_SCHEMA,
-                   base=base, max_tokens=4000, client=client, effort="medium")
+                   base=base, max_tokens=4000, client=client, effort="medium", task="feedback")
     for row in out.get("settings", []):
         if str(row.get("value", "")).lower() in ("auto", "null", "none") and row.get("setting") not in (
                 "text_level", "intro", "ending", "transition"):

@@ -60,6 +60,18 @@ def test_no_key_means_not_available(tmp_path, monkeypatch):
     assert ai.api_key(tmp_path) == "sk-test" and ai.model_name(tmp_path) == "claude-sonnet-5-5"
 
 
+def test_feedback_uses_sonnet_and_study_uses_opus(tmp_path, monkeypatch):
+    monkeypatch.delenv("SPIKEBOT_AI_MODEL", raising=False)
+    monkeypatch.delenv("SPIKEBOT_FEEDBACK_MODEL", raising=False)
+    assert ai.model_name(tmp_path, "feedback") == "claude-sonnet-5-5"
+    assert ai.model_name(tmp_path) == "claude-opus-5-5"
+    c = FakeClaude(answer([row("grade", "warm")]))
+    ai.interpret_feedback("warmer please", "lacy", base=tmp_path, client=c)
+    assert c.requests[0]["model"] == "claude-sonnet-5-5"
+    (tmp_path / ".env").write_text("SPIKEBOT_FEEDBACK_MODEL=claude-haiku-5-5\n")
+    assert ai.model_name(tmp_path, "feedback") == "claude-haiku-5-5"
+
+
 # ---- /feedback ------------------------------------------------------------------------
 def test_feedback_with_claude_pins_settings_for_every_future_variant(tmp_path):
     prof = S.Profile(tmp_path / "p.json")
