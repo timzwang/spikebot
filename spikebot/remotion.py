@@ -17,6 +17,8 @@ import json
 import logging
 import os
 import shutil
+import time
+import re
 import subprocess
 import tempfile
 from pathlib import Path
@@ -84,6 +86,40 @@ def props_for(plan, lcfg: dict, r: dict, cards: list[tuple[float, float, str]], 
     return props, files
 
 
+# "Rendered 120/900" (older CLI) or "Rendering frames ━━━━ 120/900" (4.x, non-TTY prints lines)
+FRAMES_RE = re.compile(r"Render\w*(?:\s+frames)?\D*?(\d+)\s*/\s*(\d+)")
+
+
+def run_with_progress(cmd: list[str], cwd: Path, env: dict, timeout: float) -> tuple[int, str]:
+    """Run the Remotion CLI, feeding "Rendered 120/900" lines to the live progress bar.
+    Returns (exit code, last output)."""
+    from . import progress
+    job = progress.current()
+    tail: list[str] = []
+    start = time.time()
+    try:
+        p = subprocess.Popen(cmd, cwd=cwd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                             text=True, bufsize=1)
+    except OSError as e:
+        raise RemotionError(f"could not start remotion: {e}") from e
+    assert p.stdout is not None
+    for line in p.stdout:
+        tail = (tail + [line.rstrip()])[-40:]
+        m = FRAMES_RE.search(line)
+        if m and int(m.group(2)):
+            done, total = int(m.group(1)), int(m.group(2))
+            job.update(0.95 * done / total, detail=f"frame {done}/{total}")
+        if time.time() - start > timeout:
+            p.kill()
+            raise RemotionError(f"render took over {timeout / 60:.0f} min")
+    try:
+        code = p.wait(timeout=max(1, timeout - (time.time() - start)))
+    except subprocess.TimeoutExpired as e:
+        p.kill()
+        raise RemotionError(f"render took over {timeout / 60:.0f} min") from e
+    return code, "\n".join(tail)
+
+
 def render(plan, lcfg: dict, out: Path, r: dict, cards, logo: Path | None = None, intro_s: float = 0.0,
            root: Path = ROOT, timeout: float = 2400) -> Path:
     """Render one edit with Remotion. Raises RemotionError (the caller falls back to ffmpeg)."""
@@ -106,17 +142,14 @@ def render(plan, lcfg: dict, out: Path, r: dict, cards, logo: Path | None = None
         part = Path(tmp) / "edit.mp4"
         cmd = [str(root / "node_modules" / ".bin" / "remotion"), "render", "src/index.ts", "TrailerEdit",
                str(part), f"--props={pj}", f"--public-dir={pub}", "--muted", "--codec=h264", "--crf=19",
-               "--log=error"]
+               "--log=info"]
         browser = os.environ.get("REMOTION_BROWSER") or lcfg.get("remotion_browser")
         if browser:   # a Chrome already on the machine, instead of Remotion's own download
             cmd.append(f"--browser-executable={browser}")
-        try:
-            env = dict(os.environ, PATH=f"{node_bin(root)}:{os.environ.get('PATH', '/usr/bin:/bin')}")
-            p = subprocess.run(cmd, cwd=root, capture_output=True, text=True, timeout=timeout, env=env)
-        except subprocess.TimeoutExpired as e:
-            raise RemotionError(f"render took over {timeout / 60:.0f} min") from e
-        if p.returncode != 0 or not part.exists():
-            raise RemotionError(f"remotion failed ({p.returncode}): {(p.stderr or p.stdout).strip()[-400:]}")
+        env = dict(os.environ, PATH=f"{node_bin(root)}:{os.environ.get('PATH', '/usr/bin:/bin')}")
+        code, text = run_with_progress(cmd, root, env, timeout)
+        if code != 0 or not part.exists():
+            raise RemotionError(f"remotion failed ({code}): {text.strip()[-400:]}")
         # faststart + guarantee there is no audio stream at all
         subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-i", str(part), "-an",
                         "-c:v", "copy", "-movflags", "+faststart", str(out)], check=True, timeout=300)

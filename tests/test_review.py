@@ -366,6 +366,9 @@ class FakeMsg:
         self.edits.append(kw)
         self.content = kw.get("content", self.content)
 
+    async def delete(self):
+        self.deleted = True
+
     async def create_thread(self, name, auto_archive_duration=None):
         return self.channel.bot_channels.setdefault(999, FakeChannel(999, self.channel.bot_channels))
 
@@ -573,7 +576,7 @@ def test_inspiration_link_fails_then_upload_is_analysed(tmp_path, monkeypatch):
     insp = FakeChannel(300, reg)
     calls = []
 
-    async def analyse(name, copy, url=None, file=None, note=""):
+    async def analyse(name, copy, url=None, file=None, note="", **kw):
         calls.append((name, copy, url, file))
         if url:
             return {"ok": False, "error": "login required", "ask_upload": True}
@@ -607,7 +610,7 @@ def test_inspiration_sound_links_become_songs(tmp_path, monkeypatch):
     async def add_songs(message, files, urls=()):
         songs.append(list(urls))
 
-    async def analyse(name, copy, url=None, file=None, note=""):
+    async def analyse(name, copy, url=None, file=None, note="", **kw):
         analysed.append(url)
         return {"ok": True, "name": name, "text": "saved", "strip": None}
     monkeypatch.setattr(b, "add_songs", add_songs)
@@ -658,3 +661,138 @@ def test_inspiration_threads_archive_after_12_quiet_hours(tmp_path):
     assert not busy.archived
     asyncio.run(b.archive_inspiration(now + 601))
     assert busy.archived
+
+
+def test_trend_schedule_runs_each_slot_once_and_skips_pileups(tmp_path, monkeypatch):
+    from datetime import datetime as _dt
+    from spikebot import review as RV
+    from spikebot import tokyo_girl as TG
+    uk = RV.UK
+
+    def at(h, m):
+        return _dt(2026, 11, 18, h, m, tzinfo=uk).timestamp()
+    times = ["07:20", "15:50", "19:40"]
+    assert DB.trend_slots_due(times, {}, at(7, 0)) == (None, [])
+    assert DB.trend_slots_due(times, {}, at(7, 25)) == ("07:20", [])
+    assert DB.trend_slots_due(times, {"2026-11-18": ["07:20"]}, at(9, 0)) == (None, [])
+    assert DB.trend_slots_due(times, {}, at(20, 0)) == ("19:40", ["07:20", "15:50"])   # bot was down all day
+
+    store = R.Store(tmp_path / "data")
+    b, _ = bot_for(tmp_path, store)
+    runs = []
+
+    async def run_trend(inter, song, n):
+        runs.append(song)
+        b._trend_running = False
+    monkeypatch.setattr(b, "run_trend", run_trend)
+
+    async def go():
+        assert await b.trend_tick(at(7, 21)) == "07:20"
+        await asyncio.sleep(0)
+        assert await b.trend_tick(at(7, 30)) is None             # same slot never twice
+        assert await b.trend_tick(at(15, 51)) == "15:50"
+        await asyncio.sleep(0)
+    asyncio.run(go())
+    assert runs == ["auto", "auto"]
+
+    rows = [{"file": "new.mp3"}, {"file": "old.mp3"}]
+    assert TG.pick_rotating(rows, {})["file"] == "new.mp3"
+    assert TG.pick_rotating(rows, {"new.mp3": 1})["file"] == "old.mp3"
+
+
+
+def test_progress_bar_is_posted_edited_and_removed(tmp_path):
+    from spikebot import progress as P
+    store = R.Store(tmp_path / "data")
+    b, reg = bot_for(tmp_path, store)
+    review_ch = reg[100]
+    job = P.Job.create(store.data_dir, "Trending sound edit · original-sound", now=1000.0)
+    job.data["started"] = 1000.0
+    with P.tracking(job):
+        P.current().update(0.0, "Version A (1/3): rendering")
+        with P.current().span(0.0, 1 / 3):
+            P.current().update(0.5, detail="shot 7/14")
+    job.write(force=True)
+    t = P.text(job.data, 1100.0)
+    assert "33%" in t and "shot 7/14" in t and "1:40" in t and "█" in t
+
+    async def go():
+        await b.progress_tick(1100.0)
+        msg = review_ch.sent[-1]
+        assert "Trending sound edit" in msg.content
+        job.update(1.0, "Version C (3/3): preview")
+        job.write(force=True)
+        await b.progress_tick(1105.0)
+        assert msg.edits and "100%" in msg.content
+        job.finish(True)
+        await b.progress_tick(1110.0)
+        assert getattr(msg, "deleted", False) and not P.load_all(store.data_dir)
+        bad = P.Job.create(store.data_dir, "Lacy clip x", now=1200.0)
+        bad.data["started"] = 1200.0
+        bad.finish(False, "VOD not published")
+        await b.progress_tick(1300.0)
+        assert "VOD not published" in review_ch.sent[-1].content and not P.load_all(store.data_dir)
+    asyncio.run(go())
+    # a subprocess finds its job through the environment
+    j2 = P.Job.create(store.data_dir, "Studying x", channel="custom", channel_id=555)
+    env = DB.progress_env(j2)
+    assert env[P.ENV] == str(j2.path)
+
+
+def test_stats_channels_are_created_once_then_renamed(tmp_path):
+    from datetime import datetime as _dt
+    from spikebot import review as RV
+    now = _dt(2026, 11, 17, 21, 0, tzinfo=RV.UK).timestamp()
+    names = DB.stat_names({"live": 5, "watching": 40, "moments_today": 12, "to_review": 3,
+                           "approved_today": 2, "started": now - (5 * 3600 + 30 * 60 + 20)}, now)
+    assert names["live"] == "🟢 Live streamers: 5/40" and names["uptime"] == "⏱ Bot uptime: 5h 30m"
+    assert names["gta6"] == "🎮 GTA 6 in 2 days"
+    assert DB.stat_names({}, _dt(2026, 11, 19, 9, 0, tzinfo=RV.UK).timestamp())["gta6"] == "🎮 GTA 6: out now"
+
+    class Ch:
+        _n = 100
+
+        def __init__(self, name):
+            Ch._n += 1
+            self.id, self.name, self.renames = Ch._n, name, 0
+
+        async def edit(self, name, reason=None):
+            self.name, self.renames = name, self.renames + 1
+
+    class Guild:
+        def __init__(self):
+            self.chans, self.categories = {}, []
+            self.default_role, self.me = object(), object()
+
+        def get_channel(self, cid):
+            return self.chans.get(cid)
+
+        async def create_category(self, name, **kw):
+            c = Ch(name)
+            self.chans[c.id] = c
+            self.categories.append(c)
+            return c
+
+        async def create_voice_channel(self, name, category=None, reason=None):
+            c = Ch(name)
+            self.chans[c.id] = c
+            return c
+
+    g = Guild()
+    store = R.Store(tmp_path / "data")
+    b, _ = bot_for(tmp_path, store)
+    b.rcfg["guild_id"] = 1
+
+    class Client:
+        def get_guild(self, gid):
+            return g
+    b.client = Client()
+    live = {"n": 5}
+    b.stats_source = lambda t: {"live": live["n"], "watching": 40, "moments_today": 1}
+    asyncio.run(b.stats_tick(now))
+    made = [c.name for c in g.chans.values()]
+    assert "📊 Stats" in made and "🟢 Live streamers: 5/40" in made and len(made) == 7
+    live["n"] = 6
+    asyncio.run(b.stats_tick(now + 600))
+    assert len(g.chans) == 7                                  # no duplicates
+    assert "🟢 Live streamers: 6/40" in [c.name for c in g.chans.values()]

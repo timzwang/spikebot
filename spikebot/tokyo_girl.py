@@ -774,10 +774,14 @@ def render_plan(plan: Plan, lcfg: dict, out: Path, grade: str = "", text_style: 
     with tempfile.TemporaryDirectory() as tmp:
         tmpd = Path(tmp)
         names = []
+        from . import progress
+        job = progress.current()
         for i, slot in enumerate(plan.slots):
             seg = tmpd / f"s{i:03d}.mp4"
             render_slot(slot, media, seg)
             names.append(seg.name)
+            job.update(0.8 * (i + 1) / len(plan.slots), detail=f"shot {i + 1}/{len(plan.slots)}")
+        job.update(0.85, detail="joining shots, text and colour")
         (tmpd / "list.txt").write_text("".join(f"file '{n}'\n" for n in names), encoding="utf-8")
         base_chain = ",".join(x for x in (grade, look) if x) or "null"
         inputs = ["-f", "concat", "-safe", "0", "-i", "list.txt"]
@@ -918,7 +922,11 @@ class ReviewAdapter:
             song_start, room = music.window(song, float(self.lcfg["min_s"]), float(self.lcfg["max_s"]))
             plan_cfg = dict(self.lcfg, max_s=room, min_s=min(float(self.lcfg["min_s"]), room))
         out = []
-        for spec in specs:
+        from . import progress
+        job = progress.current()
+        for vi, spec in enumerate(specs):
+          with job.span(vi / len(specs), (vi + 1) / len(specs)):
+            job.update(0.0, f"Version {spec['label']} ({vi + 1}/{len(specs)}): planning")
             r = st.resolve(spec["style"])
             base_v = spec.get("from")
             texts = spec.get("texts") or {}
@@ -955,7 +963,10 @@ class ReviewAdapter:
                 else:
                     log.warning("logo intro asked for but %s is missing: rendering without it", logo)
             shown = cards_for_level(plan.cards, r["text_level"], intro_s)
-            engine = self.render_edit(plan, mp4, r, shown, logo if intro_s else None, intro_s)
+            job.update(0.05, f"Version {spec['label']} ({vi + 1}/{len(specs)}): rendering")
+            with job.span(0.05, 0.9):
+                engine = self.render_edit(plan, mp4, r, shown, logo if intro_s else None, intro_s)
+            job.update(0.9, f"Version {spec['label']} ({vi + 1}/{len(specs)}): preview")
             prev = editor.preview(mp4, folder / f"{stem}_preview.mp4", preview_bytes, plan.duration)
             if song and song_start + plan.duration > float(song["duration"]) + 0.5:
                 log.warning("edit runs %.1fs past the end of %s", song_start + plan.duration - song["duration"],
@@ -1035,6 +1046,15 @@ def trend_captions(story: Story, today: date, lcfg: dict, hook: str | None = Non
             "tiktok": f"{h} #GTA6 #GTAVI #ViceCity #fyp".strip()}
 
 
+def trend_used_path(lcfg: dict) -> Path:
+    return Path(lcfg["data_dir"]) / "trend" / "used.json"
+
+
+def pick_rotating(rows: list[dict], used: dict[str, int]) -> dict:
+    """The sound used least so far; ties go to the newest (rows are newest first)."""
+    return min(enumerate(rows), key=lambda kv: (used.get(kv[1]["file"], 0), kv[0]))[1]
+
+
 def make_trend(lcfg: dict, songs: list[str] | None = None, per_song: int = 1, now: float | None = None,
                shots: list[Shot] | None = None) -> list[str]:
     """Review items cut to trending sounds (every one in the library except the Tokyo Girl
@@ -1045,9 +1065,13 @@ def make_trend(lcfg: dict, songs: list[str] | None = None, per_song: int = 1, no
     dt = datetime.fromtimestamp(now, UK)
     lib = music.Library(lcfg["music_dir"])
     rows = lib.trending(lcfg.get("song") or music.TOKYO_GIRL_SONG)
-    if songs:
+    used_path = trend_used_path(lcfg)
+    used = load_state(used_path)
+    if songs == ["auto"]:      # the scheduled run: one sound, rotating through them all
+        rows = [pick_rotating(rows, used)] if rows else []
+    elif songs:
         want = {music.clean_name(x) for x in songs}
-        rows = [r for r in rows if music.clean_name(r["name"]) in want]
+        rows = [r for r in rows if music.clean_name(r["name"]) in want or r["file"] in songs]
     if not rows:
         raise editor.EditError("no trending sounds saved: post a TikTok sound link in #inspiration first")
     store = review.Store(Path(lcfg["data_dir"]))
@@ -1062,6 +1086,8 @@ def make_trend(lcfg: dict, songs: list[str] | None = None, per_song: int = 1, no
             item = review.render_round(store, item["id"], cfg, base, {"kind": "initial"}, now=now + k,
                                        adapter=adapter)
             log.info("trending-sound review item %s (%s): %s", item["id"], row["name"], item["status"])
+            used[row["file"]] = used.get(row["file"], 0) + 1
+            save_state(used_path, used)
             ids.append(item["id"])
             k += 1
     return ids
@@ -1296,7 +1322,7 @@ def main(argv: list[str] | None = None) -> None:
     dv = sub.add_parser("deliver", help="send exports to Discord again (default: undelivered ones)")
     dv.add_argument("files", nargs="*")
     tr = sub.add_parser("trend", help="edits cut to the trending sounds (one per sound by default)")
-    tr.add_argument("--song", action="append", help="only this sound (repeatable)")
+    tr.add_argument("--song", action="append", help="only this sound (repeatable); 'auto' = next in rotation")
     tr.add_argument("-n", type=int, default=1, help="edits per sound")
     mk = sub.add_parser("make")
     mk.add_argument("-n", type=int, default=1)

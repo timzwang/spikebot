@@ -18,6 +18,8 @@ CLI:  python -m spikebot.lacy list | render ID | approve ID | reject ID | layout
 """
 from __future__ import annotations
 
+import contextlib
+
 import argparse
 import asyncio
 import csv
@@ -358,7 +360,15 @@ def render_job(job: dict, lcfg: dict, jobs: Jobs, used_titles: set[str],
     d = jobs.dir(job["id"])
     d.mkdir(parents=True, exist_ok=True)
 
+    from . import progress
+    pj = None
+    if review_store is not None:
+        pj = progress.Job.create(review_store.data_dir, f"Lacy clip {job['id']} ({job.get('category') or '?'})",
+                                 channel="review", icon="🎮")
+
     def finish(status: str, reason: str | None = None) -> dict:
+        if pj:
+            pj.finish(False, reason or status, state="skipped" if status == "skipped" else None)
         job["status"], job["reason"] = status, reason
         (d / "segment.mp4").unlink(missing_ok=True)  # big; kept only while a clip is in review
         jobs.save(job)
@@ -382,14 +392,31 @@ def render_job(job: dict, lcfg: dict, jobs: Jobs, used_titles: set[str],
     job["vod_link"] = job["vod_url"] + vod_offset(job["clip_start"] - vod_start, "twitch")
     duration = job["clip_end"] - job["clip_start"]
     seg = d / "segment.mp4"
+    with progress.tracking(pj) if pj else contextlib.nullcontext():
+        try:
+            return _render_job_body(job, lcfg, jobs, used_titles, fetch, transcribe, now, review_store, cfg, base,
+                                    d, day, duration, vod_start, seg, finish, pj)
+        except Exception as e:
+            if pj and pj.data.get("state") == "running":
+                pj.finish(False, f"{type(e).__name__}: {e}")
+            raise
+
+
+def _render_job_body(job, lcfg, jobs, used_titles, fetch, transcribe, now, review_store, cfg, base,
+                     d, day, duration, vod_start, seg, finish, pj):
+    from . import progress
+    track = progress.current()
     try:
+        track.update(0.02, "Downloading the VOD segment")
         fetch(job["vod_url"], job["clip_start"] - vod_start, duration, seg)
+        track.update(0.2, "Checking the facecam (BRB / away)")
         info = editor.probe(seg)
         duration = info["duration"] or duration
         lay = editor.layout(info["width"], info["height"], lcfg["facecam"])
         away = editor.away_reason(seg, lay, duration)
         if away:
             return finish("skipped", f"BRB/away: {away}")
+        track.update(0.25, "Transcribing speech (Whisper)")
         words, lang, prob = transcribe(seg, lcfg["whisper_model"])
         if lang != "en" or prob < lcfg["min_english_prob"]:
             return finish("skipped", f"not English (detected {lang} {prob:.0%})")
@@ -407,13 +434,16 @@ def render_job(job: dict, lcfg: dict, jobs: Jobs, used_titles: set[str],
                                    now, title=f"Lacy {job['id']} ({job['category']})")
         job["review_item"] = item["id"]
         jobs.save(job)
-        item = review.render_round(review_store, item["id"], cfg or {}, base or Path("."), {"kind": "initial"},
-                                   now=now, adapter=ReviewAdapter(cfg or {}, base or Path("."), lcfg, jobs,
-                                                                  used_titles))
+        with track.span(0.4, 1.0):
+            item = review.render_round(review_store, item["id"], cfg or {}, base or Path("."), {"kind": "initial"},
+                                       now=now, adapter=ReviewAdapter(cfg or {}, base or Path("."), lcfg, jobs,
+                                                                      used_titles))
         if item["status"] != "open":
             return finish("failed", item.get("error") or "variants could not be rendered")
         job["status"], job["reason"] = "review", None
         jobs.save(job)
+        if pj:
+            pj.finish(True)
         log.info("lacy job %s: 3 variants waiting for approval (%s)", job["id"], item["id"])
         return job
     except editor.EditError as e:
@@ -476,7 +506,11 @@ class ReviewAdapter:
         dd = Path(self.cfg.get("data_dir", "data"))
         sfx_lib = sfx.library((dd if dd.is_absolute() else self.base / dd) / "sfx")
         out = []
-        for spec in specs:
+        from . import progress
+        track = progress.current()
+        for vi, spec in enumerate(specs):
+          with track.span(vi / len(specs), (vi + 1) / len(specs)):
+            track.update(0.0, f"Version {spec['label']} ({vi + 1}/{len(specs)}): rendering")
             r = st.resolve(spec["style"])
             base_v = spec.get("from")
             texts = spec.get("texts") or {}
@@ -531,6 +565,7 @@ class ReviewAdapter:
                                   r["transition"], audio=bool(job.get("audio", True)), sfx_cues=cue_list)
             if ass is not None:
                 ass.unlink(missing_ok=True)
+            track.update(0.85, f"Version {spec['label']} ({vi + 1}/{len(specs)}): preview")
             prev = editor.preview(mp4, folder / f"{stem}_preview.mp4", preview_bytes, length)
             out.append({"label": spec["label"], "style": spec["style"], "preset": spec.get("preset"),
                         "experimental": spec.get("experimental", False), "title": title,

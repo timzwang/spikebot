@@ -424,15 +424,20 @@ def main(argv: list[str] | None = None) -> int:
             ap.error("add needs FILE or --url")
         tg_song = tokyo_girl.settings(cfg, base).get("song") or TOKYO_GIRL_SONG
         try:
+            from . import progress
+            job = progress.current()
             if args.url:
+                job.update(0.05, "Downloading the sound")
                 lib.root.mkdir(parents=True, exist_ok=True)
                 with tempfile.TemporaryDirectory(dir=lib.root) as tmp:
                     path, title = fetch(args.url, Path(tmp))
                     name = args.name or title
+                    job.update(0.5, "Finding the beats and the drop")
                     row = lib.add(path, name, replace=clean_name(name) == clean_name(tg_song))
                 lib.set_meta(row["file"], url=args.url)
             else:
                 name = args.name or Path(args.file).stem
+                job.update(0.3, "Finding the beats and the drop")
                 row = lib.add(Path(args.file), name, replace=clean_name(name) == clean_name(tg_song))
             res = {"ok": True, "name": row["name"], "bpm": row["bpm"], "drop_s": row["drop_s"],
                    "duration": row["duration"], "start_s": start_for(row),

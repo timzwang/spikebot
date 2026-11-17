@@ -53,7 +53,12 @@ DEFAULTS = {
     "guild_id": "",                # makes slash commands appear at once
     "approver_ids": [],            # Discord user ids allowed to press buttons; empty = server managers
     "expire_hours": 48,
-    "inspiration_archive_hours": 12,   # #inspiration threads quiet this long are archived (0 = off)
+    "inspiration_archive_hours": 12,
+    # automatic trending-sound edits: one per slot (UK times), rotating through the sounds
+    "trend": {"enabled": True, "times": ["07:20", "15:50", "19:40"]},
+    # info-only voice channels at the top of the server, renamed every 10 min (Discord
+    # allows 2 renames per channel per 10 min). Needs the bot's Manage Channels permission.
+    "stats": {"enabled": True, "category": "📊 Stats", "every_s": 600},   # #inspiration threads quiet this long are archived (0 = off)
     "preview_total_mb": 9.0,       # all 3 previews in one message (10 MB unboosted limit)
     "privacy": "public",           # YouTube privacy for non-Lacy modes (Lacy uses lacy.privacy)
     "youtube_max_per_day": 6,      # all modes together; Lacy also obeys lacy.max_uploads_per_day
@@ -384,6 +389,21 @@ def render_round(store: Store, item_id: str, cfg: dict, base: Path, req: dict | 
             if item.get("request"):
                 item["request"]["status"] = "rendering"
     item = store.load(item_id)
+    from . import progress
+    own = None
+    if not progress.active():   # inside a Lacy job the Lacy job's bar is already showing
+        what = {"redo": "redo", "feedback": "after feedback", "preset": "preset"}.get(req.get("kind"), "")
+        own = progress.Job.create(store.data_dir, f"{item.get('title') or item_id}"
+                                  + (f" · {what}" if what else ""), channel="review")
+    with progress.tracking(own) if own else contextlib.nullcontext():
+        item = _render_round(store, item_id, item, cfg, base, req, rcfg, now, adapter, seed)
+    if own:
+        failed = item["status"] == "failed" or (item.get("request") or {}).get("status") == "failed"
+        own.finish(not failed, item.get("error") or (item.get("request") or {}).get("error") or "")
+    return item
+
+
+def _render_round(store, item_id, item, cfg, base, req, rcfg, now, adapter, seed) -> dict:
     try:
         rng = random.Random(seed if seed is not None else f"{item_id}-{len(item['rounds'])}-{now}")
         specs, comment = specs_for(item, req, store, rng, base)

@@ -417,6 +417,24 @@ cut to fit inside the sound (a short sound gives a shorter edit, keeping the hoo
 question). On the server: `python -m spikebot.tokyo_girl trend [--song NAME] [-n N]`.
 Approved ones are also copied to `exports/trend/`.
 
+**Automatic:** the bot also makes one trending-sound edit at **07:20, 15:50 and 19:40 UK**
+every day (`review.trend.times`; `review.trend.enabled: false` turns it off), rotating through
+your sounds (least used first, newest wins ties). If the bot was down, only the latest
+missed slot runs. These never count towards the Tokyo Girl daily edits.
+
+**Live progress:** every long job shows a message with a progress bar that updates every
+few seconds: renders (Lacy clips, Tokyo Girl, trending sounds, redos) in #ready-to-post,
+#inspiration analysis in its thread, sound downloads under your message. It disappears when
+the job finishes (the review card or reply replaces it), stays with the reason if it fails,
+and shows for 2 minutes when a Lacy clip is skipped (BRB, not English...).
+
+**Stats channels:** a **📊 Stats** category at the top of the server with locked voice
+channels whose names show live numbers: live streamers (of those watched), moments today,
+waiting for review, approved today, bot uptime and the GTA 6 countdown. The bot creates them
+itself and renames them every 10 minutes (Discord only allows 2 renames per channel per 10
+minutes, so they can't tick every second). It needs **Manage Channels**; without it #status
+says so. Settings: `review.stats` (`enabled`, `category`, `every_s`).
+
 **`/feedback text:<anything> [mode]`**: tell the editor what you think in plain words, e.g.
 *"the captions are AI slop, only caption when he says something that matters"* or *"open the
 trailer edits on the GTA 6 logo, add film grain, cut harder on the beat"*. It becomes a rule

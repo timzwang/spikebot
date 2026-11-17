@@ -164,6 +164,7 @@ class Bot:
         self.notifier = st_.Notifier(cfg.get("status_webhook_url") or None,
                                      self.status_state, post_discord)
         self.summary_url = cfg.get("summary_webhook_url") or None
+        self.started_at = time.time()
         self.conn = st_.ConnectionWatch(self.detectors, time.time())
         self.live = st_.LiveWatch()
         self.status_events: asyncio.Queue | None = None
@@ -182,6 +183,7 @@ class Bot:
         if rcfg["enabled"] and rcfg["token"] and config_path:
             from .discord_bot import ReviewBot
             self.review_bot = ReviewBot(cfg, config_path, self.notifier)
+            self.review_bot.stats_source = self.stats_snapshot
         elif rcfg["enabled"]:
             log.warning("DISCORD_BOT_TOKEN not set: clips wait in data/review until the bot is set up"
                         " (python -m spikebot.review list)")
@@ -547,6 +549,13 @@ class Bot:
                 self.status_state.save()
             except Exception as e:  # noqa: BLE001 - alerts must never take the bot down
                 log.warning("status loop error: %s", e)
+
+    def stats_snapshot(self, now: float) -> dict:
+        """For the Discord stats channels: live streamers, moments since UK midnight."""
+        from datetime import datetime as _dt
+        midnight = _dt.fromtimestamp(now, UK).replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
+        return {"live": sum(1 for v in self.live.live.values() if v), "watching": len(self.detectors),
+                "moments_today": len(self.store.candidates_since(midnight)), "started": self.started_at}
 
     def summary_message(self, now: float) -> dict:
         return msg_.summary(self.store.candidates_since(now - 86400),

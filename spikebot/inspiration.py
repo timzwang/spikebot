@@ -462,13 +462,19 @@ def analyse(path: Path, reader=None) -> dict:
         raise InspirationError("that file has no video in it")
     if duration > MAX_SECONDS:
         raise InspirationError(f"that video is {duration:.0f}s long; send one under {MAX_SECONDS}s")
+    from . import progress
+    job = progress.current()
+    job.update(0.1, "Finding the cuts")
     cuts, detector = detect_cuts(path, duration)
     pace = pacing(cuts, duration)
+    job.update(0.3, "Measuring tempo and colour")
     env = onset_envelope(path) if info.get("audio") else None
     bpm, phase = tempo(env) if env is not None else (0.0, 0.0)
     frames = signal_stats(path)
     col = colour(frames)
+    job.update(0.45, "Reading on-screen text")
     text = read_text(path, duration, reader)
+    job.update(0.6, "Measuring zooms and shake")
     mo = motion(path, cuts, duration)
     tr = transitions(frames, cuts)
     loud = loudest_point(env)
@@ -640,7 +646,10 @@ def run(name: str, copy: list[str], data_dir: Path, out_dir: Path, url: str | No
     store = presets_.Presets(data_dir / "presets")
     tmp = Path(tempfile.mkdtemp(prefix="insp-", dir=out_dir))
     try:
+        from . import progress
+        job = progress.current()
         if url:
+            job.update(0.0, "Downloading the video")
             try:
                 src = download(url, tmp)
             except (InspirationError, subprocess.TimeoutExpired) as e:
@@ -652,7 +661,9 @@ def run(name: str, copy: list[str], data_dir: Path, out_dir: Path, url: str | No
         except (InspirationError, editor.EditError) as e:
             return {"ok": False, "error": str(e), "ask_upload": False}
         name = store.unique_name(name)
+        job.update(0.75, "Claude is studying what makes it good")
         art = study(src, a, note, base, ai_client)
+        job.update(0.95, "Saving the preset")
         preset = make_preset(name, copy, a, {"url": url, "platform": platform_of(url) if url else "upload"}, art)
         store.save(preset)
         strip = thumbnail_strip(src, out_dir / f"{name}_strip.jpg", a["duration"])

@@ -274,8 +274,18 @@ it in sync when behaviour or config changes.
   #tiktok-queue, finish), `render_worker` (one subprocess at a time), `publish_loop` (60 s, under
   `publish_lock`). Feedback/Edit caption use modals. `/style [setting] [value]`, `/feedback text [mode]`, `/rules [remove]`, `/preset apply |
   list | show | rename | edit | delete | combine`. #inspiration `on_message` (approvers only).
+  `trend_loop` (review.trend.times UK, `trend_slots_due`, state data/trend/schedule.json) runs
+  `tokyo_girl trend --song auto` (`pick_rotating`, counts in data/trend/used.json).
+  `progress_loop` / `progress_tick`: one message per job file in data/progress/ (edited, deleted
+  when done, kept on failure; ids in `_messages.json`). `stats_loop` / `stats_tick`: 📊 Stats
+  category of locked voice channels (`stat_names`, ids in data/discord_stats.json), renamed
+  every 10 min; `stats_source` = `main.Bot.stats_snapshot`.
   `archive_inspiration` (from `scan_loop`, every 10 min): the bot's #inspiration threads with no
   message for `review.inspiration_archive_hours` (12) are archived (`stale_threads`, snowflake times).
+- `spikebot/progress.py`: live progress for long jobs. `Job.create` writes data/progress/<id>.json;
+  `current()` (contextvar, or `SPIKEBOT_PROGRESS` env from the bot for subprocesses), `update`,
+  nested `span(lo, hi)`, `finish(ok, text, state)`; `review.render_round` makes one unless a
+  job is active (Lacy `render_job` has its own); `text()` / `bar()` for the message. Never raises.
 - `spikebot/inspiration.py`: style analysis in a subprocess (`python -m spikebot.inspiration
   analyse --url|--file --name --copy --json`). yt-dlp only for tiktok/instagram/youtube hosts,
   <= 4 min; the reference file is **always deleted** and only numbers are kept (hook *type*,

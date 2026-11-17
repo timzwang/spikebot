@@ -31,7 +31,7 @@ from pathlib import Path
 
 from . import feedback as fb
 from . import presets as presets_
-from . import review
+from . import progress, review
 from . import style as st
 
 log = logging.getLogger("discord_bot")
@@ -205,6 +205,65 @@ def style_options(setting: str) -> list[str]:
     return list(opts)
 
 
+def progress_env(job) -> dict | None:
+    """Environment for a subprocess that should update `job`'s bar (None = inherit)."""
+    if job is None:
+        return None
+    import os
+    return dict(os.environ, **{progress.ENV: str(job.path)})
+
+
+LAUNCH_DAY = "2026-11-19"   # GTA 6 release (UK)
+STAT_KEYS = ("live", "moments", "review", "approved", "uptime", "gta6")
+
+
+def uptime_text(seconds: float) -> str:
+    s = int(max(0, seconds))
+    d, h, m = s // 86400, s % 86400 // 3600, s % 3600 // 60
+    return f"{d}d {h}h {m}m" if d else f"{h}h {m:02d}m"
+
+
+def stat_names(snap: dict, now: float) -> dict[str, str]:
+    """Channel names for the Stats category. Only what Discord can show in a name
+    (max 100 chars); keys missing from `snap` are left out."""
+    out = {}
+    if "live" in snap:
+        out["live"] = f"🟢 Live streamers: {snap['live']}/{snap.get('watching', '?')}"
+    if "moments_today" in snap:
+        out["moments"] = f"⚡ Moments today: {snap['moments_today']}"
+    if "to_review" in snap:
+        out["review"] = f"🎬 Waiting for review: {snap['to_review']}"
+    if "approved_today" in snap:
+        out["approved"] = f"✅ Approved today: {snap['approved_today']}"
+    if snap.get("started"):
+        out["uptime"] = f"⏱ Bot uptime: {uptime_text(now - snap['started'])}"
+    today = datetime.fromtimestamp(now, review.UK).date()
+    days = (datetime.fromisoformat(LAUNCH_DAY).date() - today).days
+    out["gta6"] = ("🎮 GTA 6: out now" if days <= 0 else
+                   "🎮 GTA 6: tomorrow" if days == 1 else f"🎮 GTA 6 in {days} days")
+    return {k: v[:100] for k, v in out.items()}
+
+
+def _no_mentions():
+    try:
+        import discord
+        return discord.AllowedMentions.none()
+    except ImportError:
+        return None
+
+
+def trend_slots_due(times: list[str], done: dict, now: float) -> tuple[str | None, list[str]]:
+    """(slot to run now, slots to mark skipped). Only the latest passed slot of today runs,
+    so a restart late in the day doesn't pile up every missed edit at once."""
+    dt = datetime.fromtimestamp(now, review.UK)
+    day = dt.strftime("%Y-%m-%d")
+    already = set(done.get(day, []))
+    passed = sorted(t for t in times if t <= dt.strftime("%H:%M") and t not in already)
+    if not passed:
+        return None, []
+    return passed[-1], passed[:-1]
+
+
 DISCORD_EPOCH_MS = 1420070400000
 
 
@@ -250,6 +309,11 @@ class ReviewBot:
         self.started = False
         self._publisher = None
         self._archive_checked = 0.0
+        self._trend_running = False
+        self.progress_msgs: dict[str, dict] = {}   # job id -> {msg, text, ended}
+        self.stats_source = None   # main.Bot sets this: -> {live, watching, moments_today, started}
+        self.started_at = time.time()
+        self._stats_warned = False
 
     # ---- helpers ------------------------------------------------------------
     @property
@@ -366,7 +430,8 @@ class ReviewBot:
             if not bot.started:
                 bot.started = True
                 bot.render_q = asyncio.Queue()
-                for coro in (bot.scan_loop(), bot.render_worker(), bot.publish_loop()):
+                for coro in (bot.scan_loop(), bot.render_worker(), bot.publish_loop(), bot.trend_loop(),
+                             bot.progress_loop(), bot.stats_loop()):
                     asyncio.create_task(coro)
 
         @client.event
@@ -831,7 +896,8 @@ class ReviewBot:
                 path = tmp / f"{uuid.uuid4().hex}{Path(src.filename).suffix or '.mp4'}"
                 await src.save(path)
             note = re.sub(r"https?://\S+|\b(copy|name)\s*:[^\n]*", " ", message.content or "", flags=re.I).strip()
-            res = await self.analyse(name, copy, url=src if kind == "url" else None, file=path, note=note)
+            res = await self.analyse(name, copy, url=src if kind == "url" else None, file=path, note=note,
+                                     channel_id=thread.id)
             if res.get("ok"):
                 f = discord.File(res["strip"], filename=f"{res['name']}_strip.jpg") if res.get("strip") else None
                 await thread.send(res["text"], file=f) if f else await thread.send(res["text"])
@@ -867,11 +933,13 @@ class ReviewBot:
                     pass
                 args = ["--url", src] + (["--name", given] if given else [])
             out = tmp / f"{uuid.uuid4().hex}.json"
+            pj = self.progress_job("Adding a sound" + (f" · {given}" if given else ""), message.channel.id, "🎵")
+            res = {}
             try:
                 p = await asyncio.create_subprocess_exec(
                     sys.executable, "-m", "spikebot.music", "--config", self.config_path, "add", *args,
                     "--json", str(out), stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.STDOUT)
+                    stderr=asyncio.subprocess.STDOUT, env=progress_env(pj))
                 text, _ = await asyncio.wait_for(p.communicate(), 600)
                 res = json.loads(out.read_text(encoding="utf-8")) if out.exists() else \
                     {"ok": False, "error": text.decode(errors="replace")[-200:]}
@@ -881,6 +949,7 @@ class ReviewBot:
                 if path:
                     path.unlink(missing_ok=True)
                 out.unlink(missing_ok=True)
+                pj.finish(bool(res.get("ok")), res.get("error") or "")
             if res.get("ok") and res.get("tokyo_girl"):
                 from .music import mmss
                 await message.reply(
@@ -898,6 +967,183 @@ class ReviewBot:
             else:
                 await message.reply(f"⚠️ Couldn't read that song: {res.get('error')}", mention_author=False)
 
+    # ---- stats channels -------------------------------------------------------------
+    def stats_snapshot(self, now: float) -> dict:
+        snap = {"started": self.started_at}
+        if self.stats_source:
+            try:
+                snap.update(self.stats_source(now))
+            except Exception as e:  # noqa: BLE001 - stats are cosmetic
+                log.warning("stats source: %s", e)
+        day = datetime.fromtimestamp(now, review.UK).date()
+        items = self.store.all()
+        snap["to_review"] = sum(1 for it in items if it.get("status") == "open")
+        snap["approved_today"] = sum(
+            1 for it in items if (it.get("approved") or {}).get("ts")
+            and datetime.fromtimestamp(it["approved"]["ts"], review.UK).date() == day)
+        return snap
+
+    async def stats_loop(self) -> None:
+        await asyncio.sleep(20)          # let the cache fill after connecting
+        while True:
+            every = float((self.rcfg.get("stats") or {}).get("every_s") or 600)
+            try:
+                await self.stats_tick(time.time())
+            except Exception as e:  # noqa: BLE001
+                log.warning("stats channels: %s", e)
+            await asyncio.sleep(max(300.0, every))   # Discord: 2 renames per channel per 10 min
+
+    async def stats_tick(self, now: float) -> None:
+        import discord
+        scfg = self.rcfg.get("stats") or {}
+        if not scfg.get("enabled"):
+            return
+        guild = self.client.get_guild(self.rcfg["guild_id"]) if self.rcfg["guild_id"] else None
+        if guild is None:
+            ch = await self.channel(self.rcfg["channel_id"])
+            guild = getattr(ch, "guild", None)
+        if guild is None:
+            return
+        path = self.data_dir / "discord_stats.json"
+        try:
+            ids = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            ids = {}
+        names = stat_names(self.stats_snapshot(now), now)
+        try:
+            cat = guild.get_channel(ids.get("category") or 0)
+            if cat is None:
+                cat = next((c for c in guild.categories if c.name == scfg.get("category", "📊 Stats")), None)
+            if cat is None:
+                cat = await guild.create_category(
+                    scfg.get("category", "📊 Stats"), position=0,
+                    overwrites={guild.default_role: discord.PermissionOverwrite(connect=False, view_channel=True),
+                                guild.me: discord.PermissionOverwrite(connect=True, manage_channels=True,
+                                                                      view_channel=True)},
+                    reason="spikebot stats")
+            ids["category"] = cat.id
+            for key in STAT_KEYS:
+                if key not in names:
+                    continue
+                ch = guild.get_channel(ids.get(key) or 0)
+                if ch is None:
+                    ch = await guild.create_voice_channel(names[key], category=cat, reason="spikebot stats")
+                    ids[key] = ch.id
+                elif ch.name != names[key]:
+                    await ch.edit(name=names[key], reason="spikebot stats")
+        except discord.Forbidden:
+            if not self._stats_warned:
+                self._stats_warned = True
+                log.warning("stats channels: the bot needs the Manage Channels permission")
+                if self.notifier:
+                    await self.notifier.send("stats_perm", "📊 Stats channels need the bot's **Manage Channels**"
+                                             " permission (Server Settings > Roles > the bot's role).")
+            return
+        finally:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(ids), encoding="utf-8")
+
+    # ---- live progress bars (spikebot/progress.py) -----------------------------
+    async def progress_loop(self, every: float = 5) -> None:
+        while True:
+            try:
+                await self.progress_tick(time.time())
+            except Exception as e:  # noqa: BLE001
+                log.warning("progress: %s", e)
+            await asyncio.sleep(every)
+
+    def _progress_index(self) -> Path:
+        return progress.folder(self.data_dir) / "_messages.json"
+
+    async def progress_tick(self, now: float) -> None:
+        """One message per running job, edited as it moves; deleted when done (the card or
+        reply replaces it), kept when it fails, shown for 2 minutes when skipped."""
+        try:
+            index = json.loads(self._progress_index().read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            index = {}
+        for path, d in progress.load_all(self.data_dir):
+            jid, state = d.get("id") or path.stem, progress.state_of(d, now)
+            text = progress.text(d, now)
+            rec = self.progress_msgs.get(jid)
+            if rec is None and jid in index:           # bot restarted mid-job: reuse the message
+                ch = await self.channel(index[jid][0])
+                try:
+                    rec = {"msg": await ch.fetch_message(index[jid][1]), "text": ""} if ch else None
+                except Exception:  # noqa: BLE001 - deleted meanwhile
+                    rec = None
+            if rec is None:
+                if state == "done" or (state == "running" and now - d.get("started", now) < 4):
+                    if state == "done":
+                        path.unlink(missing_ok=True)
+                    continue                            # quick jobs never need a bar
+                cid = d.get("channel_id") or self.rcfg["channel_id"]
+                ch = await self.channel(cid)
+                if ch is None:
+                    continue
+                rec = {"msg": await ch.send(text, allowed_mentions=_no_mentions()), "text": text}
+                index[jid] = [cid, rec["msg"].id]
+            elif text != rec["text"]:
+                await rec["msg"].edit(content=text)
+                rec["text"] = text
+            self.progress_msgs[jid] = rec
+            end = None
+            if state == "done":
+                await rec["msg"].delete()
+                end = True
+            elif state == "skipped":
+                rec.setdefault("ended", now)
+                if now - rec["ended"] >= 120:
+                    await rec["msg"].delete()
+                    end = True
+            elif state in ("failed", "stalled"):
+                end = True
+            if end:
+                path.unlink(missing_ok=True)
+                self.progress_msgs.pop(jid, None)
+                index.pop(jid, None)
+        live = {d.get("id") or p.stem for p, d in progress.load_all(self.data_dir)}
+        index = {k: v for k, v in index.items() if k in live}
+        try:
+            self._progress_index().parent.mkdir(parents=True, exist_ok=True)
+            self._progress_index().write_text(json.dumps(index), encoding="utf-8")
+        except OSError:
+            pass
+
+    def progress_job(self, title: str, channel_id: int, icon: str) -> "progress.Job":
+        return progress.Job.create(self.data_dir, title, channel="custom", channel_id=channel_id, icon=icon)
+
+    async def trend_loop(self, every: float = 60) -> None:
+        """Scheduled trending-sound edits (review.trend.times, UK): one edit per slot."""
+        while True:
+            try:
+                await self.trend_tick(time.time())
+            except Exception as e:  # noqa: BLE001
+                log.warning("trend schedule: %s", e)
+            await asyncio.sleep(every)
+
+    async def trend_tick(self, now: float) -> str | None:
+        tcfg = self.rcfg.get("trend") or {}
+        if not tcfg.get("enabled") or self._trend_running:
+            return None
+        path = self.data_dir / "trend" / "schedule.json"
+        try:
+            done = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            done = {}
+        slot, skipped = trend_slots_due(list(tcfg.get("times") or []), done, now)
+        if not slot:
+            return None
+        day = datetime.fromtimestamp(now, review.UK).strftime("%Y-%m-%d")
+        done = {day: sorted(set(done.get(day, [])) | {slot, *skipped})}   # keep only today
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(done), encoding="utf-8")
+        log.info("scheduled trending-sound edit (%s UK)%s", slot,
+                 f", skipped missed {', '.join(skipped)}" if skipped else "")
+        self._trend_running = True
+        asyncio.create_task(self.run_trend(None, "auto", 1))
+        return slot
+
     async def run_trend(self, inter, song: str | None, per_song: int) -> None:
         """`python -m spikebot.tokyo_girl trend` in a subprocess; the scan loop posts the rounds."""
         cmd = [sys.executable, "-m", "spikebot.tokyo_girl", "--config", self.config_path, "trend",
@@ -909,34 +1155,49 @@ class ReviewBot:
             text = out.decode(errors="replace")
             log.info("trend edits: %s", text[-500:].strip())
             self.wake.set()
-            if p.returncode != 0:
+            if p.returncode != 0 and inter is None:
+                if self.notifier and "no trending sounds" not in text:
+                    await self.notifier.send("trend_failed", "🎵 Scheduled trending-sound edit failed: "
+                                             + (text.strip().splitlines() or ["?"])[-1][:300], kind="lacy")
+            elif p.returncode != 0:
                 lines = [ln for ln in text.splitlines() if "FAILED" in ln or "Error" in ln or "error" in ln]
                 await inter.followup.send(("⚠️ Some trending-sound edits failed:\n"
                                            + ("\n".join(lines[-5:]) or text[-300:]))[:1990])
         except Exception as e:  # noqa: BLE001 - never crash the bot on a command
             log.warning("/trend failed: %s", e)
             try:
-                await inter.followup.send(f"⚠️ Trending-sound edits failed: {e}"[:1990])
+                if inter is not None:
+                    await inter.followup.send(f"⚠️ Trending-sound edits failed: {e}"[:1990])
             except Exception:  # noqa: BLE001
                 pass
+        finally:
+            if song == "auto":
+                self._trend_running = False
 
     async def analyse(self, name: str, copy: list[str], url: str | None = None, file: Path | None = None,
-                      note: str = "") -> dict:
+                      note: str = "", channel_id: int | None = None) -> dict:
         out = self.data_dir / "inspiration" / f"result_{uuid.uuid4().hex}.json"
         out.parent.mkdir(parents=True, exist_ok=True)
         cmd = [sys.executable, "-m", "spikebot.inspiration", "--config", self.config_path, "analyse",
                "--name", name, "--copy", ",".join(copy), "--json", str(out), "--note", note[:800]]
         cmd += ["--url", url] if url else ["--file", str(file)]
+        pj = self.progress_job(f"Studying `{name}`", channel_id, "🔎") if channel_id else None
+        res: dict = {}
         try:
             p = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE,
-                                                     stderr=asyncio.subprocess.STDOUT)
+                                                     stderr=asyncio.subprocess.STDOUT, env=progress_env(pj))
             text, _ = await asyncio.wait_for(p.communicate(), 1200)
             if out.exists():
-                return json.loads(out.read_text(encoding="utf-8"))
-            return {"ok": False, "error": text.decode(errors="replace")[-300:]}
+                res = json.loads(out.read_text(encoding="utf-8"))
+            else:
+                res = {"ok": False, "error": text.decode(errors="replace")[-300:]}
+            return res
         except asyncio.TimeoutError:
-            return {"ok": False, "error": "analysis took over 20 minutes"}
+            res = {"ok": False, "error": "analysis took over 20 minutes"}
+            return res
         finally:
+            if pj:   # a failed download asks for an upload: that's not a failure to keep on screen
+                pj.finish(bool(res.get("ok")) or bool(res.get("ask_upload")), res.get("error") or "")
             out.unlink(missing_ok=True)
             if file is not None:
                 Path(file).unlink(missing_ok=True)
