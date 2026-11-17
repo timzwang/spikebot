@@ -424,3 +424,24 @@ def test_remotion_concurrency():
     from spikebot import remotion
     assert remotion.concurrency({"remotion_concurrency": 3}) == 3
     assert 1 <= remotion.concurrency({}) <= 4
+
+
+def test_remotion_memory_options(tmp_path, monkeypatch):
+    from spikebot import remotion
+    seen = {}
+
+    def fake_run(cmd, cwd, env, timeout):
+        seen["cmd"] = cmd
+        Path(cmd[4]).write_bytes(b"x")
+        return 0, ""
+    monkeypatch.setattr(remotion, "available", lambda root=None: True)
+    monkeypatch.setattr(remotion, "props_for", lambda *a: ({}, {}))
+    monkeypatch.setattr(remotion, "run_with_progress", fake_run)
+    monkeypatch.setattr(remotion.subprocess, "run", lambda *a, **k: None)
+    ram = tmp_path / "shm"
+    lcfg = {"media_dir": str(tmp_path), "data_dir": str(tmp_path), "remotion_tmp": str(ram),
+            "remotion_cache_mb": 2048, "remotion_concurrency": 4}
+    remotion.render(None, lcfg, tmp_path / "o.mp4", {}, [])
+    assert "--offthreadvideo-cache-size-in-bytes=2147483648" in seen["cmd"]
+    assert "--concurrency=4" in seen["cmd"]
+    assert seen["cmd"][4].startswith(str(ram))

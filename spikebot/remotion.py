@@ -154,7 +154,8 @@ def render(plan, lcfg: dict, out: Path, r: dict, cards, logo: Path | None = None
         raise RemotionError("Remotion isn't installed (node + remotion/node_modules)")
     props, files = props_for(plan, lcfg, r, cards, logo, intro_s, Path(lcfg["media_dir"]))
     out.parent.mkdir(parents=True, exist_ok=True)
-    work = Path(lcfg.get("data_dir") or out.parent) / ".remotion"   # same disk as the media: hard links
+    # same disk as the media (hard links), or `remotion_tmp` (e.g. /dev/shm, a RAM disk: files are copied)
+    work = Path(lcfg.get("remotion_tmp") or Path(lcfg.get("data_dir") or out.parent) / ".remotion")
     work.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="r-", dir=work) as tmp:
         pub = Path(tmp) / "public"
@@ -170,6 +171,8 @@ def render(plan, lcfg: dict, out: Path, r: dict, cards, logo: Path | None = None
         cmd = [str(root / "node_modules" / ".bin" / "remotion"), "render", "src/index.ts", "TrailerEdit",
                str(part), f"--props={pj}", f"--public-dir={pub}", "--muted", "--codec=h264", "--crf=19",
                "--log=info", f"--concurrency={concurrency(lcfg)}"]
+        if lcfg.get("remotion_cache_mb"):   # decoded-frame cache for the trailer footage
+            cmd.append(f"--offthreadvideo-cache-size-in-bytes={int(lcfg['remotion_cache_mb']) * 1024 * 1024}")
         browser = os.environ.get("REMOTION_BROWSER") or lcfg.get("remotion_browser")
         if browser:   # a Chrome already on the machine, instead of Remotion's own download
             cmd.append(f"--browser-executable={browser}")

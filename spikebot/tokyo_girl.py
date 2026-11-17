@@ -805,7 +805,7 @@ def render_plan(plan: Plan, lcfg: dict, out: Path, grade: str = "", text_style: 
                     "-filter_complex", graph, "-map", "[v]", "-an", "-r", str(FPS),
                     "-t", f"{plan.duration:.3f}", "-c:v", "libx264", "-preset", "medium",
                     "-crf", "19", "-maxrate", "9M", "-bufsize", "18M", "-pix_fmt", "yuv420p", "-profile:v", "high",
-                    "-movflags", "+faststart", part.name], timeout=1800, cwd=tmpd)
+                    "-movflags", "+faststart", part.name], timeout=600, cwd=tmpd)   # a 30 s edit joins in about a minute
         shutil.move(str(part), out)
     return out
 
