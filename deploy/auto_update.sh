@@ -40,6 +40,12 @@ if [ "$LOCAL" != "$REMOTE" ]; then
     # --ff-only: never create merge commits on the server. If someone edited the
     # checkout by hand this fails loudly instead of deploying a mess.
     git_ pull --ff-only --quiet origin "$BRANCH"
+    # This script may itself have changed in the pull: bash is still running the old
+    # copy, so start again with the new one (once) before deploying.
+    if [ -z "${SPIKEBOT_REEXEC:-}" ]; then
+        export SPIKEBOT_REEXEC=1
+        exec bash "$REPO/deploy/auto_update.sh" --force
+    fi
 fi
 
 HEAD="$(git_ rev-parse HEAD)"
