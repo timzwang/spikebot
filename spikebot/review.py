@@ -394,9 +394,16 @@ def render_round(store: Store, item_id: str, cfg: dict, base: Path, req: dict | 
     if not progress.active():   # inside a Lacy job the Lacy job's bar is already showing
         what = {"redo": "redo", "feedback": "after feedback", "preset": "preset"}.get(req.get("kind"), "")
         own = progress.Job.create(store.data_dir, f"{item.get('title') or item_id}"
-                                  + (f" · {what}" if what else ""), channel="review")
+                                  + (f" · {what}" if what else ""), channel="review", meta={"item": item_id})
     with progress.tracking(own) if own else contextlib.nullcontext():
-        item = _render_round(store, item_id, item, cfg, base, req, rcfg, now, adapter, seed)
+        try:
+            item = _render_round(store, item_id, item, cfg, base, req, rcfg, now, adapter, seed)
+        except progress.Cancelled:
+            item = cancel_render(store, item_id, now)
+            if not own:
+                raise   # inside a Lacy job: its own boundary cleans up the rest
+            own.finish(False)
+            return item
     if own:
         failed = item["status"] == "failed" or (item.get("request") or {}).get("status") == "failed"
         own.finish(not failed, item.get("error") or (item.get("request") or {}).get("error") or "")
@@ -434,6 +441,25 @@ def _render_round(store, item_id, item, cfg, base, req, rcfg, now, adapter, seed
         if item.get("request"):
             item["request"]["status"] = "done"
         note(item, f"round {n} ready ({req['kind']}): {', '.join(v['label'] for v in variants)}", now)
+    return store.load(item_id)
+
+
+def cancel_render(store: Store, item_id: str, now: float | None = None, why: str = "cancelled in Discord") -> dict:
+    """Stop waiting for a render (/cancel): a queued or running re-render request becomes
+    `cancelled`, a first render makes the item `cancelled`. Half-written files of the
+    unfinished round are deleted; finished rounds stay as they were."""
+    now = now or time.time()
+    with store.edit(item_id) as item:
+        req = item.get("request") or {}
+        if req.get("status") in ("queued", "rendering"):
+            req.update(status="cancelled", told=True)
+        elif item["status"] == "rendering":
+            item["status"], item["closed"] = "cancelled", now
+        note(item, why, now)
+        n = len(item["rounds"]) + 1
+    d = store.dir(item_id)
+    for f in d.glob(f"r{n}_*"):
+        f.unlink(missing_ok=True)
     return store.load(item_id)
 
 
@@ -676,6 +702,8 @@ def main(argv: list[str] | None = None) -> int:
             print(f"{it['id']:<28} {it['status']:<9} round {r['n'] if r else 0} [{labels}] {pub}")
         return 0
     if args.cmd == "render":
+        from . import progress
+        progress.arm_cancel()
         it = run_pending(store, args.item, cfg, base)
         req = it.get("request") or {}
         print(f"{it['id']}: {it['status']} request={req.get('status')} {req.get('error') or ''}")

@@ -695,9 +695,14 @@ def main(argv: list[str] | None = None) -> int:
     data_dir = dd if dd.is_absolute() else base / dd
     out_dir = data_dir / "inspiration"
     out_dir.mkdir(parents=True, exist_ok=True)
-    res = run(presets_.clean_name(args.name), presets_.parse_copy("copy: " + args.copy) if args.copy
-              else list(presets_.PARTS), data_dir, out_dir, args.url, Path(args.file) if args.file else None,
-              note=args.note, base=base)
+    from . import progress
+    progress.arm_cancel()
+    try:
+        res = run(presets_.clean_name(args.name), presets_.parse_copy("copy: " + args.copy) if args.copy
+                  else list(presets_.PARTS), data_dir, out_dir, args.url, Path(args.file) if args.file else None,
+                  note=args.note, base=base)
+    except progress.Cancelled:   # the reference file is still deleted (run's finally)
+        res = {"ok": False, "cancelled": True, "error": "cancelled"}
     if args.json:
         Path(args.json).write_text(json.dumps(res), encoding="utf-8")
     print(res.get("text") or f"FAILED: {res.get('error')}")

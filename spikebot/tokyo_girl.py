@@ -1330,6 +1330,8 @@ def main(argv: list[str] | None = None) -> None:
     mk.add_argument("--seed", type=int)
     args = ap.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    from . import progress
+    progress.arm_cancel()   # /cancel stops one edit; the rest of a daily/trend batch carries on
     cfg, base = load_cfg(args.config)
     lcfg = settings(cfg, base)
     if args.cmd == "fetch":
@@ -1390,7 +1392,8 @@ def main(argv: list[str] | None = None) -> None:
             ok = item.get("status") != "failed"
             failed += not ok
             print(f"review item {item_id} ({item['source']['song']}): "
-                  + ("ready for #ready-to-post" if ok else f"FAILED: {item.get('error')}"))
+                  + ("cancelled" if item.get("status") == "cancelled"
+                     else "ready for #ready-to-post" if ok else f"FAILED: {item.get('error')}"))
         if failed:
             sys.exit(1)
     elif args.cmd == "daily":

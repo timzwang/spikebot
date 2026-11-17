@@ -433,6 +433,16 @@ few seconds: renders (Lacy clips, Tokyo Girl, trending sounds, redos) in #ready-
 the job finishes (the review card or reply replaces it), stays with the reason if it fails,
 and shows for 2 minutes when a Lacy clip is skipped (BRB, not English...).
 
+**Cancelling (`/cancel`):** every progress bar shows a run id (e.g. ``run `a1b2c3` ``) and a
+**Cancel** button. `/cancel` on its own lists what's running, including queued re-renders
+(`q-<clip id>`); `/cancel run:a1b2c3` stops one (autocomplete lists them), `/cancel run:all`
+stops everything. Only approvers can cancel. A cancel stops just that run: in a batch (Tokyo
+Girl daily, several trend edits) the next edit still goes ahead. The clip is marked
+`cancelled` (no failure alert), the half-rendered files are deleted and finished rounds stay
+reviewable. A worker that doesn't stop within 30 s (stuck in Whisper, say) is killed together
+with its ffmpeg/Chrome. Queued Lacy jobs (still waiting for the VOD) can't be cancelled until
+they start rendering.
+
 **Stats channels:** a **📊 Stats** category at the top of the server with locked voice
 channels whose names show live numbers: live streamers (of those watched), moments today,
 waiting for review, approved today, bot uptime and the GTA 6 countdown. The bot creates them

@@ -423,8 +423,9 @@ def main(argv: list[str] | None = None) -> int:
         if not args.file and not args.url:
             ap.error("add needs FILE or --url")
         tg_song = tokyo_girl.settings(cfg, base).get("song") or TOKYO_GIRL_SONG
+        from . import progress
+        progress.arm_cancel()
         try:
-            from . import progress
             job = progress.current()
             if args.url:
                 job.update(0.05, "Downloading the sound")
@@ -444,6 +445,8 @@ def main(argv: list[str] | None = None) -> int:
                    "tokyo_girl": clean_name(row["name"]) == clean_name(tg_song)}
         except MusicError as e:
             res = {"ok": False, "error": str(e)}
+        except progress.Cancelled:
+            res = {"ok": False, "cancelled": True, "error": "cancelled"}
         if args.json:
             Path(args.json).write_text(json.dumps(res), encoding="utf-8")
         print(res)

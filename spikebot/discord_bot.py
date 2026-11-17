@@ -11,6 +11,9 @@ Runs inside the main bot process (Bot.run) and never takes it down:
   #inspiration    links or uploads -> style analysis -> preset (spikebot/inspiration.py).
   /style          preferred settings (learned + pinned), pin or unpin them.
   /preset         apply | list | show | rename | edit | delete | combine.
+  /cancel         stop a running job by its run id (renders, trend edits, Lacy clips,
+                  #inspiration analysis, sound downloads, queued re-renders); every
+                  progress bar also has a Cancel button.
 
 Only approvers (review.approver_ids, or server managers if empty) can press buttons or
 use the commands. Layouts are built as plain dicts by pure functions (tested); the
@@ -128,6 +131,29 @@ def picker(action: str, item: dict, rnd: dict) -> list[list[dict]]:
     return [[{"label": f"{'Feedback on' if action == 'fbpick' else 'Edit'} {v['label']}", "style": "primary",
               "custom_id": cid(action, item["id"], rnd["n"], v["label"]), "disabled": False}
              for v in rnd["variants"]]]
+
+
+def cancel_buttons(jid: str) -> list[list[dict]]:
+    """The Cancel button under a running job's progress bar."""
+    return [[{"label": "Cancel", "style": "danger", "custom_id": cid("cancel", jid), "disabled": False}]]
+
+
+QUEUED = "q-"   # run id of a queued (not started) re-render: q-<item id>
+
+
+def run_rows(running: list[dict], queued: list[dict], now: float) -> list[tuple[str, str]]:
+    """(run id, one-line description) for /cancel: running jobs, then queued re-renders."""
+    rows = []
+    for d in running:
+        pct = int(float(d.get("frac", 0)) * 100)
+        took = progress.clock(now - d.get("started", now))
+        rows.append((progress.short(d.get("id", "")),
+                     f"{d.get('icon', '🎬')} {d.get('title', 'Working')} · {pct}% · {took}"
+                     + (" · cancelling" if d.get("cancel") else "")))
+    for it in queued:
+        kind = (it.get("request") or {}).get("kind", "re-render")
+        rows.append((QUEUED + it["id"], f"⏳ {it.get('title') or it['id']} · {kind} (queued)"))
+    return rows
 
 
 def manual_payload(item: dict, v: dict, platforms: list[str], link: str | None = None,
@@ -310,6 +336,8 @@ class ReviewBot:
         self._publisher = None
         self._archive_checked = 0.0
         self._trend_running = False
+        self._progress_lock = asyncio.Lock()
+        self.force_stopped: set[int] = set()   # pids /cancel had to kill (their parent shouldn't call it a crash)
         self.progress_msgs: dict[str, dict] = {}   # job id -> {msg, text, ended}
         self.stats_source = None   # main.Bot sets this: -> {live, watching, moments_today, started}
         self.started_at = time.time()
@@ -520,15 +548,20 @@ class ReviewBot:
         while True:
             item_id = await self.render_q.get()
             try:
+                if (self.store.load(item_id).get("request") or {}).get("status") != "queued":
+                    continue   # cancelled while it waited
                 p = await asyncio.create_subprocess_exec(
                     sys.executable, "-m", "spikebot.review", "--config", self.config_path, "render", item_id,
-                    stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
+                    stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT, start_new_session=True)
                 out, _ = await asyncio.wait_for(p.communicate(), 3600)
                 log.info("review render %s: %s", item_id, out.decode(errors="replace")[-300:].strip())
                 item = self.store.load(item_id)
-                if (item.get("request") or {}).get("status") == "rendering":  # crashed
-                    with self.store.edit(item_id) as it:
-                        it["request"].update(status="failed", error=out.decode(errors="replace")[-300:])
+                if (item.get("request") or {}).get("status") == "rendering":  # crashed, or force-stopped
+                    if p.pid in self.force_stopped or progress.cancelled_for(self.data_dir, "item", item_id):
+                        review.cancel_render(self.store, item_id)
+                    else:
+                        with self.store.edit(item_id) as it:
+                            it["request"].update(status="failed", error=out.decode(errors="replace")[-300:])
             except Exception as e:  # noqa: BLE001
                 log.warning("review render %s: %s", item_id, e)
             finally:
@@ -637,6 +670,9 @@ class ReviewBot:
     async def on_button(self, interaction, data: dict) -> None:
         if not self.allowed(interaction.user):
             await interaction.response.send_message("Only Tim can review clips.", ephemeral=True)
+            return
+        if data["action"] == "cancel":
+            await self.cancel_command(interaction, data["item"])
             return
         try:
             item = self.store.load(data["item"])
@@ -909,6 +945,8 @@ class ReviewBot:
                 self.pending_uploads[thread.id] = {"name": name, "copy": copy}
                 await thread.send(f"⚠️ I couldn't download that link ({res.get('error')}).\n"
                                   "**Please upload the video file directly here in this thread** and I'll analyse it.")
+            elif res.get("cancelled"):
+                await thread.send("🛑 Cancelled: nothing was saved.")
             else:
                 await thread.send(f"⚠️ Analysis failed: {res.get('error')}")
 
@@ -939,10 +977,13 @@ class ReviewBot:
                 p = await asyncio.create_subprocess_exec(
                     sys.executable, "-m", "spikebot.music", "--config", self.config_path, "add", *args,
                     "--json", str(out), stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.STDOUT, env=progress_env(pj))
+                    stderr=asyncio.subprocess.STDOUT, env=progress_env(pj), start_new_session=True)
+                pj.adopt(p.pid)
                 text, _ = await asyncio.wait_for(p.communicate(), 600)
                 res = json.loads(out.read_text(encoding="utf-8")) if out.exists() else \
                     {"ok": False, "error": text.decode(errors="replace")[-200:]}
+                if pj.cancel_requested():
+                    res = {"ok": False, "cancelled": True, "error": "cancelled"}
             except asyncio.TimeoutError:
                 res = {"ok": False, "error": "analysis took over 10 minutes"}
             finally:
@@ -964,6 +1005,8 @@ class ReviewBot:
                     f" {mmss(res['drop_s'])}. It won't touch the Tokyo Girl edits, which always use the Tokyo Girl"
                     " song. (If this *is* the Tokyo Girl sound, post it again with `name: tokyo-girl`.)",
                     mention_author=False)
+            elif res.get("cancelled"):
+                await message.reply("🛑 Cancelled: that sound wasn't added.", mention_author=False)
             else:
                 await message.reply(f"⚠️ Couldn't read that song: {res.get('error')}", mention_author=False)
 
@@ -1063,7 +1106,12 @@ class ReviewBot:
 
     async def progress_tick(self, now: float) -> None:
         """One message per running job, edited as it moves; deleted when done (the card or
-        reply replaces it), kept when it fails, shown for 2 minutes when skipped."""
+        reply replaces it), kept when it fails, shown for 2 minutes when skipped or cancelled.
+        Running bars carry a Cancel button."""
+        async with self._progress_lock:   # the loop and /cancel's poke must not both post a bar
+            await self._progress_tick(now)
+
+    async def _progress_tick(self, now: float) -> None:
         try:
             index = json.loads(self._progress_index().read_text(encoding="utf-8"))
         except (OSError, ValueError):
@@ -1087,17 +1135,22 @@ class ReviewBot:
                 ch = await self.channel(cid)
                 if ch is None:
                     continue
-                rec = {"msg": await ch.send(text, allowed_mentions=_no_mentions()), "text": text}
+                kw = {"view": self.view(cancel_buttons(jid))} if state == "running" else {}
+                rec = {"msg": await ch.send(text, allowed_mentions=_no_mentions(), **kw), "text": text,
+                       "button": state == "running"}
                 index[jid] = [cid, rec["msg"].id]
             elif text != rec["text"]:
-                await rec["msg"].edit(content=text)
+                kw = {}
+                if state != "running" and rec.get("button", True):
+                    kw["view"], rec["button"] = None, False     # finished: the Cancel button goes
+                await rec["msg"].edit(content=text, **kw)
                 rec["text"] = text
             self.progress_msgs[jid] = rec
             end = None
             if state == "done":
                 await rec["msg"].delete()
                 end = True
-            elif state == "skipped":
+            elif state in ("skipped", "cancelled"):
                 rec.setdefault("ended", now)
                 if now - rec["ended"] >= 120:
                     await rec["msg"].delete()
@@ -1118,6 +1171,129 @@ class ReviewBot:
 
     def progress_job(self, title: str, channel_id: int, icon: str) -> "progress.Job":
         return progress.Job.create(self.data_dir, title, channel="custom", channel_id=channel_id, icon=icon)
+
+    # ---- /cancel and the progress bar's Cancel button -------------------------------
+    def runs(self, now: float) -> list[tuple[str, str]]:
+        """Everything that can be cancelled now: (run id, description)."""
+        running = [d for _, d in progress.running(self.data_dir, now)]
+        queued = [it for it in self.store.all()
+                  if it.get("status") == "open" and (it.get("request") or {}).get("status") == "queued"]
+        return run_rows(running, queued, now)
+
+    async def cancel_run(self, ref: str, by: str, now: float | None = None,
+                         grace: float = progress.HARD_KILL_S, poll: float = 1.0) -> str:
+        """Cancel one run (short id from the bar, full job id, or q-<item> for a queued
+        re-render). Returns the message for Tim; raises ValueError if there's nothing to cancel."""
+        now = now or time.time()
+        ref = (ref or "").strip().strip("`")
+        if ref.lower().startswith(QUEUED):
+            item_id = ref[len(QUEUED):]
+            try:
+                item = self.store.load(item_id)
+            except (FileNotFoundError, ValueError):
+                raise ValueError(f"there's no clip `{item_id}`") from None
+            if (item.get("request") or {}).get("status") != "queued":
+                raise ValueError(f"`{item_id}` has no queued re-render (it may have started: cancel it by the"
+                                 " run id on its progress bar)")
+            review.cancel_render(self.store, item_id, now, why=f"queued re-render cancelled by {by}")
+            self.queued.discard(item_id)
+            await self.say(self.store.load(item_id), f"🛑 Queued re-render cancelled by {by}.")
+            return f"🛑 Cancelled the queued re-render of **{item.get('title') or item_id}**."
+        path, d = progress.resolve(self.data_dir, ref, now)
+        rid, title = progress.short(d.get("id") or path.stem), d.get("title", "job")
+        if not progress.request_cancel(path, by, now):
+            return f"⏳ `{rid}` ({title}) is already being cancelled."
+        self.progress_poke()
+        # The worker normally stops within a second or two (SIGTERM -> Cancelled -> clean-up).
+        waited = 0.0
+        while waited < grace:
+            await asyncio.sleep(poll)
+            waited += poll
+            if self._job_state(path, time.time()) != "running":
+                return f"🛑 Stopped **{title}** (run `{rid}`)."
+        # Still going (stuck in C code: Whisper, librosa): clean up for it, then kill it.
+        meta = d.get("meta") or {}
+        if meta.get("item"):
+            try:
+                review.cancel_render(self.store, meta["item"], why=f"force-stopped by {by}")
+            except (FileNotFoundError, ValueError):
+                pass
+        try:
+            pid = int(json.loads(path.read_text(encoding="utf-8")).get("pid") or 0)
+        except (OSError, ValueError):
+            pid = 0
+        if progress.force_stop(path):
+            self.force_stopped.add(pid)
+            return f"🛑 Force-stopped **{title}** (run `{rid}`): it didn't stop within {grace:.0f}s."
+        if self._job_state(path, time.time()) != "running":
+            return f"🛑 Stopped **{title}** (run `{rid}`)."
+        return (f"⏳ Asked **{title}** (run `{rid}`) to stop; it will at its next step. Its bar will say when"
+                " it has.")
+
+    def _job_state(self, path: Path, now: float) -> str:
+        try:
+            d = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return "gone"
+        d["cancel"] = True
+        return progress.state_of(d, now)
+
+    def progress_poke(self) -> None:
+        """Update the bars soon (shows "cancelling" without waiting for the 5 s loop)."""
+        if self.started:
+            asyncio.create_task(self._poke())
+
+    async def _poke(self) -> None:
+        try:
+            await self.progress_tick(time.time())
+        except Exception as e:  # noqa: BLE001 - cosmetic
+            log.debug("progress poke: %s", e)
+
+    async def cancel_command(self, inter, run: str | None) -> None:
+        """/cancel [run] and the Cancel button. No run: list what's running."""
+        now = time.time()
+        if not run:
+            rows = self.runs(now)
+            if not rows:
+                await inter.response.send_message("Nothing is running right now.", ephemeral=True)
+                return
+            lines = [f"`{rid}` {desc}" for rid, desc in rows[:20]]
+            await inter.response.send_message(
+                "**Running now** (cancel one with `/cancel run:<id>`, or `/cancel run:all`):\n"
+                + "\n".join(lines)[:1800], ephemeral=True)
+            return
+        by = getattr(inter.user, "display_name", None) or str(inter.user.id)
+        refs = [rid for rid, _ in self.runs(now)] if run.strip().lower() == "all" else [run]
+        if not refs:
+            await inter.response.send_message("Nothing is running right now.", ephemeral=True)
+            return
+        if len(refs) == 1:   # check the id first so a typo gets a quick answer
+            try:
+                if not refs[0].lower().startswith(QUEUED):
+                    progress.resolve(self.data_dir, refs[0], now)
+            except ValueError as e:
+                await inter.response.send_message(f"⚠️ {e}", ephemeral=True)
+                return
+        await inter.response.send_message(f"🛑 Cancelling {len(refs)} run{'s' if len(refs) > 1 else ''}…",
+                                          ephemeral=True)
+
+        async def one(ref: str) -> str:
+            try:
+                return await self.cancel_run(ref, by)
+            except ValueError as e:
+                return f"⚠️ {e}"
+            except Exception as e:  # noqa: BLE001 - never crash the bot on a command
+                log.warning("cancel %s: %s", ref, e)
+                return f"⚠️ Couldn't cancel `{ref}`: {e}"
+
+        async def go():
+            results = await asyncio.gather(*(one(r) for r in refs))   # several runs stop in parallel
+            self.wake.set()
+            try:
+                await inter.followup.send("\n".join(results)[:1990], ephemeral=True)
+            except Exception as e:  # noqa: BLE001
+                log.warning("cancel reply: %s", e)
+        asyncio.create_task(go())
 
     async def trend_loop(self, every: float = 60) -> None:
         """Scheduled trending-sound edits (review.trend.times, UK): one edit per slot."""
@@ -1156,7 +1332,7 @@ class ReviewBot:
                "-n", str(per_song)] + (["--song", song] if song else [])
         try:
             p = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE,
-                                                     stderr=asyncio.subprocess.STDOUT)
+                                                     stderr=asyncio.subprocess.STDOUT, start_new_session=True)
             try:
                 out, _ = await asyncio.wait_for(p.communicate(), 3 * 3600)
             except asyncio.TimeoutError:
@@ -1166,7 +1342,9 @@ class ReviewBot:
             text = out.decode(errors="replace")
             log.info("trend edits: %s", text[-500:].strip())
             self.wake.set()
-            if p.returncode != 0 and inter is None:
+            if p.pid in self.force_stopped:
+                log.info("trend edits stopped by /cancel")
+            elif p.returncode != 0 and inter is None:
                 if self.notifier and "no trending sounds" not in text:
                     await self.notifier.send("trend_failed", "🎵 Scheduled trending-sound edit failed: "
                                              + (text.strip().splitlines() or ["?"])[-1][:300], kind="lacy")
@@ -1196,12 +1374,17 @@ class ReviewBot:
         res: dict = {}
         try:
             p = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE,
-                                                     stderr=asyncio.subprocess.STDOUT, env=progress_env(pj))
+                                                     stderr=asyncio.subprocess.STDOUT, env=progress_env(pj),
+                                                     start_new_session=True)
+            if pj:
+                pj.adopt(p.pid)
             text, _ = await asyncio.wait_for(p.communicate(), 1200)
             if out.exists():
                 res = json.loads(out.read_text(encoding="utf-8"))
             else:
                 res = {"ok": False, "error": text.decode(errors="replace")[-300:]}
+            if pj and pj.cancel_requested():
+                res = {"ok": False, "cancelled": True, "error": "cancelled"}
             return res
         except asyncio.TimeoutError:
             res = {"ok": False, "error": "analysis took over 20 minutes"}
@@ -1321,6 +1504,22 @@ class ReviewBot:
                 except Exception as e:  # noqa: BLE001
                     log.warning("/stats: %s", e)
             asyncio.create_task(go())
+
+        async def run_choices(inter, current: str):
+            rows = bot.runs(time.time())
+            opts = [app_commands.Choice(name=f"{rid} · {desc}"[:100], value=rid) for rid, desc in rows
+                    if current.lower() in f"{rid} {desc}".lower()][:24]
+            if len(rows) > 1 and "all".startswith(current.lower()):
+                opts.append(app_commands.Choice(name=f"all ({len(rows)} runs)", value="all"))
+            return opts
+
+        @tree.command(name="cancel", description="Stop a running render, trend edit, Lacy clip, analysis or download")
+        @app_commands.describe(run="Run id from the progress bar (leave empty to list what's running; 'all' = every run)")
+        @app_commands.autocomplete(run=run_choices)
+        async def cancel_cmd(inter: discord.Interaction, run: str | None = None):
+            if not await guard(inter):
+                return
+            await bot.cancel_command(inter, run)
 
         @tree.command(name="rules", description="What the editor has learned from /feedback (and undo one)")
         @app_commands.describe(remove="Number of a rule to undo")

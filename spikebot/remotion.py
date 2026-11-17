@@ -134,6 +134,10 @@ def run_with_progress(cmd: list[str], cwd: Path, env: dict, timeout: float,
                 done, total = int(m.group(1)), int(m.group(2))
                 job.update(0.95 * done / total, detail=f"frame {done}/{total}")
         code = p.wait()
+    except BaseException:   # cancelled (progress.Cancelled) or anything else: don't leave Chrome running
+        p.kill()
+        p.wait()
+        raise
     finally:
         done_ev.set()
     if why:

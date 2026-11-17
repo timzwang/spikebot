@@ -364,7 +364,7 @@ def render_job(job: dict, lcfg: dict, jobs: Jobs, used_titles: set[str],
     pj = None
     if review_store is not None:
         pj = progress.Job.create(review_store.data_dir, f"Lacy clip {job['id']} ({job.get('category') or '?'})",
-                                 channel="review", icon="🎮")
+                                 channel="review", icon="🎮", meta={"lacy_job": job["id"]})
 
     def finish(status: str, reason: str | None = None) -> dict:
         if pj:
@@ -396,6 +396,8 @@ def render_job(job: dict, lcfg: dict, jobs: Jobs, used_titles: set[str],
         try:
             return _render_job_body(job, lcfg, jobs, used_titles, fetch, transcribe, now, review_store, cfg, base,
                                     d, day, duration, vod_start, seg, finish, pj)
+        except progress.Cancelled:
+            return finish("cancelled", "cancelled in Discord")
         except Exception as e:
             if pj and pj.data.get("state") == "running":
                 pj.finish(False, f"{type(e).__name__}: {e}")
@@ -723,6 +725,7 @@ class LacyMode:
     def __init__(self, cfg: dict, data_dir: Path, config_path: str | None = None):
         self.cfg = settings(cfg)
         self.jobs = Jobs(data_dir)
+        self.data_dir = Path(data_dir)
         self.config_path = config_path
         self.queue: asyncio.Queue | None = None
 
@@ -750,7 +753,8 @@ class LacyMode:
 
     async def _run(self, *args: str, timeout: float = 3600) -> tuple[int, str]:
         p = await asyncio.create_subprocess_exec(*self._cli(*args), stdout=asyncio.subprocess.PIPE,
-                                                 stderr=asyncio.subprocess.STDOUT)
+                                                 stderr=asyncio.subprocess.STDOUT,
+                                                 start_new_session=True)   # /cancel can stop its ffmpeg too
         try:
             out, _ = await asyncio.wait_for(p.communicate(), timeout)
         except asyncio.TimeoutError:
@@ -786,7 +790,12 @@ class LacyMode:
         code, out = await self._run("render", job_id)
         job = self.jobs.load(job_id)
         if job["status"] == "rendering":  # the subprocess died before finishing
-            job.update(status="failed", reason=f"render crashed: {out[-300:]}")
+            from . import progress
+            if progress.cancelled_for(self.data_dir, "lacy_job", job_id):   # force-stopped by /cancel
+                job.update(status="cancelled", reason="cancelled in Discord")
+                (self.jobs.dir(job_id) / "segment.mp4").unlink(missing_ok=True)
+            else:
+                job.update(status="failed", reason=f"render crashed: {out[-300:]}")
             self.jobs.save(job)
         if job["status"] == "failed":
             await post_status(job)
@@ -856,13 +865,15 @@ def main(argv: list[str] | None = None) -> int:
 
     job = jobs.load(args.job)
     if args.cmd == "render":
+        from . import progress
+        progress.arm_cancel()
         used = subs.titles() | {j.get("title") for j in jobs.all()
                                 if j.get("title") and j["id"] != job["id"]}
         from . import review
         base = Path(args.config).resolve().parent
         job = render_job(job, lcfg, jobs, used, review_store=review.Store(data_dir), cfg=cfg, base=base)
         print(f"{job['id']}: {job['status']} {job.get('reason') or ''}")
-        return 0 if job["status"] in ("ready", "review", "skipped") else 1
+        return 0 if job["status"] in ("ready", "review", "skipped", "cancelled") else 1
     if args.cmd == "reject":
         job.update(status="rejected", reason="rejected by Tim")
         jobs.save(job)

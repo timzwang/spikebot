@@ -272,7 +272,7 @@ it in sync when behaviour or config changes.
   `style_overview`; custom ids `rv|action|item|round|label` handled in `on_interaction` (survive
   restarts). Loops: `scan` (post ready rounds + thread, queue requests, report failures, expire,
   #tiktok-queue, finish), `render_worker` (one subprocess at a time), `publish_loop` (60 s, under
-  `publish_lock`). Feedback/Edit caption use modals. `/style [setting] [value]`, `/feedback text [mode]`, `/rules [remove]`, `/preset apply |
+  `publish_lock`). Feedback/Edit caption use modals. `/style [setting] [value]`, `/feedback text [mode]`, `/rules [remove]`, `/cancel [run]`, `/preset apply |
   list | show | rename | edit | delete | combine`. #inspiration `on_message` (approvers only).
   `trend_loop` (review.trend.times UK, `trend_slots_due`, state data/trend/schedule.json) runs
   `tokyo_girl trend --song auto` (`pick_rotating`, counts in data/trend/used.json).
@@ -285,7 +285,18 @@ it in sync when behaviour or config changes.
 - `spikebot/progress.py`: live progress for long jobs. `Job.create` writes data/progress/<id>.json;
   `current()` (contextvar, or `SPIKEBOT_PROGRESS` env from the bot for subprocesses), `update`,
   nested `span(lo, hi)`, `finish(ok, text, state)`; `review.render_round` makes one unless a
-  job is active (Lacy `render_job` has its own); `text()` / `bar()` for the message; each write stores the worker `pid`, and `state_of` shows a job whose process died as stopped at once. Never raises.
+  job is active (Lacy `render_job` has its own); `text()` / `bar()` for the message; each write stores the worker `pid`, and `state_of` shows a job whose process died as stopped at once. Never raises,
+  except `Cancelled` (a BaseException) for **/cancel**: run id = `short(id)` (shown on the bar);
+  `request_cancel` writes `<id>.cancel` + SIGTERMs the worker (never the bot's own pid/pgid);
+  worker CLIs call `arm_cancel()` so SIGTERM -> `Cancelled` (plain SIGTERM still exits), `update()`
+  checks the marker too; `finish()` of a cancelled job always ends `cancelled`. Job boundaries
+  catch it: `review.render_round` -> `review.cancel_render` (request/item `cancelled`, partial
+  `r<N>_*` deleted, batch continues), Lacy `render_job` -> status `cancelled`, inspiration/music
+  -> `{"cancelled": true}`. `ReviewBot.cancel_run` waits `HARD_KILL_S` (30 s), then cleans up by
+  `meta` and `force_stop`s the process group (bot subprocesses use `start_new_session=True`;
+  `Job.adopt(pid)` for jobs the bot creates; `force_stopped` pids aren't reported as crashes).
+  `/cancel [run|all|q-<item>]` + the bar's Cancel button (`rv|cancel|<job id>`). Tested in
+  `tests/test_cancel.py`.
 - `spikebot/inspiration.py`: style analysis in a subprocess (`python -m spikebot.inspiration
   analyse --url|--file --name --copy --json`). yt-dlp only for tiktok/instagram/youtube hosts,
   <= 4 min; the reference file is **always deleted** and only numbers are kept (hook *type*,
