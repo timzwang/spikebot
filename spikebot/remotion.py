@@ -17,6 +17,7 @@ import json
 import logging
 import os
 import shutil
+import threading
 import time
 import re
 import subprocess
@@ -90,38 +91,64 @@ def props_for(plan, lcfg: dict, r: dict, cards: list[tuple[float, float, str]], 
 FRAMES_RE = re.compile(r"Render\w*(?:\s+frames)?\D*?(\d+)\s*/\s*(\d+)")
 
 
-def run_with_progress(cmd: list[str], cwd: Path, env: dict, timeout: float) -> tuple[int, str]:
+def run_with_progress(cmd: list[str], cwd: Path, env: dict, timeout: float,
+                      stall_s: float = 300) -> tuple[int, str]:
     """Run the Remotion CLI, feeding "Rendered 120/900" lines to the live progress bar.
+    A watchdog kills it after `timeout` in total or `stall_s` without any output (a hung
+    Chrome prints nothing, so a check inside the read loop would never run).
     Returns (exit code, last output)."""
     from . import progress
     job = progress.current()
     tail: list[str] = []
     start = time.time()
+    last = [start]
+    why: list[str] = []
     try:
         p = subprocess.Popen(cmd, cwd=cwd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                              text=True, bufsize=1)
     except OSError as e:
         raise RemotionError(f"could not start remotion: {e}") from e
     assert p.stdout is not None
-    for line in p.stdout:
-        tail = (tail + [line.rstrip()])[-40:]
-        m = FRAMES_RE.search(line)
-        if m and int(m.group(2)):
-            done, total = int(m.group(1)), int(m.group(2))
-            job.update(0.95 * done / total, detail=f"frame {done}/{total}")
-        if time.time() - start > timeout:
-            p.kill()
-            raise RemotionError(f"render took over {timeout / 60:.0f} min")
+    done_ev = threading.Event()
+
+    def watchdog() -> None:
+        while not done_ev.wait(5):
+            now = time.time()
+            if now - start > timeout:
+                why.append(f"render took over {timeout / 60:.0f} min")
+            elif now - last[0] > stall_s:
+                why.append(f"render stalled: no output for {stall_s / 60:.0f} min")
+            if why:
+                p.kill()
+                return
+
+    threading.Thread(target=watchdog, daemon=True).start()
     try:
-        code = p.wait(timeout=max(1, timeout - (time.time() - start)))
-    except subprocess.TimeoutExpired as e:
-        p.kill()
-        raise RemotionError(f"render took over {timeout / 60:.0f} min") from e
+        for line in p.stdout:
+            last[0] = time.time()
+            tail = (tail + [line.rstrip()])[-40:]
+            m = FRAMES_RE.search(line)
+            if m and int(m.group(2)):
+                done, total = int(m.group(1)), int(m.group(2))
+                job.update(0.95 * done / total, detail=f"frame {done}/{total}")
+        code = p.wait()
+    finally:
+        done_ev.set()
+    if why:
+        raise RemotionError(why[0])
     return code, "\n".join(tail)
 
 
+def concurrency(lcfg: dict) -> int:
+    """Frames rendered in parallel: `remotion_concurrency` in config, else half the CPUs (max 4)."""
+    v = lcfg.get("remotion_concurrency")
+    if v:
+        return max(1, int(v))
+    return max(1, min(4, (os.cpu_count() or 2) // 2))
+
+
 def render(plan, lcfg: dict, out: Path, r: dict, cards, logo: Path | None = None, intro_s: float = 0.0,
-           root: Path = ROOT, timeout: float = 2400) -> Path:
+           root: Path = ROOT, timeout: float = 1200) -> Path:
     """Render one edit with Remotion. Raises RemotionError (the caller falls back to ffmpeg)."""
     if not available(root):
         raise RemotionError("Remotion isn't installed (node + remotion/node_modules)")
@@ -142,7 +169,7 @@ def render(plan, lcfg: dict, out: Path, r: dict, cards, logo: Path | None = None
         part = Path(tmp) / "edit.mp4"
         cmd = [str(root / "node_modules" / ".bin" / "remotion"), "render", "src/index.ts", "TrailerEdit",
                str(part), f"--props={pj}", f"--public-dir={pub}", "--muted", "--codec=h264", "--crf=19",
-               "--log=info"]
+               "--log=info", f"--concurrency={concurrency(lcfg)}"]
         browser = os.environ.get("REMOTION_BROWSER") or lcfg.get("remotion_browser")
         if browser:   # a Chrome already on the machine, instead of Remotion's own download
             cmd.append(f"--browser-executable={browser}")

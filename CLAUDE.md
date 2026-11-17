@@ -195,7 +195,7 @@ it in sync when behaviour or config changes.
   (`TrailerEdit`: eased Ken Burns, spring punch + blur, flashes, kinetic word text, logo reveal,
   grain/vignette/letterbox). `props_for` builds the props; media hard-linked into a temp public dir
   under data/.remotion; `--muted`. `tokyo_girl.engine` auto|remotion|ffmpeg; any failure falls back
-  to ffmpeg `render_plan`. `REMOTION_BROWSER` / `remotion_browser` = a local Chrome. Deployed by
+  to ffmpeg `render_plan`. `REMOTION_BROWSER` / `remotion_browser` = a local Chrome. Watchdog kills a render after 5 min with no output or 20 min total (then ffmpeg); `remotion_concurrency` (default half the CPUs, max 4). Deployed by
   `deploy/setup_remotion.sh` (Node 22 in /opt/spikebot/node if needed, npm ci on lockfile change,
   `remotion browser ensure`). Tests force ffmpeg unless marked `remotion` (tests/conftest.py).
 - `spikebot/delivery.py`: #ready-to-post for every mode (`MODES` labels/colours). Never

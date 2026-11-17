@@ -1157,7 +1157,12 @@ class ReviewBot:
         try:
             p = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE,
                                                      stderr=asyncio.subprocess.STDOUT)
-            out, _ = await asyncio.wait_for(p.communicate(), 3 * 3600)
+            try:
+                out, _ = await asyncio.wait_for(p.communicate(), 3 * 3600)
+            except asyncio.TimeoutError:
+                p.kill()   # don't leave a hung render running forever
+                await p.wait()
+                raise RuntimeError("trending-sound render took over 3 h and was stopped")
             text = out.decode(errors="replace")
             log.info("trend edits: %s", text[-500:].strip())
             self.wake.set()

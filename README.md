@@ -296,7 +296,9 @@ hand. On by default, 2 a day (`TOKYO_GIRL_PER_DAY` in `.env`, or `tokyo_girl.per
   `npm ci` in `remotion/`, Remotion's headless Chrome; about 500 MB disk). About 2 minutes
   per 15 s edit on the VM. If Remotion isn't there or a render fails, the ffmpeg renderer
   is used, so an edit is never lost. Force one with `tokyo_girl.engine`: `auto` (default),
-  `remotion` or `ffmpeg`. Remotion is free for individuals and teams of up to 3.
+  `remotion` or `ffmpeg`. A Remotion render that prints nothing for 5 min, or runs over
+  20 min, is killed and falls back to ffmpeg. `tokyo_girl.remotion_concurrency` sets frames
+  rendered in parallel (default: half the CPUs, max 4). Remotion is free for individuals and teams of up to 3.
 - Footage: only official Rockstar GTA VI trailers and screenshots. No stream clips, no
   voices or dialogue. Vice City views, cars, Jason & Lucia.
 - Big on-screen text telling a short story (news, theory, meme or Jason & Lucia joke),

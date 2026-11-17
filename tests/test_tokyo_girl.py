@@ -1,6 +1,8 @@
 """Tokyo Girl mode: stories, beat grid, shot picking, captions, daily quota, fetch
 guards, and an end-to-end silent render with ffmpeg.
 Run: python -m pytest -q"""
+import os
+import time
 import json
 import random
 import re
@@ -406,3 +408,19 @@ def test_legacy_media_dir_moves_to_shared_library(tmp_path):
     s = TG.settings({"tokyo_girl": {"media_dir": "data/tokyo_girl/media"}}, tmp_path)
     assert Path(s["media_dir"]) == old
     assert Path(TG.settings({}, tmp_path)["media_dir"]) == tmp_path / "data/rockstar_media"
+
+
+def test_remotion_watchdog_kills_silent_hang(tmp_path):
+    import sys
+    from spikebot import remotion
+    cmd = [sys.executable, "-c", "print('Rendered 1/10', flush=True); import time; time.sleep(60)"]
+    t = time.time()
+    with pytest.raises(remotion.RemotionError, match="stalled"):
+        remotion.run_with_progress(cmd, tmp_path, dict(os.environ), timeout=120, stall_s=1)
+    assert time.time() - t < 15
+
+
+def test_remotion_concurrency():
+    from spikebot import remotion
+    assert remotion.concurrency({"remotion_concurrency": 3}) == 3
+    assert 1 <= remotion.concurrency({}) <= 4
