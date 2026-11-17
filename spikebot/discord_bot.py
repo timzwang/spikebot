@@ -346,14 +346,14 @@ def style_overview(profile: st.Profile, presets: dict[str, dict]) -> str:
 
 
 STYLE_SETTINGS = ["grade", "pace", "font", "size", "position", "colour", "transition", "ending",
-                  "text_level", "intro", "hook:lacy", "hook:tokyo_girl"]
+                  "text_level", "intro", "motion", "framing", "media", "hook:lacy", "hook:tokyo_girl"]
 
 
 def style_options(setting: str) -> list[str]:
     if setting.startswith("hook:"):
         return list(st.HOOKS.get(setting[5:], ()))
-    opts = st.dims("lacy").get(setting) or st.dims("tokyo_girl").get(setting, ())
-    return list(opts)
+    both = list(st.dims("lacy").get(setting, ())) + list(st.dims("tokyo_girl").get(setting, ()))
+    return list(dict.fromkeys(both))   # e.g. transition: Tokyo Girl also has fade
 
 
 def progress_env(job) -> dict | None:
