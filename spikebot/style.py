@@ -211,8 +211,55 @@ def describe(style: dict) -> str:
 # Learning profile: data/style_profile.json
 # --------------------------------------------------------------------------
 def _blank() -> dict:
-    return {"version": 1, "pinned": {}, "stats": {}, "presets": {}, "decisions": [],
-            "feedback": {"notes": [], "intents": {}}, "custom_pins": {}, "rules": []}
+    return {"version": 2, "stats": {}, "presets": {}, "decisions": [],
+            "feedback": {"notes": [], "intents": {}}, "entries": []}
+
+
+# The rules list (/rules): every instruction Tim has given, one numbered entry each, grouped
+# by category. Pins are *derived* from it: for each setting the newest enabled entry wins,
+# whether it was for every mode or one mode, so switching an entry off falls back to the
+# one before it.
+CATEGORIES = (
+    ("look", "🎨 Colour & look", ("grade", "saturation", "contrast", "brightness", "warmth", "grain",
+                                 "vignette", "letterbox")),
+    ("pace", "✂️ Pace & cuts", ("pace", "shot_s", "payoff", "transition")),
+    ("text", "🔤 Text & captions", ("text_level", "font", "size", "position", "colour", "text_px", "text_y",
+                                   "outline", "shadow", "words", "text_colour", "highlight")),
+    ("hook", "🪝 Hook, intro & ending", ("hook", "hook_s", "hook_style", "intro", "ending")),
+    ("sound", "🔊 Sound", ("sfx",)),
+    ("note", "📝 Notes (the editor can't apply these yet)", ()),
+    ("unsupported", "🚫 Asked for, not possible yet", ()),
+)
+CATEGORY_NAME = {k: name for k, name, _ in CATEGORIES}
+MODE_NAME = {"all": "all edits", "lacy": "Lacy", "tokyo_girl": "Tokyo Girl"}
+
+
+def category_of(entry: dict) -> str:
+    if entry.get("kind") in ("note", "unsupported"):
+        return entry["kind"]
+    for key, _, settings in CATEGORIES:
+        if entry.get("setting") in settings:
+            return key
+    return "look"
+
+
+def entry_text(e: dict) -> str:
+    """One line for an entry (without its number)."""
+    where = "" if e.get("mode", "all") == "all" else f" ({MODE_NAME.get(e['mode'], e['mode'])})"
+    if e.get("kind") == "setting":
+        val = "auto (let it learn)" if e.get("value") is None else e["value"]
+        if isinstance(val, float) and val.is_integer():
+            val = int(val)
+        return f"{e['setting']} = {val}{where}"
+    return f"{e.get('text', '')}{where}"
+
+
+def _pin_target(key: str) -> tuple[str, str]:
+    """"grade" -> ("grade", "all"); "hook:lacy" -> ("hook", "lacy")."""
+    if ":" in key:
+        a, b = key.split(":", 1)
+        return a, b
+    return key, "all"
 
 
 class Profile:
@@ -225,7 +272,10 @@ class Profile:
             d = json.loads(self.path.read_text(encoding="utf-8"))
         except (FileNotFoundError, ValueError):
             return _blank()
-        return _blank() | d
+        d = _blank() | d
+        if not d.get("entries") and (d.get("rules") or d.get("pinned") or d.get("custom_pins")):
+            d["entries"] = migrate(d)
+        return d
 
     def save(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -311,83 +361,92 @@ class Profile:
         d = default_style(mode).get(dim)
         return max(options, key=lambda o: (self.score(key, o), o == d))
 
-    def pinned(self, mode: str) -> dict:
-        """/style and /feedback pins. "dim" pins apply to every mode, "dim:mode" pins
-        (e.g. "hook:lacy", "text_level:tokyo_girl") only to that mode and win over the
-        global one. Values that aren't options in this mode are ignored."""
-        p = dict(self.data["pinned"])
-        out = {k: v for k, v in p.items() if ":" not in k}
-        for k, v in p.items():
-            if ":" in k and k.split(":", 1)[1] == mode:
-                out[k.split(":", 1)[0]] = v
+    # ---- the rules list (pins are derived from it) ------------------------------------
+    def _effective(self, mode: str) -> dict:
+        """setting -> value from the newest enabled setting entry for every mode or this mode.
+        Values that aren't options here are skipped (the one before it counts)."""
         opts = dims(mode)
-        return {k: v for k, v in out.items() if k in opts and v in opts[k]}
+        out: dict = {}
+        for e in self.data.get("entries") or []:
+            if not e.get("on", True) or e.get("kind") != "setting" or e.get("mode", "all") not in ("all", mode):
+                continue
+            k, v = e["setting"], e.get("value")
+            if v is not None:
+                if k in opts and v not in opts[k]:
+                    continue
+                if k not in opts and k not in CUSTOM_KEYS and k not in CUSTOM_STR:
+                    continue
+            out[k] = v
+        return {k: v for k, v in out.items() if v is not None}
+
+    def pinned(self, mode: str) -> dict:
+        """Option settings fixed for this mode (all three variants use them)."""
+        opts = dims(mode)
+        return {k: v for k, v in self._effective(mode).items() if k in opts}
 
     def custom_pins(self, mode: str) -> dict:
-        """Exact values from /feedback (e.g. saturation 1.2, grain 8) for every edit of this mode."""
-        cp = self.data.get("custom_pins") or {}
-        return dict(cp.get("all") or {}) | dict(cp.get(mode) or {})
+        """Exact values (e.g. saturation 1.2, grain 8) for every edit of this mode."""
+        return {k: v for k, v in self._effective(mode).items() if k in CUSTOM_KEYS or k in CUSTOM_STR}
 
-    # ---- lasting rules from /feedback -----------------------------------------------
+    def entries(self) -> list[dict]:
+        return self.data.setdefault("entries", [])
+
+    def entry(self, n: int) -> dict | None:
+        return next((e for e in self.entries() if e["n"] == n), None)
+
+    def add_entry(self, kind: str, mode: str, setting: str | None = None, value=None, text: str = "",
+                  said: str = "", source: str = "feedback", now: float | None = None) -> dict:
+        es = self.entries()
+        e = {"n": max([x["n"] for x in es] or [0]) + 1, "ts": now or time.time(), "kind": kind,
+             "mode": mode, "setting": setting, "value": value, "text": text[:300], "said": said[:500],
+             "source": source, "on": True}
+        es.append(e)
+        return e
+
     def add_rule(self, text: str, summary: str, mode: str, settings: list[dict], notes: list[str],
                  unsupported: list[str], now: float | None = None, source: str = "feedback") -> dict:
-        """Store a lasting rule and apply its settings as pins. `settings` are validated
-        {"mode", "setting", "value"} rows (apply_settings). Returns the rule."""
-        rules = self.data.setdefault("rules", [])
-        rid = max([r["id"] for r in rules] or [0]) + 1
-        prev = []
-        for row in settings:
-            prev.append(self._set_pin(row["mode"], row["setting"], row["value"]))
-        rule = {"id": rid, "ts": now or time.time(), "source": source, "mode": mode,
-                "text": text[:1000], "summary": summary[:300], "settings": settings,
-                "previous": prev, "notes": [n[:300] for n in notes][:12],
-                "unsupported": [u[:300] for u in unsupported][:12]}
-        rules.append(rule)
-        return rule
+        """Append one feedback's settings, notes and "can't do" items to the rules list.
+        `settings` are validated {"mode", "setting", "value"} rows (value None = back to auto).
+        Returns {"summary", "mode", "entries": [...]} (what was added)."""
+        added = [self.add_entry("setting", r["mode"], r["setting"], r["value"], said=text, source=source, now=now)
+                 for r in settings]
+        added += [self.add_entry("note", mode, text=n, said=text, source=source, now=now) for n in notes[:12]]
+        added += [self.add_entry("unsupported", mode, text=u, said=text, source=source, now=now)
+                  for u in unsupported[:12]]
+        return {"summary": summary[:300], "mode": mode, "entries": added,
+                "settings": [{"mode": e["mode"], "setting": e["setting"], "value": e["value"]}
+                             for e in added if e["kind"] == "setting"],
+                "notes": [e["text"] for e in added if e["kind"] == "note"]}
 
-    def remove_rule(self, rule_id: int) -> dict | None:
-        """Drop a rule and undo its pins (unless a later rule set the same thing)."""
-        rules = self.data.setdefault("rules", [])
-        rule = next((r for r in rules if r["id"] == rule_id), None)
-        if rule is None:
-            return None
-        rules.remove(rule)
-        later = {(s["mode"], s["setting"]) for r in rules if r["id"] > rule_id for s in r["settings"]}
-        for row, prev in zip(rule["settings"], rule.get("previous") or [None] * len(rule["settings"])):
-            if (row["mode"], row["setting"]) not in later:
-                self._set_pin(row["mode"], row["setting"], prev)
-        return rule
+    def set_enabled(self, numbers, on: bool) -> tuple[list[int], list[int]]:
+        """Switch entries on/off. Returns (changed, not found)."""
+        changed, missing = [], []
+        for n in numbers:
+            e = self.entry(n)
+            if e is None:
+                missing.append(n)
+            elif e.get("on", True) != on:
+                e["on"] = on
+                changed.append(n)
+        return changed, missing
 
-    def taste(self, mode: str | None = None, n: int = 25) -> list[str]:
-        """Tim's lasting notes (for the AI's context): rule summaries and style notes."""
+    def taste(self, mode: str | None = None, n: int = 40) -> list[str]:
+        """Tim's enabled instructions (for the AI reading his next feedback)."""
         out = []
-        for r in self.data.get("rules", [])[-n:]:
-            if mode and r["mode"] not in ("all", mode):
+        for e in self.entries()[-n * 2:]:
+            if not e.get("on", True) or e["kind"] == "unsupported":
                 continue
-            out.append(r["summary"])
-            out += r.get("notes") or []
-        return out
+            if mode and e.get("mode", "all") not in ("all", mode):
+                continue
+            out.append(entry_text(e))
+        return out[-n:]
 
-    def _set_pin(self, mode: str, setting: str, value):
-        """Set (value) or clear (None) one pin; returns the old value."""
-        if setting in CUSTOM_KEYS or setting in CUSTOM_STR:
-            bucket = self.data.setdefault("custom_pins", {}).setdefault(mode, {})
-            old = bucket.get(setting)
-            if value is None:
-                bucket.pop(setting, None)
-            else:
-                bucket[setting] = value
-            return old
-        key = setting if mode == "all" else f"{setting}:{mode}"
-        old = self.data["pinned"].get(key)
-        self.pin(key, value)
-        return old
-
-    def pin(self, setting: str, value: str | None) -> None:
-        if value in (None, "", "auto"):
-            self.data["pinned"].pop(setting, None)
-        else:
-            self.data["pinned"][setting] = value
+    def pin(self, setting: str, value: str | None, now: float | None = None) -> dict:
+        """/style: "grade" or "hook:lacy" -> a new entry (value None / "auto" = learn it again)."""
+        dim, mode = _pin_target(setting)
+        v = None if value in (None, "", "auto") else value
+        return self.add_entry("setting", mode, dim, v, said=f"/style {setting} {value or 'auto'}",
+                              source="/style", now=now)
 
     def preferred(self, mode: str) -> dict:
         """What variant A would use now."""
@@ -460,8 +519,11 @@ def pick_variants(profile: Profile, mode: str, rng: random.Random,
                 style[dim] = max(unseen, key=lambda o: (profile.score(key, o), o == DEFAULT.get(dim)))
             elif experimental:
                 shown = profile.data["stats"].get(key, {})
-                least = min(shown.get(o, {}).get("shown", 0) for o in unseen)
-                style[dim] = rng.choice([o for o in unseen if shown.get(o, {}).get("shown", 0) == least])
+                # explore, but never with something Tim has turned down more than he's chosen it
+                liked = [o for o in unseen if shown.get(o, {}).get("rejected", 0)
+                         <= shown.get(o, {}).get("approved", 0)] or unseen
+                least = min(shown.get(o, {}).get("shown", 0) for o in liked)
+                style[dim] = rng.choice([o for o in liked if shown.get(o, {}).get("shown", 0) == least])
             else:
                 weights = [profile.score(key, o) ** 2 for o in unseen]
                 style[dim] = rng.choices(unseen, weights=weights)[0]
@@ -656,6 +718,49 @@ def set_value(style: dict, setting: str, value: str, mode: str) -> dict:
         s.setdefault("custom", {})[setting] = ("#" + value.lstrip("#").upper()) if setting != "hook_style" else value
         return s
     raise ValueError(f"unknown setting {setting!r}")
+
+
+def parse_numbers(text: str) -> list[int]:
+    """"3, 5-7 12" -> [3, 5, 6, 7, 12] (a range covers at most 500 numbers)."""
+    out: list[int] = []
+    for lo, hi, one in re.findall(r"(\d+)\s*(?:-|–|to)\s*(\d+)|(\d+)", text or ""):
+        a, b = (int(lo), int(hi)) if lo else (int(one), int(one))
+        a, b = min(a, b), max(a, b)
+        for n in range(a, min(b, a + 499) + 1):
+            if n not in out:
+                out.append(n)
+    return out
+
+
+def migrate(d: dict) -> list[dict]:
+    """Version 1 profiles (rules with pins + /style pins) -> the numbered rules list.
+    Rules are replayed oldest first so the newest instruction wins; /style pins that no rule
+    explains go first. Old fields are left in the file, unused."""
+    entries: list[dict] = []
+
+    def add(**kw):
+        entries.append({"n": len(entries) + 1, "ts": kw.pop("ts", 0), "on": True, "said": "", "text": "",
+                        "setting": None, "value": None, "source": "migrated", **kw})
+    covered = {(r_["mode"], r_["setting"]) for r in d.get("rules") or [] for r_ in r.get("settings") or []}
+    for key, v in (d.get("pinned") or {}).items():
+        dim, mode = _pin_target(key)
+        if (mode, dim) not in covered:
+            add(kind="setting", mode=mode, setting=dim, value=v, source="/style")
+    for mode, bucket in (d.get("custom_pins") or {}).items():
+        for k, v in (bucket or {}).items():
+            if (mode, k) not in covered:
+                add(kind="setting", mode=mode, setting=k, value=v, source="/style")
+    for r in d.get("rules") or []:
+        said, ts_ = r.get("text", ""), r.get("ts", 0)
+        for row in r.get("settings") or []:
+            add(kind="setting", mode=row["mode"], setting=row["setting"], value=row.get("value"), said=said, ts=ts_,
+                source=r.get("source", "feedback"))
+        for n in r.get("notes") or []:
+            add(kind="note", mode=r.get("mode", "all"), text=n, said=said, ts=ts_, source=r.get("source", "feedback"))
+        for u in r.get("unsupported") or []:
+            add(kind="unsupported", mode=r.get("mode", "all"), text=u, said=said, ts=ts_,
+                source=r.get("source", "feedback"))
+    return entries
 
 
 def apply_settings(rows: list[dict], default_mode: str = "all") -> tuple[list[dict], list[str]]:

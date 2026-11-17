@@ -1,10 +1,10 @@
 """Turn Tim's feedback (any wording) into lasting editor rules and per-edit changes.
 
-`learn()` backs the /feedback slash command: everything becomes a rule stored in
-data/style_profile.json, and its settings are pinned so every future edit (all three
-review variants) uses them. `for_variant()` backs the Feedback button on a review
-round: it re-renders that variant with the changes, and anything Tim said should
-apply from now on is also saved as a rule.
+`learn()` backs the /feedback slash command: every setting, note and "can't do yet" item
+is appended to the numbered rules list in data/style_profile.json (/rules), and the newest
+enabled setting wins in every future edit (all three review variants). `for_variant()`
+backs the Feedback button on a review round: it re-renders that variant with the changes
+and saves them to the list too, unless Tim says it's only for this one edit.
 
 With ANTHROPIC_API_KEY set the Claude API reads the feedback (spikebot/ai.py);
 without it, or if the call fails, the rule-based parser in style.py is used.
@@ -39,15 +39,16 @@ def _split(rows: list[dict], default_mode: str) -> tuple[list[dict], list[dict],
     return ok, clear, bad
 
 
-LASTING = re.compile(r"(?i)\b(always|from now on|every (edit|clip|video|short)|in future|going forward|never)\b")
+ONLY_THIS = re.compile(r"(?i)\b(just|only) (for )?(this|that|here)\b|\b(this|that) one only\b|\bjust here\b|"
+                       r"\bthis (edit|clip|video|one) only\b|\bnot (always|every time|in future)\b")
 
 
 def rule_based(text: str, mode: str, profile: st.Profile, current: dict | None = None) -> dict:
     """Same shape as ai.interpret_feedback, from the regex parser. With `current` (a
-    review variant's style) changes are relative to it and only for that edit, unless
-    the wording says "always" / "from now on"."""
+    review variant's style) changes are relative to it; they are kept for future edits
+    too unless the wording says it's only for this one ("just this one", "only here")."""
     targets = MODES if mode == "all" else (mode,)
-    scope = "always" if current is None or LASTING.search(text or "") else "this_edit"
+    scope = "this_edit" if current is not None and ONLY_THIS.search(text or "") else "always"
     rows: list[dict] = []
     intents: list[str] = []
     unknown: list[str] = []
@@ -123,9 +124,9 @@ def for_variant(text: str, mode: str, style: dict, profile: st.Profile, base: Pa
             applied.append(f"{r['setting']} → {r['value']}")
         except ValueError as e:
             bad.append(str(e))
-    lasting = [dict(r) for r in ok if r.get("scope") == "always"] + clear
+    lasting = [dict(r) for r in ok if r.get("scope") != "this_edit"] + clear
     rule = None
-    if lasting or out.get("notes"):
+    if lasting or out.get("notes") or out.get("unsupported"):
         for r in lasting:
             r.pop("scope", None)
         rule = profile.add_rule(text, out.get("summary", ""), mode, lasting, out.get("notes") or [],
@@ -134,8 +135,10 @@ def for_variant(text: str, mode: str, style: dict, profile: st.Profile, base: Pa
     bits = [out.get("summary") or ("Applied: " + ", ".join(applied) if applied else "No change recognised")]
     if applied:
         bits.append("Changed: " + ", ".join(applied))
-    if rule and rule["settings"]:
-        bits.append(f"Saved for future edits as rule #{rule['id']}")
+    if rule and rule["entries"]:
+        bits.append("Saved to /rules as " + ", ".join(f"#{e['n']}" for e in rule["entries"]))
+    if len(applied) > len((rule or {}).get("settings") or []):
+        bits.append("(some changes were only for this edit)")
     if out.get("unsupported"):
         bits.append("Can't do yet: " + " | ".join(u[:90] for u in out["unsupported"][:3]))
     if bad:
@@ -146,14 +149,12 @@ def for_variant(text: str, mode: str, style: dict, profile: st.Profile, base: Pa
 
 
 def format_rule(rule: dict) -> str:
-    """One Discord block for a stored rule."""
-    lines = [f"**#{rule['id']}** ({'every mode' if rule['mode'] == 'all' else rule['mode']}) {rule.get('summary') or ''}"]
-    if rule.get("settings"):
-        lines.append("Settings: " + ", ".join(
-            f"{s['setting']}={'auto' if s['value'] is None else s['value']}"
-            + ("" if s["mode"] == "all" else f" ({s['mode']})") for s in rule["settings"]))
-    for n in (rule.get("notes") or [])[:4]:
-        lines.append(f"• {n}")
-    if rule.get("unsupported"):
-        lines.append("Not possible yet: " + " | ".join(u[:120] for u in rule["unsupported"][:3]))
+    """What one feedback added to the rules list, one numbered line per entry."""
+    lines = [rule.get("summary") or "Saved:"]
+    for e in rule.get("entries") or []:
+        tag = {"note": " _(note: the editor can't apply this yet)_",
+               "unsupported": " _(not possible yet)_"}.get(e["kind"], "")
+        lines.append(f"**#{e['n']}** {st.entry_text(e)}{tag}")
+    if not rule.get("entries"):
+        lines.append("Nothing saved.")
     return "\n".join(lines)

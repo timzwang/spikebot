@@ -453,11 +453,22 @@ says so (it retries every minute until it works). `/stats` refreshes them now. S
 
 **`/feedback text:<anything> [mode]`**: tell the editor what you think in plain words, e.g.
 *"the captions are AI slop, only caption when he says something that matters"* or *"open the
-trailer edits on the GTA 6 logo, add film grain, cut harder on the beat"*. It becomes a rule
-that every future edit follows (all three variants): settings are pinned (per mode if you
-pick one), taste notes are remembered and given to Claude next time, and the reply says
-plainly what it can't do yet. `/rules` lists the rules; `/rules remove:3` undoes rule 3 and
-puts the earlier settings back.
+trailer edits on the GTA 6 logo, add film grain, cut harder on the beat"*. Each setting, note
+and "can't do yet" item is added to one **numbered rules list**, and every future edit (all
+three variants) follows it. For each setting the **newest entry that's on wins**, whether it
+was for all edits or one mode. The reply lists the new numbers with **Turn off** buttons.
+
+The **Feedback** button on a clip does the same (the re-render shows the new numbers with
+buttons), unless you say it's only for that one, e.g. *"darker, just this one"*.
+
+**`/rules`** shows the whole list by category (🎨 colour & look, ✂️ pace & cuts, 🔤 text, 🪝
+hook/intro/ending, 🔊 sound, 📝 notes, 🚫 not possible yet). ✅ = on, ⛔ = off, and _replaced by
+#N_ marks a setting a newer entry overrides. Switch entries off or on with the two menus under
+it (pick several at once), or `/rules disable:3, 5-7` / `/rules enable:4`. Turning an entry
+off brings back the one before it. **Notes** are things the editor has no setting for yet: they
+guide Claude when it reads your next feedback, but don't change the edits themselves.
+`/style setting value` also adds an entry. Version C (experimental) never tries an option
+you've rejected more often than you've picked it.
 
 Needs `ANTHROPIC_API_KEY` in `/opt/spikebot/.env` (console.anthropic.com > API keys). Feedback
 runs on `claude-sonnet-5-5` (override with `SPIKEBOT_FEEDBACK_MODEL`), #inspiration analysis on

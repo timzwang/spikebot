@@ -81,7 +81,7 @@ def test_feedback_with_claude_pins_settings_for_every_future_variant(tmp_path):
                           unsupported=["licensed music in the file"], summary="Clean edits, no captions"))
     rule, problems = fb.learn("the captions are AI slop, if there's no need for a caption don't add one. "
                               "Open trailer edits on the GTA 6 logo", "all", prof, tmp_path, now=1, client=c)
-    assert rule["engine"] == "claude" and rule["id"] == 1
+    assert rule["engine"] == "claude" and [e["n"] for e in rule["entries"]] == [1, 2, 3, 4, 5, 6]
     assert any("size" in p for p in problems)                    # invalid value dropped, not pinned
     prof.save()
     prof = S.Profile(tmp_path / "p.json")
@@ -94,21 +94,23 @@ def test_feedback_with_claude_pins_settings_for_every_future_variant(tmp_path):
     assert "intro" not in S.pick_variants(prof, "lacy", random.Random(2))[0]["style"]
     assert "Let the gameplay carry the clip" in prof.taste("lacy")
     text = fb.format_rule(rule)
-    assert "text_level=none" in text and "intro=logo (tokyo_girl)" in text and "licensed music" in text
+    assert "**#1** text_level = none" in text and "intro = logo (Tokyo Girl)" in text
+    assert "licensed music" in text and "not possible yet" in text and "can't apply this yet" in text
     # the next request carries what was learned
     c2 = FakeClaude(answer())
     fb.learn("slower please", "lacy", prof, tmp_path, client=c2)
-    assert "Clean edits, no captions" in c2.requests[0]["messages"][0]["content"]
+    assert "- text_level = none" in c2.requests[0]["messages"][0]["content"]
 
 
-def test_remove_rule_restores_earlier_pins(tmp_path):
+def test_disabling_an_entry_falls_back_to_the_one_before(tmp_path):
     prof = S.Profile(tmp_path / "p.json")
-    prof.pin("grade", "moody")
+    prof.pin("grade", "moody")                                      # #1
     fb.learn("x", "all", prof, client=FakeClaude(answer([row("grade", "warm"), row("vignette", "1")])))
     assert prof.pinned("lacy")["grade"] == "warm" and prof.custom_pins("lacy")["vignette"] == 1.0
-    prof.remove_rule(1)
+    assert prof.set_enabled([2, 3], False) == ([2, 3], [])
     assert prof.pinned("lacy")["grade"] == "moody" and "vignette" not in prof.custom_pins("lacy")
-    assert prof.remove_rule(1) is None
+    assert prof.set_enabled([2, 99], True) == ([2], [99])
+    assert prof.pinned("lacy")["grade"] == "warm"
 
 
 def test_auto_clears_a_pin(tmp_path):
@@ -127,11 +129,39 @@ def test_feedback_without_a_key_uses_the_rule_parser(tmp_path):
     assert {v["style"]["text_level"] for v in vs} == {"none"} and {v["style"]["intro"] for v in vs} == {"logo"}
 
 
-def test_mode_pin_beats_global_pin(tmp_path):
+def test_newest_instruction_wins_whatever_its_mode(tmp_path):
     prof = S.Profile(tmp_path / "p.json")
     prof.pin("text_level", "full")
-    prof.pin("text_level:lacy", "minimal")
+    prof.pin("text_level:lacy", "minimal")                          # newer, Lacy only
     assert prof.pinned("lacy")["text_level"] == "minimal" and prof.pinned("tokyo_girl")["text_level"] == "full"
+    prof.pin("text_level", "none")                                  # newer, every mode: wins in Lacy too
+    assert prof.pinned("lacy")["text_level"] == "none" and prof.pinned("tokyo_girl")["text_level"] == "none"
+    prof.add_rule("lacy sat", "", "lacy", [{"mode": "lacy", "setting": "saturation", "value": 1.4}], [], [])
+    prof.add_rule("all sat", "", "all", [{"mode": "all", "setting": "saturation", "value": 1.0}], [], [])
+    assert prof.custom_pins("lacy")["saturation"] == 1.0
+    prof.set_enabled([3], False)                                    # the "none for all" one
+    assert prof.pinned("lacy")["text_level"] == "minimal" and prof.pinned("tokyo_girl")["text_level"] == "full"
+
+
+def test_old_profiles_are_migrated_to_the_numbered_list(tmp_path):
+    import json
+    old = {"version": 1, "pinned": {"font": "roboto", "text_level:lacy": "full", "text_level": "none"},
+           "custom_pins": {"lacy": {"saturation": 1.4}},
+           "rules": [{"id": 1, "ts": 5, "mode": "lacy", "text": "caption everything", "summary": "",
+                      "settings": [{"mode": "lacy", "setting": "text_level", "value": "full"}],
+                      "notes": [], "unsupported": []},
+                     {"id": 2, "ts": 9, "mode": "all", "text": "no text at all", "summary": "",
+                      "settings": [{"mode": "all", "setting": "text_level", "value": "none"}],
+                      "notes": ["Payoff in the first 3 seconds"], "unsupported": ["licensed music"]}]}
+    (tmp_path / "p.json").write_text(json.dumps(old))
+    prof = S.Profile(tmp_path / "p.json")
+    es = prof.entries()
+    assert [(e["n"], e["kind"], e.get("setting")) for e in es] == [
+        (1, "setting", "font"), (2, "setting", "saturation"), (3, "setting", "text_level"),
+        (4, "setting", "text_level"), (5, "note", None), (6, "unsupported", None)]
+    assert prof.pinned("lacy")["text_level"] == "none"              # the newer rule wins now
+    assert prof.pinned("lacy")["font"] == "roboto" and prof.custom_pins("lacy")["saturation"] == 1.4
+    assert "Payoff in the first 3 seconds" in prof.taste("lacy")
 
 
 def test_review_feedback_this_edit_vs_always(tmp_path):
@@ -145,7 +175,16 @@ def test_review_feedback_this_edit_vs_always(tmp_path):
     assert res["texts"] == {"hook": "Lacy had no idea what was coming"}
     assert res["rule"]["settings"] == [{"mode": "lacy", "setting": "text_level", "value": "none"}]
     assert "grade" not in prof.pinned("lacy") and prof.pinned("lacy")["text_level"] == "none"
-    assert "rule #1" in res["comment"]
+    assert "Saved to /rules as #1" in res["comment"] and "only for this edit" in res["comment"]
+
+
+def test_review_feedback_is_kept_unless_it_says_only_this_one(tmp_path):
+    prof = S.Profile(tmp_path / "p.json")
+    style = S.default_style("lacy") | {"text_level": "full"}
+    res = fb.for_variant("no captions", "lacy", style, prof, tmp_path, item_id="a")     # rule parser, no key
+    assert res["style"]["text_level"] == "none" and prof.pinned("lacy").get("text_level") == "none"
+    res = fb.for_variant("full captions, just this one", "lacy", res["style"], prof, tmp_path, item_id="b")
+    assert prof.pinned("lacy").get("text_level") == "none"          # not saved
 
 
 # ---- text levels ----------------------------------------------------------------------

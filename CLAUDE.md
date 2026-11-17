@@ -237,12 +237,16 @@ it in sync when behaviour or config changes.
 - `spikebot/style.py` (pure): variant dimensions (grade, pace, font, size, position, colour,
   transition, hook tone per mode, `text_level` none/minimal/full, Lacy ending, Tokyo Girl `intro`
   none/logo) + exact `custom` values (incl. film look `grain`/`vignette`/`letterbox`, `look_filter`);
-  pins `dim` (all modes) or `dim:mode`; `custom_pins`; `rules` (from /feedback, `add_rule` /
-  `remove_rule` restores earlier pins, `taste()` feeds the AI); `resolve()` -> render
+  **rules list** `data["entries"]` (numbered, `kind` setting/note/unsupported, `mode`, `on`; categories
+  `CATEGORIES` / `category_of` / `entry_text`): `add_rule` appends a feedback's entries, `pin()` (/style)
+  appends one, `set_enabled(nums, on)`; `pinned(mode)` / `custom_pins(mode)` are derived: the newest
+  enabled entry for "all" or that mode wins (switching one off falls back). v1 profiles (`pinned`,
+  `custom_pins`, `rules`) are replayed into entries by `migrate()` on load; `parse_numbers("3, 5-7")`;
+  `taste()` = enabled entries for the AI; `resolve()` -> render
   numbers, `grade_filter()`; `Profile` = `data/style_profile.json` (shown/approved/passed/rejected
   per option, pins from `/style`, decisions, feedback notes + intent counts, preset stats);
   `pick_variants()`: A best-scoring, B from a most-approved preset in rotation (else weighted
-  random), C experimental (least shown); unpinned dims differ across A/B/C; `parse_feedback()`
+  random), C experimental (least shown, never an option rejected more than approved); unpinned dims differ across A/B/C; `parse_feedback()`
   (rule based, no API) + `apply_changes()`; `hook_style()` / `ending_style()` classifiers.
 - `spikebot/presets.py`: `data/presets/<name>.json` (parts: pacing, colour, text, transitions,
   hook, structure, music-sync; `PART_KEYS` says which settings each part may set), CRUD,
@@ -264,15 +268,18 @@ it in sync when behaviour or config changes.
   settings rows with scope this_edit/always, notes, unsupported, hook_text) and `study_reference`
   (frames + measured numbers -> what makes it good, techniques, text use, look settings).
   `settings_menu()` lists every setting the editor really has: keep it in sync with style.py.
-- `spikebot/feedback.py`: `learn()` (/feedback -> `Profile.add_rule`, pins settings per mode,
-  stores notes) and `for_variant()` (review Feedback button: re-render changes, lasting ones become
-  a rule). Falls back to `style.parse_feedback` without a key or on API failure.
+- `spikebot/feedback.py`: `learn()` (/feedback -> `Profile.add_rule`: entries in the rules list) and
+  `for_variant()` (review Feedback button: re-render changes; saved as entries too unless the wording
+  is `ONLY_THIS` ("just this one") or the AI says scope this_edit; the round stores `entries` so its
+  card gets Turn off/on buttons). Falls back to `style.parse_feedback` without a key or on API failure.
 - `spikebot/discord_bot.py`: `ReviewBot` (started by `Bot.run` when the token is set; reconnects,
   never crashes the bot). Pure layouts `round_payload` / `buttons` / `manual_payload` /
   `style_overview`; custom ids `rv|action|item|round|label` handled in `on_interaction` (survive
   restarts). Loops: `scan` (post ready rounds + thread, queue requests, report failures, expire,
   #tiktok-queue, finish), `render_worker` (one subprocess at a time), `publish_loop` (60 s, under
-  `publish_lock`). Feedback/Edit caption use modals. `/style [setting] [value]`, `/feedback text [mode]`, `/rules [remove]`, `/cancel [run]`, `/preset apply |
+  `publish_lock`). Feedback/Edit caption use modals. `/style [setting] [value]`, `/feedback text [mode]`, `/rules [disable] [enable]` (`rules_payload`: embeds
+  per category + multi-select menus `rv|rules_off|-|chunk|` / `rules_on`; `entry_buttons` / `flip_rows` =
+  `rv|rule|<item or ->|<round>|<n>` toggles on /feedback replies and feedback round cards), `/cancel [run]`, `/preset apply |
   list | show | rename | edit | delete | combine`. #inspiration `on_message` (approvers only).
   `trend_loop` (review.trend.times UK, `trend_slots_due`, state data/trend/schedule.json) runs
   `tokyo_girl trend --song auto` (`pick_rotating`, counts in data/trend/used.json).

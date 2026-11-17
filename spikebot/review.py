@@ -362,6 +362,7 @@ def specs_for(item: dict, req: dict, store: Store, rng: random.Random,
         profile.feedback(item["id"], base["label"], req.get("notes", ""), res["intents"], base["style"], new,
                          item["mode"])
         profile.save()
+        req["entries"] = [e["n"] for e in (res.get("rule") or {}).get("entries") or []]   # card gets on/off buttons
         return [spec], res["comment"]
     if kind == "preset":
         p = store.presets().load(req["name"])
@@ -437,7 +438,9 @@ def _render_round(store, item_id, item, cfg, base, req, rcfg, now, adapter, seed
     profile.shown(item["mode"], variants, now)
     profile.save()
     with store.edit(item_id) as item:
-        add_round(item, req["kind"], variants, rcfg, now, comment)
+        r = add_round(item, req["kind"], variants, rcfg, now, comment)
+        if req.get("entries"):
+            r["entries"] = list(req["entries"])
         if item.get("request"):
             item["request"]["status"] = "done"
         note(item, f"round {n} ready ({req['kind']}): {', '.join(v['label'] for v in variants)}", now)

@@ -179,10 +179,12 @@ Rules:
 - Translate everything you can into settings. Strong opinions about quality ("captions are AI slop",
   "too much text", "looks cheap") usually mean lowering text_level, simpler transitions, a calmer grade.
 - scope "always" = it should apply to future edits; "this_edit" = only to the edit being reviewed.
-  Feedback sent with /feedback is always about future edits, so use "always" there.
+  The creator wants his instructions kept: use "always" unless he clearly says it is only for this
+  edit ("just this one", "only here"). Feedback sent with /feedback is always "always".
 - mode: "all" unless the feedback is clearly about one mode.
-- notes: short lasting taste notes worth remembering that are not a setting (e.g. "prefers the payoff
-  in the first 3 seconds"), written as instructions to an editor.
+- notes: short lasting instructions that are not a setting (e.g. "payoff in the first 3 seconds"),
+  written as instructions to an editor. The editor cannot apply notes yet, so prefer settings and
+  only use a note when no setting comes close.
 - unsupported: things the editor cannot do yet, plainly worded, so the creator knows. Do not pretend.
 - hook_text: only if the creator wrote the exact new opening text they want, otherwise null.
 - summary: one plain sentence of what you will change."""
@@ -198,7 +200,7 @@ def interpret_feedback(text: str, mode: str, base: Path | None = None, current: 
     if current:
         parts.append("Current settings of that edit: " + json.dumps(current, sort_keys=True))
     if taste:
-        parts.append("Earlier feedback already applied:\n- " + "\n- ".join(taste[-20:]))
+        parts.append("Instructions already in force (newest last):\n- " + "\n- ".join(taste[-30:]))
     parts.append("Feedback:\n" + text.strip()[:3000])
     out = ask_json(FEEDBACK_SYSTEM.format(menu=settings_menu()), "\n\n".join(parts), FEEDBACK_SCHEMA,
                    base=base, max_tokens=4000, client=client, effort="medium", task="feedback")

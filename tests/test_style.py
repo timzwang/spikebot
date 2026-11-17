@@ -44,7 +44,7 @@ def test_learning_biases_variant_a_and_pins_win(tmp_path):
         assert v["style"]["font"] == "roboto" and v["style"]["hook"] == "hype"
     assert prof.pinned("tokyo_girl").get("hook") is None
     prof.pin("font", "auto")
-    assert "font" not in prof.data["pinned"]
+    assert "font" not in prof.pinned("lacy")
 
 
 def test_reject_and_redo_lower_scores(tmp_path):

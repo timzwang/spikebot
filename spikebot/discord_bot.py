@@ -10,6 +10,8 @@ Runs inside the main bot process (Bot.run) and never takes it down:
                   platform not automated for that mode).
   #inspiration    links or uploads -> style analysis -> preset (spikebot/inspiration.py).
   /style          preferred settings (learned + pinned), pin or unpin them.
+  /rules          every instruction from /feedback, Feedback and /style as one numbered
+                  list by category; turn entries off/on (menus, buttons, or disable:3,5-7).
   /preset         apply | list | show | rename | edit | delete | combine.
   /cancel         stop a running job by its run id (renders, trend edits, Lacy clips,
                   #inspiration analysis, sound downloads, queued re-renders); every
@@ -78,7 +80,7 @@ def ts(t: float, style: str = "f") -> str:
     return f"<t:{int(t)}:{style}>"
 
 
-def round_payload(item: dict, rnd: dict, extra: str = "") -> dict:
+def round_payload(item: dict, rnd: dict, extra: str = "", entry_on: dict | None = None) -> dict:
     """Message for one review round: header + one embed per variant + button rows."""
     label, colour = mode_label(item)
     kind = {"initial": "", "redo": " · redo", "feedback": " · after your feedback",
@@ -111,7 +113,9 @@ def round_payload(item: dict, rnd: dict, extra: str = "") -> dict:
                        {"name": "TikTok caption", "value": code(caps.get("tiktok", "")), "inline": False}],
         })
     return {"content": "\n".join(head)[:1900], "embeds": embeds[:9],
-            "rows": buttons(item, rnd), "allowed_mentions": {"parse": []}}
+            "rows": buttons(item, rnd) + entry_buttons(rnd.get("entries") or [], entry_on or {},
+                                                       item["id"], rnd["n"])[:2],
+            "allowed_mentions": {"parse": []}}
 
 
 def buttons(item: dict, rnd: dict, disabled: bool = False) -> list[list[dict]]:
@@ -124,6 +128,102 @@ def buttons(item: dict, rnd: dict, disabled: bool = False) -> list[list[dict]]:
             {"label": "Feedback", "style": "primary", "custom_id": cid("feedback", item["id"], n), "disabled": disabled},
             {"label": "Edit caption", "style": "secondary", "custom_id": cid("edit", item["id"], n), "disabled": disabled}]
     return [row1, row2]
+
+
+# ---- the rules list (/rules) ------------------------------------------------------
+def entry_button(n: int, on: bool, item_id: str = "-", rnd: int = 0) -> dict:
+    return {"label": f"Turn off #{n}" if on else f"Turn on #{n}", "style": "secondary" if on else "success",
+            "custom_id": cid("rule", item_id, rnd, str(n)), "disabled": False}
+
+
+def entry_buttons(numbers: list[int], on: dict, item_id: str = "-", rnd: int = 0) -> list[list[dict]]:
+    """On/off buttons for the entries a piece of feedback added (5 per row, max 3 rows)."""
+    bs = [entry_button(n, on.get(n, True), item_id, rnd) for n in numbers[:15]]
+    return [bs[i:i + 5] for i in range(0, len(bs), 5)]
+
+
+def flip_rows(rows: list[list[dict]], n: int, on: bool) -> list[list[dict]]:
+    """The same buttons with entry n's button showing its new state."""
+    out = []
+    for row in rows:
+        new = []
+        for b in row:
+            d = parse_cid(b.get("custom_id", "")) if b.get("custom_id") else None
+            if d and d["action"] == "rule" and d["label"] == str(n):
+                b = entry_button(n, on, d["item"], d["round"])
+            new.append(b)
+        out.append(new)
+    return out
+
+
+def replaced_by(entries: list[dict]) -> dict[int, int]:
+    """Enabled setting entries that a newer enabled one fully overrides: n -> newer n."""
+    out: dict[int, int] = {}
+    live = [e for e in entries if e.get("on", True) and e["kind"] == "setting"]
+    for i, e in enumerate(live):
+        for later in live[i + 1:]:
+            if later["setting"] == e["setting"] and later.get("mode", "all") in ("all", e.get("mode", "all")):
+                out[e["n"]] = later["n"]
+    return out
+
+
+RULES_BUDGET = 5600   # Discord: 6000 characters across a message's embeds
+
+
+def rules_payload(entries: list[dict], notice: str = "") -> dict:
+    """/rules: one embed per category, every entry numbered, plus menus to switch them."""
+    on = [e for e in entries if e.get("on", True)]
+    head = [notice] if notice else []
+    head.append(f"**Your rules** · {len(on)} on · {len(entries) - len(on)} off · for each setting the newest"
+                " entry that's on wins. Use the menus below, or `/rules disable:3,5-7` / `enable:`.")
+    if not entries:
+        return {"content": "\n".join(head[:-1] + ["No rules yet: use `/feedback` or the Feedback button."]),
+                "embeds": [], "rows": []}
+    over = replaced_by(entries)
+    lines: dict[str, list[tuple[int, str]]] = {}
+    for e in entries:
+        tag = ""
+        if e["n"] in over:
+            tag = f" _(replaced by #{over[e['n']]})_"
+        text = st.entry_text(e)
+        line = f"`#{e['n']}` ✅ {text}{tag}" if e.get("on", True) else f"`#{e['n']}` ⛔ ~~{text}~~"
+        lines.setdefault(st.category_of(e), []).append((e["n"], line[:300]))
+    # drop the oldest switched-off lines, then the oldest, until it fits
+    total = sum(len(t) + 1 for v in lines.values() for _, t in v)
+    hidden = 0
+    order = sorted(entries, key=lambda e: (e.get("on", True), e["n"]))
+    for e in order:
+        if total <= RULES_BUDGET:
+            break
+        cat = lines.get(st.category_of(e), [])
+        for i, (n, t) in enumerate(cat):
+            if n == e["n"]:
+                total -= len(t) + 1
+                cat.pop(i)
+                hidden += 1
+                break
+    colours = {"look": 0xEB459E, "pace": 0x5865F2, "text": 0xFEE75C, "hook": 0x57F287, "sound": 0x1DB954,
+               "note": 0x99AAB5, "unsupported": 0xED4245}
+    embeds = [{"title": name, "description": "\n".join(t for _, t in lines[key])[:4000], "color": colours[key]}
+              for key, name, _ in st.CATEGORIES if lines.get(key)]
+    if hidden:
+        head.append(f"_{hidden} older entries not shown (they still count; their numbers still work)._")
+    rows = []
+
+    def chunks(es, action, verb):
+        es = sorted(es, key=lambda e: -e["n"])   # newest first
+        for i in range(0, len(es), 25):
+            part = es[i:i + 25]
+            rows.append([{"type": "select", "custom_id": cid(action, "-", i // 25),
+                          "placeholder": f"{verb} #{min(e['n'] for e in part)}–#{max(e['n'] for e in part)}…"
+                          if len(es) > 25 else f"{verb}…",
+                          "max": len(part),
+                          "options": [{"label": f"#{e['n']} {st.entry_text(e)}"[:100], "value": str(e["n"]),
+                                       "description": st.CATEGORY_NAME[st.category_of(e)][:100]} for e in part]}])
+    chunks(on, "rules_off", "Turn off")
+    del rows[3:]
+    chunks([e for e in entries if not e.get("on", True)], "rules_on", "Turn back on")
+    return {"content": "\n".join(head)[:1990], "embeds": embeds[:10], "rows": rows[:5]}
 
 
 def picker(action: str, item: dict, rnd: dict) -> list[list[dict]]:
@@ -193,13 +293,13 @@ def manual_payload(item: dict, v: dict, platforms: list[str], link: str | None =
 def style_overview(profile: st.Profile, presets: dict[str, dict]) -> str:
     """/style text: what variant A uses now, per mode, with scores and pins."""
     lines = ["**Preferred settings** (variant A uses these; 📌 = pinned with /style)"]
-    pins = profile.data["pinned"]
     for mode in ("lacy", "tokyo_girl"):
         pref = profile.preferred(mode)
+        pins = profile.pinned(mode)
         bits = []
         for dim, val in pref.items():
             key = st.stat_key(dim, mode)
-            pinned = (pins.get(f"hook:{mode}") if dim == "hook" else pins.get(dim)) == val
+            pinned = pins.get(dim) == val
             row = profile.data["stats"].get(key, {}).get(val, {})
             bits.append(f"{dim} **{val}**{' 📌' if pinned else ''} ({row.get('approved', 0):g}/{row.get('shown', 0):g})")
         lines.append(f"__{MODE_LABEL.get(mode, (mode,))[0]}__: " + " · ".join(bits))
@@ -391,9 +491,35 @@ class ReviewBot:
                   "primary": discord.ButtonStyle.primary, "secondary": discord.ButtonStyle.secondary}
         for r, row in enumerate(rows):
             for b in row:
+                if b.get("type") == "select":
+                    v.add_item(discord.ui.Select(
+                        custom_id=b["custom_id"], placeholder=b.get("placeholder"), min_values=1,
+                        max_values=max(1, b.get("max", 1)), row=r,
+                        options=[discord.SelectOption(label=o["label"], value=o["value"],
+                                                      description=o.get("description")) for o in b["options"]]))
+                    continue
+                if b.get("url"):
+                    v.add_item(discord.ui.Button(label=b["label"], url=b["url"], row=r))
+                    continue
                 v.add_item(discord.ui.Button(label=b["label"], style=styles[b["style"]], custom_id=b["custom_id"],
                                              disabled=b["disabled"], row=r))
         return v
+
+    @staticmethod
+    def rows_of(message) -> list[list[dict]]:
+        """A sent message's buttons as layout dicts (to re-post them with one changed)."""
+        rows = []
+        for ar in getattr(message, "components", None) or []:
+            row = []
+            for c in getattr(ar, "children", []):
+                if getattr(c, "url", None):
+                    row.append({"label": c.label, "url": c.url})
+                elif getattr(c, "custom_id", None) and hasattr(c, "style"):
+                    row.append({"label": c.label or "", "style": getattr(c.style, "name", "secondary"),
+                                "custom_id": c.custom_id, "disabled": bool(c.disabled)})
+            if row:
+                rows.append(row)
+        return rows
 
     @staticmethod
     def embeds(dicts: list[dict]):
@@ -608,7 +734,7 @@ class ReviewBot:
         import discord
         item = self.store.load(item_id)
         rnd = review.round_of(item, n)
-        payload = round_payload(item, rnd)
+        payload = round_payload(item, rnd, entry_on=self.entry_states())
         d = self.store.dir(item_id)
         files = [discord.File(d / v["preview"], filename=f"{v['label']}_{item_id}.mp4")
                  for v in rnd["variants"] if (d / v["preview"]).exists()]
@@ -673,6 +799,9 @@ class ReviewBot:
             return
         if data["action"] == "cancel":
             await self.cancel_command(interaction, data["item"])
+            return
+        if data["action"] in ("rule", "rules_off", "rules_on"):
+            await self.on_rules_click(interaction, data)
             return
         try:
             item = self.store.load(data["item"])
@@ -1405,6 +1534,64 @@ class ReviewBot:
             profile.save()
         return rule, problems
 
+    # ---- the rules list ----------------------------------------------------------------
+    def entry_states(self) -> dict[int, bool]:
+        return {e["n"]: e.get("on", True) for e in self.store.profile().entries()}
+
+    def toggle_entries(self, numbers: list[int], on: bool) -> tuple[list[int], list[int], list[dict]]:
+        """Switch entries; returns (changed, not found, all entries). Thread-safe with /feedback."""
+        with self.profile_lock:
+            profile = self.store.profile()
+            changed, missing = profile.set_enabled(numbers, on)
+            profile.save()
+            return changed, missing, list(profile.entries())
+
+    @staticmethod
+    def toggle_notice(changed: list[int], missing: list[int], on: bool) -> str:
+        bits = []
+        if changed:
+            bits.append(("✅ Turned on " if on else "⛔ Turned off ") + ", ".join(f"#{n}" for n in changed))
+        if missing:
+            bits.append("No entry " + ", ".join(f"#{n}" for n in missing))
+        return " · ".join(bits) or ("Already on." if on else "Already off.")
+
+    async def on_rules_click(self, inter, data: dict) -> None:
+        """The /rules menus (several entries at once) and the Turn off/on buttons under a
+        /feedback reply or a feedback re-render card."""
+        if data["action"] == "rule":
+            n = int(data["label"])
+            e = self.store.profile().entry(n)
+            if e is None:
+                await inter.response.send_message(f"No entry #{n}.", ephemeral=True)
+                return
+            on = not e.get("on", True)
+            changed, missing, _ = self.toggle_entries([n], on)
+            rows = flip_rows(self.rows_of(inter.message), n, on)
+            await inter.response.edit_message(view=self.view(rows))
+            await inter.followup.send(self.toggle_notice(changed, missing, on) + f": {st.entry_text(e)}",
+                                      ephemeral=True)
+            return
+        values = [int(v) for v in (getattr(inter, "data", None) or {}).get("values") or [] if str(v).isdigit()]
+        on = data["action"] == "rules_on"
+        changed, missing, entries = self.toggle_entries(values, on)
+        payload = rules_payload(entries, self.toggle_notice(changed, missing, on))
+        await inter.response.edit_message(content=payload["content"], embeds=self.embeds(payload["embeds"]),
+                                           view=self.view(payload["rows"]))
+
+    async def rules_command(self, inter, disable: str | None = None, enable: str | None = None) -> None:
+        notice = []
+        for text, on in ((disable, False), (enable, True)):
+            if text:
+                nums = st.parse_numbers(text)
+                if not nums:
+                    notice.append(f"⚠️ No numbers in `{text}` (e.g. `3, 5-7`).")
+                    continue
+                changed, missing, _ = self.toggle_entries(nums, on)
+                notice.append(self.toggle_notice(changed, missing, on))
+        payload = rules_payload(list(self.store.profile().entries()), " · ".join(notice))
+        await inter.response.send_message(payload["content"], embeds=self.embeds(payload["embeds"]),
+                                          view=self.view(payload["rows"]))
+
     # ---- slash commands -------------------------------------------------------------
     def register_commands(self, tree) -> None:
         import discord
@@ -1444,11 +1631,14 @@ class ReviewBot:
                     await inter.response.send_message(f"{setting} options: {', '.join(style_options(setting))}, auto",
                                                       ephemeral=True)
                     return
-                profile.pin(setting, value)
-                profile.save()
+                with bot.profile_lock:
+                    profile = bot.store.profile()
+                    entry = profile.pin(setting, value)
+                    profile.save()
             text = style_overview(profile, bot.store.presets().all())
             if setting:
-                text = (f"📌 {setting} → **{value}**\n" if value not in (None, "auto") else f"↩️ {setting} unpinned\n") + text
+                text = (f"📌 {setting} → **{value}** (rule #{entry['n']})\n" if value not in (None, "auto")
+                        else f"↩️ {setting} back to learning (rule #{entry['n']})\n") + text
             await inter.response.send_message(text[:1990], ephemeral=False)
 
         @tree.command(name="feedback", description="Tell the editor anything (plain words); it applies to every future edit")
@@ -1472,11 +1662,12 @@ class ReviewBot:
                    fb.format_rule(rule)]
             if problems:
                 msg.append("Skipped: " + " | ".join(p[:100] for p in problems[:3]))
-            if not rule["settings"] and not rule.get("notes"):
+            if not rule["entries"]:
                 msg.append("Nothing changed: try saying what to do differently, e.g. *no captions unless he says"
                            " something funny*.")
-            msg.append("`/rules` lists everything I'm applying; `/rules remove:<n>` undoes one.")
-            await inter.followup.send("\n".join(msg)[:1990])
+            msg.append("`/rules` shows the whole list; the buttons below turn these off (or back on).")
+            rows = entry_buttons([e["n"] for e in rule["entries"]], {})
+            await inter.followup.send("\n".join(msg)[:1990], view=bot.view(rows) if rows else None)
 
         @tree.command(name="trend", description="Make trailer edits cut to your trending sounds (#ready-to-post)")
         @app_commands.describe(song="Only this sound (default: every trending sound)", per_song="Edits per sound (1-3)")
@@ -1521,23 +1712,12 @@ class ReviewBot:
                 return
             await bot.cancel_command(inter, run)
 
-        @tree.command(name="rules", description="What the editor has learned from /feedback (and undo one)")
-        @app_commands.describe(remove="Number of a rule to undo")
-        async def rules_cmd(inter: discord.Interaction, remove: int | None = None):
+        @tree.command(name="rules", description="Every instruction the editor follows, numbered; turn any off or on")
+        @app_commands.describe(disable="Numbers to turn off, e.g. 3, 5-7", enable="Numbers to turn back on")
+        async def rules_cmd(inter: discord.Interaction, disable: str | None = None, enable: str | None = None):
             if not await guard(inter):
                 return
-            profile = bot.store.profile()
-            head = ""
-            if remove is not None:
-                gone = profile.remove_rule(remove)
-                profile.save()
-                head = f"↩️ Removed rule #{remove} and undid its settings.\n" if gone else f"No rule #{remove}.\n"
-            rules = profile.data.get("rules") or []
-            if not rules:
-                await inter.response.send_message(head + "No rules yet: use `/feedback`.", ephemeral=False)
-                return
-            body = "\n\n".join(fb.format_rule(r) for r in reversed(rules[-12:]))
-            await inter.response.send_message((head + body)[:1990], ephemeral=False)
+            await bot.rules_command(inter, disable, enable)
 
         group = app_commands.Group(name="preset", description="Style presets from #inspiration")
 
