@@ -268,6 +268,8 @@ it in sync when behaviour or config changes.
   #tiktok-queue, finish), `render_worker` (one subprocess at a time), `publish_loop` (60 s, under
   `publish_lock`). Feedback/Edit caption use modals. `/style [setting] [value]`, `/feedback text [mode]`, `/rules [remove]`, `/preset apply |
   list | show | rename | edit | delete | combine`. #inspiration `on_message` (approvers only).
+  `archive_inspiration` (from `scan_loop`, every 10 min): the bot's #inspiration threads with no
+  message for `review.inspiration_archive_hours` (12) are archived (`stale_threads`, snowflake times).
 - `spikebot/inspiration.py`: style analysis in a subprocess (`python -m spikebot.inspiration
   analyse --url|--file --name --copy --json`). yt-dlp only for tiktok/instagram/youtube hosts,
   <= 4 min; the reference file is **always deleted** and only numbers are kept (hook *type*,
@@ -292,7 +294,7 @@ it in sync when behaviour or config changes.
   `/opt/spikebot`, builds the venv, creates `config.json`/`.env` from the examples if
   missing, and installs `spikebot.service` plus `spikebot-update.timer`
   (templates in `deploy/`), and `spikebot-tokyo-girl.timer`.
-- `deploy/auto_update.sh`: run by the timer every 5 min. `git pull --ff-only` as the
+- `deploy/auto_update.sh`: run by the timer every minute. `git pull --ff-only` as the
   clone's owner; if HEAD differs from `/opt/spikebot/.deployed_commit` it stages the
   code, syntax-checks it, swaps it in, `pip install`s if `requirements.txt` changed and
   restarts the bot. It also installs/enables `spikebot-tokyo-girl.timer` if missing.
@@ -322,8 +324,11 @@ python3 -m venv .venv && .venv/bin/pip install -r requirements.txt -r requiremen
 
 - Deployed copy: `/opt/spikebot` (owned by `spikebot`), with its own venv, `config.json`
   and `.env`. It is **not** a git checkout. The server's git clone is auto-deployed:
-  anything pushed to `main` goes live within ~5 minutes via `spikebot-update.timer`
+  anything pushed to `main` goes live within ~1-2 minutes via `spikebot-update.timer`
   (log: `journalctl -u spikebot-update`). So only push to `main` when it's tested.
+- **Tim's standing instruction: deploy straight away.** Once a change's tests pass, commit
+  and push it to `main` (fast-forward) in the same job, without asking. Don't leave work on
+  a side branch waiting for a "merge it".
   Restarting sends a "restarted" alert to #status (at most one per 30 min).
 - Service: `systemctl status spikebot`, logs with `journalctl -u spikebot -f`.
 - Live data: `/opt/spikebot/data/`. Don't write test spikes into it.

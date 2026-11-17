@@ -53,6 +53,7 @@ DEFAULTS = {
     "guild_id": "",                # makes slash commands appear at once
     "approver_ids": [],            # Discord user ids allowed to press buttons; empty = server managers
     "expire_hours": 48,
+    "inspiration_archive_hours": 12,   # #inspiration threads quiet this long are archived (0 = off)
     "preview_total_mb": 9.0,       # all 3 previews in one message (10 MB unboosted limit)
     "privacy": "public",           # YouTube privacy for non-Lacy modes (Lacy uses lacy.privacy)
     "youtube_max_per_day": 6,      # all modes together; Lacy also obeys lacy.max_uploads_per_day

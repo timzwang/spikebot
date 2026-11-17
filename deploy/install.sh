@@ -9,7 +9,7 @@
 #   2. copies the code to /opt/spikebot and builds its venv
 #   3. creates config.json and .env from the examples if they don't exist
 #   4. installs spikebot.service (runs in background, restarts on crash)
-#   5. installs spikebot-update.timer (git pull + redeploy every 5 minutes)
+#   5. installs spikebot-update.timer (git pull + redeploy every minute)
 #   6. installs spikebot-tokyo-girl.timer (daily Tokyo Girl edits, 06:47 UK)
 set -euo pipefail
 
@@ -85,7 +85,7 @@ Done. Next:
   4. Start the bot:        sudo systemctl start spikebot
   5. Watch the log:        sudo journalctl -u spikebot -f
 
-Auto-update: every 5 min the server pulls $REPO and restarts the bot only if
+Auto-update: every minute the server pulls $REPO and restarts the bot only if
 there are new commits.
   Next run / last run:     systemctl list-timers spikebot-update.timer
   Update log:              sudo journalctl -u spikebot-update -n 50

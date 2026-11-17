@@ -2,7 +2,7 @@
 # Pull the latest code into this git checkout and, only if there is something
 # new, copy it to the live install and restart the bot.
 #
-# Runs as root every 5 minutes from spikebot-update.timer. Run it by hand with:
+# Runs as root every minute from spikebot-update.timer. Run it by hand with:
 #   sudo bash deploy/auto_update.sh            # normal
 #   sudo bash deploy/auto_update.sh --force    # redeploy even with no new commits
 #
@@ -112,6 +112,17 @@ if [ -f "$REPO/deploy/spikebot-tokyo-girl.timer" ]; then
         systemctl is-enabled --quiet spikebot-tokyo-girl.timer \
             || { systemctl enable --now spikebot-tokyo-girl.timer && log "enabled spikebot-tokyo-girl.timer"; }
     } || log "WARNING: could not install the Tokyo Girl timer"
+fi
+
+# Refresh the update timer itself (e.g. 5 min -> 1 min). Never fatal.
+if [ -f "$REPO/deploy/spikebot-update.timer" ] \
+   && ! cmp -s "$REPO/deploy/spikebot-update.timer" /etc/systemd/system/spikebot-update.timer; then
+    {
+        install -m 644 "$REPO/deploy/spikebot-update.timer" /etc/systemd/system/spikebot-update.timer
+        systemctl daemon-reload
+        systemctl restart spikebot-update.timer
+        log "refreshed spikebot-update.timer"
+    } || log "WARNING: could not refresh the update timer"
 fi
 
 systemctl restart "$SERVICE"

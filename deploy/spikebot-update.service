@@ -1,4 +1,4 @@
-# Installed by deploy/install.sh. Run by spikebot-update.timer every 5 minutes.
+# Installed by deploy/install.sh. Run by spikebot-update.timer every minute.
 # @REPO@ is the git checkout install.sh was run from.
 [Unit]
 Description=Pull spikebot from GitHub and redeploy if there are new commits

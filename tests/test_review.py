@@ -620,3 +620,41 @@ def test_inspiration_sound_links_become_songs(tmp_path, monkeypatch):
     asyncio.run(go())
     assert songs == [[page], ["https://www.tiktok.com/@a/video/1"]]
     assert analysed == ["https://www.tiktok.com/@a/video/2"]
+
+
+def test_inspiration_threads_archive_after_12_quiet_hours(tmp_path):
+    store = R.Store(tmp_path / "data")
+    b, reg = bot_for(tmp_path, store)
+    b.rcfg["inspiration_channel_id"] = 300
+    insp = FakeChannel(300, reg)
+    now = 1_800_000_000.0
+
+    def sid(ts):
+        return int(ts * 1000 - DB.DISCORD_EPOCH_MS) << 22
+
+    class Th:
+        def __init__(self, created, last=None, owner=99, archived=False):
+            self.id, self.owner_id, self.archived = sid(created), owner, archived
+            self.last_message_id = sid(last) if last else None
+            self.name = "Inspiration"
+
+        async def edit(self, archived):
+            self.archived = archived
+
+    old = Th(now - 13 * 3600)
+    busy = Th(now - 20 * 3600, last=now - 3600)      # old, but Tim posted an hour ago
+    fresh = Th(now - 2 * 3600)
+    theirs = Th(now - 30 * 3600, owner=7)            # someone else's thread: left alone
+    insp.threads = [old, busy, fresh, theirs]
+
+    class C:
+        user = FakeUser(99)
+    b.client = C()
+    assert abs(DB.snowflake_ts(old.id) - (now - 13 * 3600)) < 0.01
+    asyncio.run(b.archive_inspiration(now))
+    assert [t.archived for t in insp.threads] == [True, False, False, False]
+    busy.last_message_id = sid(now - 13 * 3600)
+    asyncio.run(b.archive_inspiration(now + 60))      # checks at most every 10 min
+    assert not busy.archived
+    asyncio.run(b.archive_inspiration(now + 601))
+    assert busy.archived

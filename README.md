@@ -51,7 +51,7 @@ journalctl -u spikebot -f               # live log, Ctrl+C to exit
 | Unit | Does |
 |---|---|
 | `spikebot.service` | Runs the bot in the background from `/opt/spikebot`, starts on boot, restarts 10s after a crash |
-| `spikebot-update.timer` | Every 5 minutes runs `deploy/auto_update.sh` |
+| `spikebot-update.timer` | Every minute runs `deploy/auto_update.sh` |
 | `spikebot-tokyo-girl.timer` | 06:47 UK daily: makes the Tokyo Girl edits (see below) |
 
 `deploy/auto_update.sh` does `git pull --ff-only` in the clone. **Only if there are new
@@ -478,6 +478,11 @@ like in it ("love that there's no text until the drop"). The bot opens a thread,
 the style and replies with a breakdown and a thumbnail strip, and saves the preset to
 `data/presets/<name>.json`. If a link can't be downloaded (Instagram often needs a login) it
 asks you to upload the file in the thread instead.
+
+Threads tidy themselves away: after 12 hours with no new message the bot archives them, so
+they leave the channel list and sit under the channel's **Threads** button (posting in one
+reopens it). Change it with `review.inspiration_archive_hours` in `config.json` (0 = off).
+The bot needs the **Manage Threads** permission if Discord refuses (it logs a warning).
 
 It measures **style only** and never reuses their footage, audio or words: the video is
 deleted straight after the analysis and the preset holds numbers (average shot length, cuts on

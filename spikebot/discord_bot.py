@@ -194,6 +194,28 @@ def style_options(setting: str) -> list[str]:
     return list(opts)
 
 
+DISCORD_EPOCH_MS = 1420070400000
+
+
+def snowflake_ts(sid) -> float:
+    """Unix time a Discord id was made (a thread's id = when it was created)."""
+    return ((int(sid) >> 22) + DISCORD_EPOCH_MS) / 1000
+
+
+def stale_threads(threads, bot_id: int, now: float, hours: float) -> list:
+    """The bot's own open threads with no message for `hours` (created time if empty)."""
+    out = []
+    for th in threads:
+        if getattr(th, "archived", False) or getattr(th, "owner_id", None) != bot_id:
+            continue
+        last = snowflake_ts(th.id)
+        if getattr(th, "last_message_id", None):
+            last = max(last, snowflake_ts(th.last_message_id))
+        if now - last >= hours * 3600:
+            out.append(th)
+    return out
+
+
 # --------------------------------------------------------------------------
 # The bot
 # --------------------------------------------------------------------------
@@ -216,6 +238,7 @@ class ReviewBot:
         self.pending_uploads: dict[int, dict] = {}   # inspiration thread id -> name/copy
         self.started = False
         self._publisher = None
+        self._archive_checked = 0.0
 
     # ---- helpers ------------------------------------------------------------
     @property
@@ -358,6 +381,10 @@ class ReviewBot:
             except Exception as e:  # noqa: BLE001
                 log.warning("review scan: %s", e)
             try:
+                await self.archive_inspiration(time.time())
+            except Exception as e:  # noqa: BLE001
+                log.warning("inspiration archive: %s", e)
+            try:
                 await asyncio.wait_for(self.wake.wait(), every)
             except asyncio.TimeoutError:
                 pass
@@ -392,6 +419,25 @@ class ReviewBot:
                     await self.post_manual(item["id"])
                 if review.publish_finished(self.store.load(item["id"])):
                     await self.complete(item["id"])
+
+    async def archive_inspiration(self, now: float, every: float = 600) -> None:
+        """Archive the bot's #inspiration threads after `inspiration_archive_hours` without a
+        message: they leave the channel list and sit under the channel's Threads button.
+        Posting in one reopens it."""
+        hours = float(self.rcfg.get("inspiration_archive_hours") or 0)
+        if hours <= 0 or now - self._archive_checked < every:
+            return
+        self._archive_checked = now
+        me = getattr(self.client, "user", None)
+        ch = await self.channel(self.rcfg["inspiration_channel_id"])
+        if me is None or ch is None:
+            return
+        for th in stale_threads(list(getattr(ch, "threads", None) or []), me.id, now, hours):
+            try:
+                await th.edit(archived=True)
+                log.info("archived #inspiration thread %s", getattr(th, "name", th.id))
+            except Exception as e:  # noqa: BLE001 - missing permission etc.
+                log.warning("could not archive thread %s: %s", th.id, e)
 
     async def render_worker(self) -> None:
         """Re-renders one at a time in a subprocess (CPU heavy, keeps the bot responsive)."""
