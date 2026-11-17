@@ -12,7 +12,9 @@ Each edit:
   - Vice City views, cars, Jason & Lucia (tags from file names / tags.json)
   - big burned-in text telling a hook/story (news, theory, meme or couple joke),
     always ending on a question to pull comments
-  - no logo, watermark or channel name
+  - no channel logo, watermark or channel name (the optional "logo" intro fades in only
+    Rockstar's official GTA VI logo from logo_file, then fades away)
+  - text follows the variant's text_level: every card, the opening card only, or none
   - exports/tokyo_girl/<date>_<time>_<kind>_<story>.mp4 plus a .txt with the IG
     and TikTok captions
 
@@ -57,6 +59,9 @@ DEFAULTS = {
     "min_s": 15,
     "max_s": 30,
     "media_dir": "data/rockstar_media",   # shared official Rockstar library (any mode may read it)
+    # official GTA VI logo (transparent PNG from Rockstar's own media) for the "logo" intro;
+    # kept outside media_dir so it is never picked as a shot. Missing file = no intro.
+    "logo_file": "data/brand/gta6_logo.png",
     "export_dir": "exports/tokyo_girl",
     "state_file": "data/tokyo_girl/state.json",
     "sources": [
@@ -102,7 +107,7 @@ def settings(cfg: dict, base: Path | None = None) -> dict:
     if not 1 <= out["min_s"] <= out["max_s"]:
         raise ValueError("tokyo_girl: need 1 <= min_s <= max_s")
     if base is not None:
-        for k in ("media_dir", "export_dir", "state_file"):
+        for k in ("media_dir", "export_dir", "state_file", "logo_file"):
             p = Path(out[k])
             out[k] = str(p if p.is_absolute() else base / p)
     out["media_dir"] = str(migrate_media_dir(Path(out["media_dir"])))
@@ -718,8 +723,33 @@ def render_slot(slot: Slot, media: Path, out: Path) -> None:
                 str(out)], timeout=300)
 
 
-def render_plan(plan: Plan, lcfg: dict, out: Path, grade: str = "", text_style: dict | None = None) -> Path:
+def cards_for_level(cards: list[tuple[float, float, str]], level: str,
+                    intro_s: float = 0.0) -> list[tuple[float, float, str]]:
+    """Which text cards to burn in. "full": all; "minimal": the opening card only;
+    "none": no text. With a logo intro, text waits until the logo has faded."""
+    keep = cards if level == "full" else cards[:1] if level == "minimal" else []
+    out = []
+    for a, b, t in keep:
+        a = max(a, intro_s)
+        if b - a >= 0.8:
+            out.append((a, b, t))
+    return out
+
+
+def intro_filter(logo_w: int, intro_s: float) -> str:
+    """Logo fades in over darkened footage, holds, then fades away into the edit."""
+    fade_out = max(0.4, min(0.7, intro_s * 0.35))
+    return (f"[1:v]scale={logo_w}:-2,format=rgba,fade=t=in:st=0:d=0.35:alpha=1,"
+            f"fade=t=out:st={intro_s - fade_out:.3f}:d={fade_out:.3f}:alpha=1[lg]")
+
+
+def render_plan(plan: Plan, lcfg: dict, out: Path, grade: str = "", text_style: dict | None = None,
+                cards: list[tuple[float, float, str]] | None = None, logo: Path | None = None,
+                intro_s: float = 0.0, look: str = "") -> Path:
+    """`cards` overrides plan.cards (text level); `logo` + `intro_s` add the logo intro;
+    `look` is style.look_filter() (grain / vignette / cinema bars)."""
     media = Path(lcfg["media_dir"])
+    cards = plan.cards if cards is None else cards
     out.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory() as tmp:
         tmpd = Path(tmp)
@@ -729,12 +759,26 @@ def render_plan(plan: Plan, lcfg: dict, out: Path, grade: str = "", text_style: 
             render_slot(slot, media, seg)
             names.append(seg.name)
         (tmpd / "list.txt").write_text("".join(f"file '{n}'\n" for n in names), encoding="utf-8")
-        (tmpd / "text.ass").write_text(build_text_ass(plan.cards, lcfg["font"], lcfg["font_size"], text_style),
-                                       encoding="utf-8")
+        base_chain = ",".join(x for x in (grade, look) if x) or "null"
+        inputs = ["-f", "concat", "-safe", "0", "-i", "list.txt"]
+        if logo is not None and intro_s > 0:
+            inputs += ["-loop", "1", "-t", f"{intro_s:.3f}", "-i", str(Path(logo).resolve())]
+            dim_end = max(0.1, intro_s - 0.5)
+            graph = (f"[0:v]{base_chain},eq=brightness=-0.18:saturation=0.55:enable='lt(t,{dim_end:.3f})'[b];"
+                     + intro_filter(int(W * 0.78), intro_s)
+                     + ";[b][lg]overlay=x=(W-w)/2:y=(H-h)/2:eof_action=pass:format=auto[v0]")
+        else:
+            graph = f"[0:v]{base_chain}[v0]"
+        if cards:
+            (tmpd / "text.ass").write_text(build_text_ass(cards, lcfg["font"], lcfg["font_size"], text_style),
+                                           encoding="utf-8")
+            graph += ";[v0]ass=text.ass,format=yuv420p[v]"
+        else:
+            graph += ";[v0]format=yuv420p[v]"
         part = tmpd / "edit.mp4"
         # -an: no audio stream at all. Tim adds the official sound in the app.
-        editor.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "concat", "-safe", "0",
-                    "-i", "list.txt", "-vf", (grade + "," if grade else "") + "ass=text.ass", "-an", "-r", str(FPS),
+        editor.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", *inputs,
+                    "-filter_complex", graph, "-map", "[v]", "-an", "-r", str(FPS),
                     "-t", f"{plan.duration:.3f}", "-c:v", "libx264", "-preset", "medium",
                     "-crf", "19", "-maxrate", "9M", "-bufsize", "18M", "-pix_fmt", "yuv420p", "-profile:v", "high",
                     "-movflags", "+faststart", part.name], timeout=1800, cwd=tmpd)
@@ -862,7 +906,17 @@ class ReviewAdapter:
                              pace=pace, transition=r["transition"], cards=cards)
             stem = f"r{n}_{spec['label']}"
             mp4 = folder / f"{stem}.mp4"
-            render_plan(plan, self.lcfg, mp4, st.grade_filter(r["grade"]), r)
+            logo = Path(self.lcfg.get("logo_file") or "")
+            intro_s = 0.0
+            if r["intro"] == "logo":
+                if logo.is_file():
+                    intro_s = bar_s(self.lcfg["bpm"])
+                else:
+                    log.warning("logo intro asked for but %s is missing: rendering without it", logo)
+            shown = cards_for_level(plan.cards, r["text_level"], intro_s)
+            render_plan(plan, self.lcfg, mp4, st.grade_filter(r["grade"]), r, cards=shown,
+                        logo=logo if intro_s else None, intro_s=intro_s,
+                        look=st.look_filter(r["look"], "tokyo_girl", W, H))
             prev = editor.preview(mp4, folder / f"{stem}_preview.mp4", preview_bytes, plan.duration)
             uses = state.setdefault("uses", {})
             for sl in plan.slots:
@@ -879,7 +933,8 @@ class ReviewAdapter:
                                        "\n\n#GTA6 #GTAVI #Shorts",
                         "tags": ["GTA 6", "GTA VI", "Shorts", "Vice City"], "hook": title,
                         "captions": caps, "file": mp4.name, "preview": prev.name,
-                        "duration": round(plan.duration, 1), "cuts": len(plan.slots) - 1, "silent": True})
+                        "duration": round(plan.duration, 1), "cuts": len(plan.slots) - 1, "silent": True,
+                        "text_cards": len(shown), "intro": "logo" if intro_s else "none"})
         save_state(state_path, state)
         return out
 

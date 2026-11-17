@@ -9,3 +9,5 @@ google-cloud-storage>=2.14,<4
 discord.py>=2.5,<3
 # #inspiration style analysis (shot detection + OpenCV motion); run in a subprocess
 scenedetect[opencv-headless]>=0.6.4,<0.7
+# /feedback and the #inspiration artistic read (Claude API); optional, imported lazily
+anthropic>=1.17,<2

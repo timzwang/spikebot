@@ -223,14 +223,27 @@ def caption_margin(position: str, cam_h: int, size: int, text_y: float | None = 
 END_TEXT = {"question": "Would you have done the same?", "cta": "Follow for daily Lacy GTA clips"}
 
 
+MINIMAL_HOOK_S = 2.5          # "minimal" text: the hook is a short opener, not a banner
+FOCUS_BEFORE, FOCUS_AFTER = 5.0, 2.5   # "minimal": captions only this close to the payoff
+
+
+def caption_focus(peak: float | None) -> tuple[float, float] | None:
+    return None if peak is None else (max(0.0, peak - FOCUS_BEFORE), peak + FOCUS_AFTER)
+
+
 def build_ass(words: list[Word], hook: str, duration: float, cam_h: int,
-              watermark: str | None = None, style: dict | None = None) -> str:
+              watermark: str | None = None, style: dict | None = None,
+              focus: tuple[float, float] | None = None) -> str:
     """Captions file: the hook/title line under the facecam, and word-by-word
     captions (current word highlighted) over the gameplay.
     `style` is style.resolve() output (font, size, position, colours, words per
-    caption, hook length, end card); None = the original look.
+    caption, hook length, end card, text_level); None = the original look.
+    text_level "none": nothing at all. "minimal": the hook for 2.5 s and captions
+    only for words inside `focus` (the lines around the payoff); no focus = no
+    captions. "full": the hook all the way through and every word.
     `watermark` is an optional corner text; Lacy mode always passes None."""
     r = style or {}
+    level = r.get("text_level") or "full"
     font = r.get("font") or FONT
     scale = float(r.get("scale") or 1.0)
     cap = int(r.get("text_px") or 84 * scale)
@@ -259,14 +272,23 @@ Style: Mark,{FONT},36,&H80FFFFFF,&H80FFFFFF,&H80000000,&H00000000,-1,0,0,0,100,1
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 """
     end = ass_time(duration)
-    hook_end = ass_time(min(duration, float(r["hook_s"]))) if r.get("hook_s") else end
-    lines = [f"Dialogue: 1,{ass_time(0)},{hook_end},Hook,,0,0,0,,{ass_escape(hook)}"]
+    if level == "none":
+        return head
+    if r.get("hook_s"):
+        hook_end = ass_time(min(duration, float(r["hook_s"])))
+    elif level == "minimal":
+        hook_end = ass_time(min(duration, MINIMAL_HOOK_S))
+    else:
+        hook_end = end
+    lines = [f"Dialogue: 1,{ass_time(0)},{hook_end},Hook,,0,0,0,,{ass_escape(hook)}"] if hook.strip() else []
     if watermark:
         lines.append(f"Dialogue: 1,{ass_time(0)},{end},Mark,,0,0,0,,{ass_escape(watermark)}")
     ending = END_TEXT.get(r.get("ending") or "")
     end_at = max(0.0, duration - 2.5) if ending else duration
     if ending:
         lines.append(f"Dialogue: 2,{ass_time(end_at)},{end},End,,0,0,0,,{ass_escape(ending)}")
+    if level == "minimal":
+        words = [w for w in words if focus and focus[0] <= w.start <= focus[1]]
     for g in group_words(words, max_words=int((r.get("pace") or {}).get("words") or 3)):
         texts = [ass_escape(w.text.strip().upper()) for w in g]
         for i, w in enumerate(g):

@@ -106,7 +106,7 @@ def test_redo_feedback_and_preset_requests(tmp_path):
     v = r3["variants"][0]
     assert r3["kind"] == "feedback" and v["label"] == "B3" and v["title"] == "Lacy cannot believe it"
     assert v["style"]["size"] == S._step(tuple(S.SIZES), b["style"]["size"], 1)
-    assert "Applied: text_bigger, faster, new_hook" in r3["comment"]
+    assert "Understood: text_bigger, faster, new_hook" in r3["comment"]
     assert store.profile().data["feedback"]["intents"]["faster"] == 1
 
     from spikebot.presets import Presets
@@ -573,7 +573,7 @@ def test_inspiration_link_fails_then_upload_is_analysed(tmp_path, monkeypatch):
     insp = FakeChannel(300, reg)
     calls = []
 
-    async def analyse(name, copy, url=None, file=None):
+    async def analyse(name, copy, url=None, file=None, note=""):
         calls.append((name, copy, url, file))
         if url:
             return {"ok": False, "error": "login required", "ask_upload": True}

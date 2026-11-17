@@ -335,7 +335,8 @@ def adapter_for(mode: str, cfg: dict, base: Path):
     return ReviewAdapter(cfg, base)
 
 
-def specs_for(item: dict, req: dict, store: Store, rng: random.Random) -> tuple[list[dict], str]:
+def specs_for(item: dict, req: dict, store: Store, rng: random.Random,
+              base_dir: Path | None = None, ai_client=None) -> tuple[list[dict], str]:
     """Styles (and text overrides) to render for a request, and a comment for Discord."""
     profile = store.profile()
     presets = store.presets().all()
@@ -346,17 +347,16 @@ def specs_for(item: dict, req: dict, store: Store, rng: random.Random) -> tuple[
     base = variant_of(item, int(req["round"]), req["label"])
     n = len(item["rounds"]) + 1
     if kind == "feedback":
-        changes, texts, intents, unknown = st.parse_feedback(req.get("notes", ""), item["mode"])
-        new = st.apply_changes(base["style"], changes)
+        from . import feedback as fb
+        res = fb.for_variant(req.get("notes", ""), item["mode"], base["style"], profile, base_dir,
+                             item_id=item["id"], client=ai_client)
+        new = res["style"]
         spec = {"label": f"{base['label'][0]}{n}", "style": new, "preset": base.get("preset"),
-                "experimental": False, "texts": texts, "from": base, "intents": intents}
-        bits = [f"Applied: {', '.join(intents)}" if intents else "No style change recognised"]
-        if unknown:
-            bits.append("Not understood (logged for later): " + " | ".join(u[:80] for u in unknown[:4]))
-        profile.feedback(item["id"], base["label"], req.get("notes", ""), intents, base["style"], new,
+                "experimental": False, "texts": res["texts"], "from": base, "intents": res["intents"]}
+        profile.feedback(item["id"], base["label"], req.get("notes", ""), res["intents"], base["style"], new,
                          item["mode"])
         profile.save()
-        return [spec], ". ".join(bits)
+        return [spec], res["comment"]
     if kind == "preset":
         p = store.presets().load(req["name"])
         ps = presets_.to_style(p, item["mode"])
@@ -385,7 +385,7 @@ def render_round(store: Store, item_id: str, cfg: dict, base: Path, req: dict | 
     item = store.load(item_id)
     try:
         rng = random.Random(seed if seed is not None else f"{item_id}-{len(item['rounds'])}-{now}")
-        specs, comment = specs_for(item, req, store, rng)
+        specs, comment = specs_for(item, req, store, rng, base)
         adapter = adapter or adapter_for(item["mode"], cfg, base)
         n = len(item["rounds"]) + 1
         budget = int(rcfg["preview_total_mb"] * 1_000_000 / max(len(specs), 1))
