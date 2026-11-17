@@ -277,9 +277,12 @@ it in sync when behaviour or config changes.
   `style_overview`; custom ids `rv|action|item|round|label` handled in `on_interaction` (survive
   restarts). Loops: `scan` (post ready rounds + thread, queue requests, report failures, expire,
   #tiktok-queue, finish), `render_worker` (one subprocess at a time), `publish_loop` (60 s, under
-  `publish_lock`). Feedback/Edit caption use modals. `/style [setting] [value]`, `/feedback text [mode]`, `/rules [disable] [enable]` (`rules_payload`: embeds
-  per category + multi-select menus `rv|rules_off|-|chunk|` / `rules_on`; `entry_buttons` / `flip_rows` =
-  `rv|rule|<item or ->|<round>|<n>` toggles on /feedback replies and feedback round cards), `/cancel [run]`, `/preset apply |
+  `publish_lock`). Feedback/Edit caption use modals. `/style [setting] [value]`, `/feedback text [mode]`, `/rules [disable] [enable]` (Components V2 `LayoutView`
+  via `ReviewBot.layout`: `rules_pages` / `rules_page` = category headings + a `Section` per rule with its
+  Turn off/on button `rv|rulep|-|<page>|<n>`, pages `rv|rulesp|-|<page>|` within 40 components / 4000
+  chars; answered without deferring; Discord refusal -> `rules.txt`; old `rules_off`/`rules_on` menus still
+  toggle; `entry_buttons` / `flip_rows` = `rv|rule|<item or ->|<round>|<n>` toggles on /feedback replies and
+  feedback round cards; `report_error` + `tree.error` show the real error instead of "interaction failed"), `/cancel [run]`, `/preset apply |
   list | show | rename | edit | delete | combine`. #inspiration `on_message` (approvers only).
   `trend_loop` (review.trend.times UK, `trend_slots_due`, state data/trend/schedule.json) runs
   `tokyo_girl trend --song auto` (`pick_rotating`, counts in data/trend/used.json).

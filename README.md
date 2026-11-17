@@ -462,10 +462,11 @@ The **Feedback** button on a clip does the same (the re-render shows the new num
 buttons), unless you say it's only for that one, e.g. *"darker, just this one"*.
 
 **`/rules`** shows the whole list by category (🎨 colour & look, ✂️ pace & cuts, 🔤 text, 🪝
-hook/intro/ending, 🔊 sound, 📝 notes, 🚫 not possible yet). ✅ = on, ⛔ = off, and _replaced by
-#N_ marks a setting a newer entry overrides. Switch entries off or on with the two menus under
-it (pick several at once), or `/rules disable:3, 5-7` / `/rules enable:4`. Turning an entry
-off brings back the one before it. **Notes** are things the editor has no setting for yet: they
+hook/intro/ending, 🔊 sound, 📝 notes, 🚫 not possible yet). Off ones are ~~crossed out~~, and _replaced by
+#N_ marks a setting a newer entry overrides. Every rule has its own **Turn off / Turn on**
+button beside it (long lists have ◀ Prev / Next ▶ pages, about 11 rules each: Discord's
+limit). For several at once: `/rules disable:3, 5-7` / `/rules enable:4`. Turning an entry
+off brings back the one before it. If Discord ever refuses the list, it comes as `rules.txt`. **Notes** are things the editor has no setting for yet: they
 guide Claude when it reads your next feedback, but don't change the edits themselves.
 `/style setting value` also adds an entry. Version C (experimental) never tries an option
 you've rejected more often than you've picked it.

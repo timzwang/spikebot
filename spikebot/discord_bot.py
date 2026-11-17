@@ -167,15 +167,6 @@ def replaced_by(entries: list[dict]) -> dict[int, int]:
     return out
 
 
-RULES_BUDGET = 5600   # Discord: 6000 characters across a message's embeds
-
-
-def plain_category(e: dict) -> str:
-    """Category name without its emoji (menu option descriptions: plain text is safest)."""
-    name = st.CATEGORY_NAME[st.category_of(e)]
-    return name.split(" ", 1)[1][:100] if " " in name else name[:100]
-
-
 def rules_text(entries: list[dict]) -> str:
     """The whole list as plain text (the fallback attachment)."""
     lines = []
@@ -188,60 +179,75 @@ def rules_text(entries: list[dict]) -> str:
     return "\n".join(lines) or "No rules yet."
 
 
-def rules_payload(entries: list[dict], notice: str = "") -> dict:
-    """/rules: one embed per category, every entry numbered, plus menus to switch them."""
-    on = [e for e in entries if e.get("on", True)]
-    head = [notice] if notice else []
-    head.append(f"**Your rules** · {len(on)} on · {len(entries) - len(on)} off · for each setting the newest"
-                " entry that's on wins. Use the menus below, or `/rules disable:3,5-7` / `enable:`.")
-    if not entries:
-        return {"content": "\n".join(head[:-1] + ["No rules yet: use `/feedback` or the Feedback button."]),
-                "embeds": [], "rows": []}
-    over = replaced_by(entries)
-    lines: dict[str, list[tuple[int, str]]] = {}
-    for e in entries:
-        tag = ""
-        if e["n"] in over:
-            tag = f" _(replaced by #{over[e['n']]})_"
-        text = st.entry_text(e)
-        line = f"`#{e['n']}` ✅ {text}{tag}" if e.get("on", True) else f"`#{e['n']}` ⛔ ~~{text}~~"
-        lines.setdefault(st.category_of(e), []).append((e["n"], line[:300]))
-    # drop the oldest switched-off lines, then the oldest, until it fits
-    total = sum(len(t) + 1 for v in lines.values() for _, t in v)
-    hidden = 0
-    order = sorted(entries, key=lambda e: (e.get("on", True), e["n"]))
-    for e in order:
-        if total <= RULES_BUDGET:
-            break
-        cat = lines.get(st.category_of(e), [])
-        for i, (n, t) in enumerate(cat):
-            if n == e["n"]:
-                total -= len(t) + 1
-                cat.pop(i)
-                hidden += 1
-                break
-    colours = {"look": 0xEB459E, "pace": 0x5865F2, "text": 0xFEE75C, "hook": 0x57F287, "sound": 0x1DB954,
-               "note": 0x99AAB5, "unsupported": 0xED4245}
-    embeds = [{"title": name, "description": "\n".join(t for _, t in lines[key])[:4000], "color": colours[key]}
-              for key, name, _ in st.CATEGORIES if lines.get(key)]
-    if hidden:
-        head.append(f"_{hidden} older entries not shown (they still count; their numbers still work)._")
-    rows = []
+# Discord "Components V2" message: every rule is a section (text + its own button).
+MAX_COMPONENTS = 40     # per message, nested ones included
+MAX_TEXT = 3800         # Discord allows 4000 characters of text per message
 
-    def chunks(es, action, verb):
-        es = sorted(es, key=lambda e: -e["n"])   # newest first
-        for i in range(0, len(es), 25):
-            part = es[i:i + 25]
-            rows.append([{"type": "select", "custom_id": cid(action, "-", i // 25),
-                          "placeholder": f"{verb} #{min(e['n'] for e in part)}–#{max(e['n'] for e in part)}…"
-                          if len(es) > 25 else f"{verb}…",
-                          "max": len(part),
-                          "options": [{"label": f"#{e['n']} {st.entry_text(e)}"[:100], "value": str(e["n"]),
-                                       "description": plain_category(e)} for e in part]}])
-    chunks(on, "rules_off", "Turn off")
-    del rows[3:]
-    chunks([e for e in entries if not e.get("on", True)], "rules_on", "Turn back on")
-    return {"content": "\n".join(head)[:1990], "embeds": embeds[:10], "rows": rows[:5]}
+
+def rule_line(e: dict, over: dict[int, int]) -> str:
+    text = st.entry_text(e)
+    if not e.get("on", True):
+        return f"~~**#{e['n']}** {text}~~ · _off_"[:500]
+    tag = f" · _replaced by #{over[e['n']]}_" if e["n"] in over else ""
+    return f"**#{e['n']}** {text}{tag}"[:500]
+
+
+def rules_pages(entries: list[dict]) -> list[list[tuple[str, dict]]]:
+    """Split the list (category order, oldest first) into pages that fit one message.
+    Each page is [(category key, entry)]."""
+    over = replaced_by(entries)
+    flat = [(key, e) for key, _, _ in st.CATEGORIES for e in entries if st.category_of(e) == key]
+    pages: list[list[tuple[str, dict]]] = []
+    page: list[tuple[str, dict]] = []
+    comps, chars, last = 6, 300, None      # header + nav row (4) reserved; header text
+    for key, e in flat:
+        need_c = 3 + (1 if key != last else 0)
+        need_t = len(rule_line(e, over)) + (len(st.CATEGORY_NAME[key]) + 8 if key != last else 0)
+        if page and (comps + need_c > MAX_COMPONENTS or chars + need_t > MAX_TEXT):
+            pages.append(page)
+            page, comps, chars, last = [], 6, 300, None
+            need_c = 4
+            need_t = len(rule_line(e, over)) + len(st.CATEGORY_NAME[key]) + 8
+        page.append((key, e))
+        comps, chars, last = comps + need_c, chars + need_t, key
+    if page:
+        pages.append(page)
+    return pages
+
+
+def rules_page(entries: list[dict], page: int = 0, notice: str = "") -> dict:
+    """One page of /rules as layout blocks: header, category headings, one block per rule
+    with its Turn off / Turn on button, and Prev / Next."""
+    on = sum(1 for e in entries if e.get("on", True))
+    pages = rules_pages(entries)
+    page = max(0, min(page, len(pages) - 1)) if pages else 0
+    head = (f"## Your rules\n{on} on · {len(entries) - on} off · for each setting the newest entry that's on"
+            " wins. Turning one off brings back the one before it.")
+    if notice:
+        head += f"\n{notice}"
+    blocks: list[dict] = [{"type": "text", "content": head[:300]}]
+    if not entries:
+        blocks[0]["content"] += "\nNo rules yet: use `/feedback` or the Feedback button on a clip."
+        return {"page": 0, "pages": 1, "blocks": blocks}
+    over = replaced_by(entries)
+    last = None
+    for key, e in pages[page]:
+        if key != last:
+            blocks.append({"type": "text", "content": f"### {st.CATEGORY_NAME[key]}"})
+            last = key
+        blocks.append({"type": "rule", "n": e["n"], "content": rule_line(e, over),
+                       "button": {"label": "Turn off" if e.get("on", True) else "Turn on",
+                                  "style": "secondary" if e.get("on", True) else "success",
+                                  "custom_id": cid("rulep", "-", page, str(e["n"])), "disabled": False}})
+    if len(pages) > 1:
+        blocks.append({"type": "row", "buttons": [
+            {"label": "◀ Prev", "style": "primary", "custom_id": cid("rulesp", "-", page - 1),
+             "disabled": page == 0},
+            {"label": f"Page {page + 1}/{len(pages)}", "style": "secondary",
+             "custom_id": cid("rulesp", "-", page, "here"), "disabled": True},
+            {"label": "Next ▶", "style": "primary", "custom_id": cid("rulesp", "-", page + 1),
+             "disabled": page >= len(pages) - 1}]})
+    return {"page": page, "pages": len(pages), "blocks": blocks}
 
 
 def picker(action: str, item: dict, rnd: dict) -> list[list[dict]]:
@@ -521,6 +527,25 @@ class ReviewBot:
                     continue
                 v.add_item(discord.ui.Button(label=b["label"], style=styles[b["style"]], custom_id=b["custom_id"],
                                              disabled=b["disabled"], row=r))
+        return v
+
+    def layout(self, spec: dict):
+        """A Components V2 view (text with a button beside it) from rules_page blocks."""
+        import discord
+        styles = {"success": discord.ButtonStyle.success, "danger": discord.ButtonStyle.danger,
+                  "primary": discord.ButtonStyle.primary, "secondary": discord.ButtonStyle.secondary}
+
+        def button(b):
+            return discord.ui.Button(label=b["label"], style=styles[b["style"]], custom_id=b["custom_id"],
+                                     disabled=b["disabled"])
+        v = discord.ui.LayoutView(timeout=None)
+        for blk in spec["blocks"]:
+            if blk["type"] == "text":
+                v.add_item(discord.ui.TextDisplay(blk["content"]))
+            elif blk["type"] == "rule":
+                v.add_item(discord.ui.Section(discord.ui.TextDisplay(blk["content"]), accessory=button(blk["button"])))
+            elif blk["type"] == "row":
+                v.add_item(discord.ui.ActionRow(*[button(b) for b in blk["buttons"]]))
         return v
 
     @staticmethod
@@ -830,7 +855,7 @@ class ReviewBot:
         if data["action"] == "cancel":
             await self.cancel_command(interaction, data["item"])
             return
-        if data["action"] in ("rule", "rules_off", "rules_on"):
+        if data["action"] in ("rule", "rulep", "rulesp", "rules_off", "rules_on"):
             await self.on_rules_click(interaction, data)
             return
         try:
@@ -1598,39 +1623,41 @@ class ReviewBot:
         return " · ".join(bits) or ("Already on." if on else "Already off.")
 
     async def on_rules_click(self, inter, data: dict) -> None:
-        """The /rules menus (several entries at once) and the Turn off/on buttons under a
-        /feedback reply or a feedback re-render card."""
+        """Turn off / Turn on next to a rule in /rules (and Prev / Next), and the buttons under
+        a /feedback reply or a feedback re-render card."""
+        act = data["action"]
         await inter.response.defer()   # answer within Discord's 3 s; the message is edited below
-        if data["action"] == "rule":
-            n = int(data["label"])
-            e = (await asyncio.to_thread(self.store.profile)).entry(n)
-            if e is None:
-                await inter.followup.send(f"No entry #{n}.", ephemeral=True)
-                return
-            on = not e.get("on", True)
-            changed, missing, _ = await asyncio.to_thread(self.toggle_entries, [n], on)
-            rows = flip_rows(self.rows_of(inter.message), n, on)
-            await inter.edit_original_response(view=self.view(rows))
-            await inter.followup.send(self.toggle_notice(changed, missing, on) + f": {st.entry_text(e)}",
-                                      ephemeral=True)
+        if act == "rulesp":
+            entries = list((await asyncio.to_thread(self.store.profile)).entries())
+            await inter.edit_original_response(view=self.layout(rules_page(entries, data["round"])))
             return
-        values = [int(v) for v in (getattr(inter, "data", None) or {}).get("values") or [] if str(v).isdigit()]
-        on = data["action"] == "rules_on"
-        changed, missing, entries = await asyncio.to_thread(self.toggle_entries, values, on)
-        payload = rules_payload(entries, self.toggle_notice(changed, missing, on))
-        import discord
-        try:
-            await inter.edit_original_response(content=payload["content"], embeds=self.embeds(payload["embeds"]),
-                                               view=self.view(payload["rows"]))
-        except discord.HTTPException as e:   # the change is saved either way: say so, then show the list
-            log.warning("rules menu edit refused by Discord (%s %s)", e.status, e.text[:200])
-            await inter.followup.send(f"{self.toggle_notice(changed, missing, on)} (saved). Discord wouldn't"
-                                      " refresh the list; here it is again:", ephemeral=True)
-            await self.send_rules(inter, payload, entries)
+        if act in ("rules_off", "rules_on"):   # menus on /rules messages from before the buttons
+            values = [int(v) for v in (getattr(inter, "data", None) or {}).get("values") or [] if str(v).isdigit()]
+            changed, missing, _ = await asyncio.to_thread(self.toggle_entries, values, act == "rules_on")
+            await inter.followup.send(self.toggle_notice(changed, missing, act == "rules_on")
+                                      + " · run `/rules` for the new list with a button on each rule.", ephemeral=True)
+            return
+        n = int(data["label"])
+        e = (await asyncio.to_thread(self.store.profile)).entry(n)
+        if e is None:
+            await inter.followup.send(f"No entry #{n}.", ephemeral=True)
+            return
+        on = not e.get("on", True)
+        changed, missing, entries = await asyncio.to_thread(self.toggle_entries, [n], on)
+        notice = self.toggle_notice(changed, missing, on) + f": {st.entry_text(e)}"
+        if act == "rulep":
+            await inter.edit_original_response(view=self.layout(rules_page(entries, data["round"], notice)))
+            return
+        rows = flip_rows(self.rows_of(inter.message), n, on)
+        await inter.edit_original_response(view=self.view(rows))
+        await inter.followup.send(notice, ephemeral=True)
 
     async def rules_command(self, inter, disable: str | None = None, enable: str | None = None) -> None:
-        await inter.response.defer(thinking=True)   # answer within Discord's 3 s
+        """/rules: the list with a button beside every rule. Answers straight away (no
+        "thinking"); disable:/enable: switch several at once first."""
         notice = []
+        if disable or enable:
+            await inter.response.defer(thinking=True)   # switching may wait for a /feedback being saved
         for text, on in ((disable, False), (enable, True)):
             if text:
                 nums = st.parse_numbers(text)
@@ -1639,46 +1666,28 @@ class ReviewBot:
                     continue
                 changed, missing, _ = await asyncio.to_thread(self.toggle_entries, nums, on)
                 notice.append(self.toggle_notice(changed, missing, on))
-        entries = list((await asyncio.to_thread(self.store.profile)).entries())
-        payload = rules_payload(entries, " · ".join(notice))
-        await self.send_rules(inter, payload, entries)
+        entries = list(self.store.profile().entries())
+        await self.send_rules(inter, rules_page(entries, 0, " · ".join(notice)), entries)
 
-    async def send_rules(self, inter, payload: dict, entries: list[dict]) -> None:
-        """Send the list; when Discord refuses it (it has answered 500 here), retry, then fall
-        back to simpler messages so Tim always gets the list."""
+    async def send_rules(self, inter, spec: dict, entries: list[dict]) -> None:
+        """Send one page; if Discord refuses it, send the whole list as a text file instead."""
         import io
 
         import discord
 
-        def full():
-            return dict(content=payload["content"], embeds=self.embeds(payload["embeds"]),
-                        view=self.view(payload["rows"]))
-
-        def no_menus():
-            return dict(content=(payload["content"] + "\n_(Menus unavailable right now: use"
-                                 " `/rules disable:3, 5-7` or `enable:`.)_")[:1990],
-                        embeds=self.embeds(payload["embeds"]))
-
-        def as_file():
-            return dict(content=(payload["content"].split("\n")[0] + "\nThe full list is attached."
-                                 " Turn entries off with `/rules disable:3, 5-7`.")[:1990],
-                        file=discord.File(io.BytesIO(rules_text(entries).encode()), filename="rules.txt"))
-        last = None
-        for attempt, build in enumerate((full, full, no_menus, as_file)):
-            try:
-                await inter.followup.send(**build())
-                if attempt:
-                    log.info("/rules sent on attempt %d", attempt + 1)
-                return
-            except discord.HTTPException as e:
-                last = e
-                log.warning("/rules attempt %d refused by Discord (%s %s); payload: %d embeds, %d chars, %d menus,"
-                            " %d entries", attempt + 1, e.status, e.text[:200], len(payload["embeds"]),
-                            sum(len(x.get("description", "")) for x in payload["embeds"]), len(payload["rows"]),
-                            len(entries))
-                if attempt == 0:
-                    await asyncio.sleep(1.5)
-        raise last
+        async def send(**kw):
+            if inter.response.is_done():
+                await inter.followup.send(**kw)
+            else:
+                await inter.response.send_message(**kw)
+        try:
+            await send(view=self.layout(spec))
+        except discord.HTTPException as e:
+            log.warning("/rules refused by Discord (%s %s): %d entries, %d blocks", e.status, e.text[:200],
+                        len(entries), len(spec["blocks"]))
+            await send(content="Discord wouldn't show the list with buttons, so here it is as a file. Turn"
+                               " entries off with `/rules disable:3, 5-7`.",
+                       file=discord.File(io.BytesIO(rules_text(entries).encode()), filename="rules.txt"))
 
     # ---- slash commands -------------------------------------------------------------
     def register_commands(self, tree) -> None:
