@@ -135,6 +135,8 @@ def moment(rec: dict, display: str) -> dict:
     vibe = vibe_line(rec)
     if vibe:
         lines.append(f"**Vibe** {vibe}")
+    if rec.get("rank") and rec.get("rank_of", 0) > 1:
+        lines.append(f"**Rank** #{rec['rank']} of {rec['rank_of']} moments across all streamers (last hour)")
 
     prog = rec.get("programme")
     foot = [prog if prog else "⚠️ **No programme: check permission before posting**",

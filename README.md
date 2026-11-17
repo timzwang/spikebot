@@ -98,6 +98,28 @@ sudo bash ~/spikebot/deploy/auto_update.sh --force   # redeploy even with no new
 
 After editing `config.json` or `.env`: `systemctl restart spikebot`.
 
+## Auto-watch (launch day: many streamers at once)
+
+All Twitch chat now runs over a few shared connections (50 channels each), and live/category
+checks are one Twitch request per 100 channels, so the bot can follow dozens of streams.
+
+Turn on auto-watch with `DISCOVERY_MODE=true` in `.env` (needs the Twitch keys). Every 5 minutes
+it looks up the biggest live **Grand Theft Auto VI** streams on Twitch (English, 3000+ viewers)
+and reads their chat too, up to `max_channels` (40) on top of your `channels`. A stream that leaves
+the top list or the GTA category is dropped after 30 minutes. #status gets one line when the
+list changes; auto-watched streamers never send live/offline alerts.
+
+- Auto-watched streamers have **no programme**: their cards say "check permission before
+  posting", and nothing is ever downloaded from them (only a VOD link).
+- Every moment is ranked against all moments from all streamers in the last hour
+  ("Rank #2 of 14" on the card).
+- #moments cap: at most `max_alerts_per_hour` (12) cards per hour from no-programme streamers;
+  after that only a moment that beats every one already sent gets through. Programme streamers
+  are never capped. Held-back moments are still saved (`data/spikes.db`, `alerted: false`).
+- `discovery` block in `config.json`: `categories`, `languages` (`[]` = any), `min_viewers`,
+  `max_channels`, `interval_s`, `drop_after_s`, `exclude` (logins never to auto-watch),
+  `max_alerts_per_hour`. `--check` shows which streams it would pick right now.
+
 ## Lacy mode (Lacy clipping campaign)
 
 Turns Lacy's GTA chat spikes into finished Shorts for the Lacy campaign (Reach / Content

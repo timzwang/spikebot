@@ -27,9 +27,10 @@ from . import lacy as lacy_
 from . import messages as msg_
 from . import review as rv_
 from . import status as st_
+from . import watchlist as wl_
 from .detector import DetectorConfig, Spike, SpikeDetector
-from .sources import (TwitchHelix, kick_channel_info, kick_stream_state, kick_stream_vod,
-                      run_kick_chat, run_twitch_chat)
+from .sources import (TwitchChatPool, TwitchHelix, kick_channel_info, kick_stream_state,
+                      kick_stream_vod, run_kick_chat)
 
 log = logging.getLogger("spikebot")
 UK = ZoneInfo("Europe/London")
@@ -138,14 +139,19 @@ class Bot:
         self.det_cfg = DetectorConfig(**cfg.get("detector", {}))
         self.store = Store(Path(cfg.get("data_dir", "data")))
         self.channels = cfg["channels"]
-        self.detectors = {
-            (c["platform"], c["name"].lower()): SpikeDetector(c["platform"], c["name"].lower(), self.det_cfg)
-            for c in self.channels
-        }
-        self.meta = {(c["platform"], c["name"].lower()): c for c in self.channels}
-        self.names = {k: c.get("display") or c["name"] for k, c in self.meta.items()}
-        self.state: dict[tuple[str, str], dict] = {k: {} for k in self.detectors}
-        self.counts = {k: 0 for k in self.detectors}
+        self.detectors: dict[tuple[str, str], SpikeDetector] = {}
+        self.meta: dict[tuple[str, str], dict] = {}
+        self.names: dict[tuple[str, str], str] = {}
+        self.state: dict[tuple[str, str], dict] = {}
+        self.counts: dict[tuple[str, str], int] = {}
+        for c in self.channels:
+            self._register(c)
+        # Twitch chat for every channel shares a few sockets (sources.TwitchChatPool)
+        self.pool = TwitchChatPool()
+        # launch-day watchlist: auto-discovered GTA streams + cross-streamer ranking
+        self.disc = wl_.settings(cfg)
+        self.discovered: dict[str, float] = {}  # twitch login -> last seen in the top list
+        self.gate = wl_.AlertGate(self.disc["max_alerts_per_hour"], self.disc["rank_window_s"])
         self.required = [s.lower() for s in cfg.get("require_category_contains", [])]
         self.min_score = float(cfg.get("min_score_to_alert", 0))
         self.helix = None
@@ -187,6 +193,74 @@ class Bot:
             if xp.icfg["enabled"] and xp.icfg["user_id"]:
                 self.ig = xp
 
+    def _register(self, c: dict) -> tuple[str, str]:
+        key = (c["platform"], c["name"].lower())
+        self.detectors[key] = SpikeDetector(key[0], key[1], self.det_cfg)
+        self.meta[key] = c
+        self.names[key] = c.get("display") or c["name"]
+        self.state[key] = {}
+        self.counts[key] = 0
+        return key
+
+    def add_discovered(self, stream: dict, now: float) -> tuple[str, str] | None:
+        """Start watching an auto-discovered Twitch stream (chat only, no programme)."""
+        login = stream["user_login"].lower()
+        key = ("twitch", login)
+        if key in self.detectors:
+            return None
+        key = self._register({"platform": "twitch", "name": login, "programme": None,
+                              "display": stream.get("user_name") or login, "discovered": True})
+        self.state[key] = {"live": True, "started_at": stream.get("started_at"),
+                           "category": stream.get("game_name", ""), "title": stream.get("title"),
+                           "stream_id": stream.get("id"), "user_id": stream.get("user_id"),
+                           "viewers": stream.get("viewer_count")}
+        self.conn.down_since.setdefault(key, now)
+        self.discovered[login] = now
+        self.pool.add(login, self.on_msg(key), self.on_status(key))
+        return key
+
+    def drop_discovered(self, login: str) -> None:
+        key = ("twitch", login)
+        if not self.meta.get(key, {}).get("discovered"):
+            return
+        self.pool.remove(login)
+        for d in (self.detectors, self.meta, self.names, self.state, self.counts):
+            d.pop(key, None)
+        self.conn.down_since.pop(key, None)
+        self.conn.announced.discard(key)
+        self.live.live.pop(key, None)
+        self.discovered.pop(login, None)
+
+    async def discovery_loop(self, now=time.time) -> None:
+        """Every interval_s: watch the biggest live GTA VI streams on Twitch."""
+        game_ids: list[str] = []
+        while True:
+            try:
+                if not game_ids:
+                    game_ids = await self.helix.game_ids(self.disc["categories"])
+                    if not game_ids:
+                        log.warning("discovery: no Twitch category found for %s", self.disc["categories"])
+                top = await self.helix.top_streams(game_ids, self.disc["languages"])
+                await self.discovery_tick(top, now())
+            except Exception as e:  # noqa: BLE001 - never take the bot down
+                log.warning("discovery failed: %s", e)
+            await asyncio.sleep(self.disc["interval_s"])
+
+    async def discovery_tick(self, top: list[dict], now: float) -> None:
+        fixed = {n for p, n in self.meta if p == "twitch" and not self.meta[(p, n)].get("discovered")}
+        wl_.seen(self.discovered, top, self.disc, now)
+        add, drop = wl_.plan(self.discovered, top, fixed, self.disc, now)
+        for login in drop:
+            self.drop_discovered(login)
+        added = [k for k in (self.add_discovered(t, now) for t in add) if k]
+        if added or drop:
+            names = ", ".join(f"{self.names[k]} ({self.state[k].get('viewers') or '?'})" for k in added)
+            text = (f"👀 Auto-watch: now **{len(self.discovered)}** extra GTA streams."
+                    + (f"\nAdded: {msg_.escape(names)}" if added else "")
+                    + (f"\nDropped: {msg_.escape(', '.join(drop))}" if drop else ""))
+            log.info("discovery: +%s -%s (watching %s extra)", len(added), len(drop), len(self.discovered))
+            await self.notifier.send(f"discovery:{now:.0f}", text)
+
     def on_msg(self, key):
         det = self.detectors[key]
 
@@ -198,42 +272,53 @@ class Bot:
     async def poll_state(self) -> None:
         """Refresh live status, start time and category every 2 minutes."""
         while True:
-            for key in self.detectors:
-                platform, name = key
-                try:
-                    if platform == "kick":
-                        self.state[key] = kick_stream_state(await kick_channel_info(name))
-                    elif self.helix:
-                        self.state[key] = await self.helix.stream_state(name)
-                    else:
-                        continue
-                except Exception as e:  # noqa: BLE001
-                    log.debug("state %s/%s failed: %s", platform, name, e)
-                    continue
-                change = self.live.update(key, self.state[key])
-                if change:
-                    await self.live_alert(key, *change)
+            await self.poll_once()
             await asyncio.sleep(120)
+
+    async def poll_once(self) -> None:
+        fresh: dict = {}
+        twitch = [n for p, n in list(self.detectors) if p == "twitch"]
+        if self.helix and twitch:
+            try:  # one Helix request per 100 channels
+                for login, st in (await self.helix.stream_states(twitch)).items():
+                    fresh[("twitch", login)] = st
+            except Exception as e:  # noqa: BLE001
+                log.debug("twitch state batch failed: %s", e)
+        for key in [k for k in list(self.detectors) if k[0] == "kick"]:
+            try:
+                fresh[key] = kick_stream_state(await kick_channel_info(key[1]))
+            except Exception as e:  # noqa: BLE001
+                log.debug("state %s/%s failed: %s", *key, e)
+        for key, st in fresh.items():
+            if key not in self.detectors:  # dropped meanwhile
+                continue
+            self.state[key] = st
+            change = self.live.update(key, st)
+            if change and not self.meta[key].get("discovered"):  # no #status spam for auto-watch
+                await self.live_alert(key, *change)
 
     async def ticker(self) -> None:
         last_status = time.time()
         while True:
             now = time.time()
-            for key, det in self.detectors.items():
+            for key, det in list(self.detectors.items()):
                 spike = det.tick(now)
                 if spike:
                     await self.handle(key, spike)
             if now - last_status >= 300:
                 last_status = now
+                busiest = sorted(self.detectors, key=lambda k: -self.detectors[k].last_rate)[:15]
                 summary = ", ".join(f"{p}/{n}: {self.detectors[(p, n)].last_rate:.1f}/s"
                                     f" (normal {self.detectors[(p, n)].mean or 0:.1f})"
-                                    for p, n in self.detectors)
-                log.info("rates: %s", summary)
+                                    for p, n in busiest)
+                log.info("rates (%s channels, busiest 15): %s", len(self.detectors), summary)
             await asyncio.sleep(max(0.0, 1 - (time.time() - now)))
 
     async def handle(self, key, spike: Spike) -> None:
         st = self.state.get(key) or {}
-        meta = self.meta[key]
+        meta = self.meta.get(key)
+        if meta is None:  # channel was dropped while the spike was open
+            return
         lacy_key = bool(self.lacy and self.lacy.applies(key))
         lacy_ok = False
         if lacy_key:
@@ -268,14 +353,20 @@ class Bot:
             "stream_offset_end": hms(spike.clip_end - start) if start else None,
             "vod_url": None,
         }
+        decision = None
         if status == "candidate":
             rec["vod_url"] = await self.vod_link(key, st, spike.clip_start, start)
+            decision = self.gate.decide(spike.score, bool(meta.get("programme")), time.time())
+            rec["rank"], rec["rank_of"], rec["alerted"] = decision.rank, decision.total, decision.send
         self.store.save(rec)
         log.info("SPIKE %s/%s score=%s status=%s at %s offset=%s",
                  spike.platform, spike.channel, spike.score, status,
                  rec["onset_uk"], rec["stream_offset_start"])
-        if status == "candidate":
+        if decision and decision.send:
             await self.alert(rec)
+        elif decision:
+            log.info("not alerted (hourly cap for no-programme streamers): %s/%s score=%s rank %s/%s",
+                     spike.platform, spike.channel, spike.score, decision.rank, decision.total)
         if lacy_key and lacy_ok and status == "candidate":
             try:
                 self.lacy.enqueue(rec, st)
@@ -490,10 +581,10 @@ class Bot:
                                            self.cfg.get("kick_pusher_cluster") or None,
                                            c.get("chatroom_id"), on_status=status))
             elif c["platform"] == "twitch":
-                tasks.append(run_twitch_chat(c["name"].lower(), self.on_msg(key),
-                                             on_status=status))
+                self.pool.add(c["name"].lower(), self.on_msg(key), status)
             else:
                 raise ValueError(f"unknown platform {c['platform']}")
+        tasks.append(self.pool.run())  # also serves channels added later by discovery
         return tasks
 
     async def run(self) -> None:
@@ -505,6 +596,11 @@ class Bot:
             extra.append(self.review_bot.run_forever())
         if self.ig:
             extra.append(self.instagram_loop())
+        if self.disc["enabled"]:
+            if self.helix:
+                extra.append(self.discovery_loop())
+            else:
+                log.warning("discovery is on but Twitch keys are missing: no auto-watch")
         await asyncio.gather(self.ticker(), self.poll_state(), self.status_loop(),
                              self.summary_loop(), *self.chat_tasks(), *extra)
 
@@ -551,6 +647,19 @@ class Bot:
                   "  (full check: python -m spikebot.instagram check)")
         else:
             print("  Instagram auto-post off (IG_USER_ID not set)")
+        d = self.disc
+        if d["enabled"] and self.helix:
+            try:
+                ids = await self.helix.game_ids(d["categories"])
+                top = await self.helix.top_streams(ids, d["languages"])
+                ok = [t for t in top if wl_.eligible(t, d)][:d["max_channels"]]
+                print(f"  Auto-watch ON: {len(ok)} live {d['categories']} streams with"
+                      f" {d['min_viewers']}+ viewers right now (max {d['max_channels']}):"
+                      f" {', '.join(t['user_login'] for t in ok[:10]) or 'none'}")
+            except Exception as e:  # noqa: BLE001
+                print(f"  Auto-watch ON but the Twitch lookup failed: {e}")
+        else:
+            print(f"  Auto-watch {'ON but Twitch keys missing' if d['enabled'] else 'off (DISCOVERY_MODE)'}")
         rc = rv_.settings(self.cfg)
         print(f"  Discord approval bot: {'token set' if rc['token'] else 'OFF (DISCORD_BOT_TOKEN missing)'};"
               f" #ready-to-post {rc['channel_id'] or 'NOT SET'}, #tiktok-queue {rc['tiktok_channel_id'] or 'NOT SET'},"
@@ -606,7 +715,9 @@ ENV_KEYS = {"TWITCH_CLIENT_ID": "twitch_client_id",
             # IG_ACCESS_TOKEN is read straight from .env by instagram.Token (it gets refreshed)
             "IG_USER_ID": "ig_user_id",
             "IG_MAX_REELS_PER_DAY": "ig_max_reels_per_day",
-            "INSTAGRAM_AUTO_POST": "instagram_auto_post"}
+            "INSTAGRAM_AUTO_POST": "instagram_auto_post",
+            "DISCOVERY_MODE": "discovery_mode",
+            "DISCOVERY_MAX_CHANNELS": "discovery_max_channels"}
 
 
 def load_dotenv(path: Path) -> dict[str, str]:

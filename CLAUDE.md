@@ -94,7 +94,10 @@ it in sync when behaviour or config changes.
     connect (`kick_pusher_credentials`), falling back to the config values (currently always; see Known issues). Channel info
     comes from `kick.com/api/v2/channels/<slug>` via `curl_cffi` (gets past Cloudflare).
     `chatroom_id` can be set in config if the lookup is blocked.
-  - Twitch: anonymous IRC for chat; Helix (`TwitchHelix`) for live/category only when
+  - Twitch: anonymous IRC for chat via `TwitchChatPool` (shared sockets, `per_conn` 50 channels
+    each, `JoinLimiter` keeps JOINs under the anonymous limit, channels added/removed live;
+    `run_twitch_chat` is the old one-socket reader, unused by `Bot`); `TwitchHelix.stream_states`
+    batches 100 logins per request, `game_ids` / `top_streams` feed auto-watch; Helix (`TwitchHelix`) for live/category only when
     `twitch_client_id`/`secret` are set, otherwise Twitch moments are never
     category-filtered **and Twitch live/offline status alerts don't fire**.
   - Both readers take an `on_status(event, detail)` callback: `connected`,
@@ -121,6 +124,15 @@ it in sync when behaviour or config changes.
   `status_loop()` (every 30s or on an event) sends #status alerts and checks disk every
   5 min; `summary_loop()` posts the daily summary. All Discord posts
   go through `post_discord()`, which takes a payload dict (or wraps plain text).
+- `spikebot/watchlist.py` (pure): **auto-watch** (`discovery` block, `DISCOVERY_MODE`,
+  `DISCOVERY_MAX_CHANNELS`, off by default). `plan()` / `seen()` pick the biggest eligible live
+  GTA VI streams (category, viewers, language, `exclude`, `max_channels`, dropped after
+  `drop_after_s` out of the top). `Bot.discovery_loop()` -> `discovery_tick()` ->
+  `add_discovered` / `drop_discovered` (meta `programme: None, discovered: True`; config channels
+  are never dropped; no live/offline #status alerts for them). `AlertGate` ranks each candidate
+  against all candidates in the last hour (`rank`, `rank_of`, `alerted` stored on the record, rank
+  shown on the #moments card) and caps no-programme alerts at `max_alerts_per_hour`; programme
+  channels always alert. Tested in `tests/test_watchlist.py`.
 - `spikebot/lacy.py`: **Lacy mode** (off unless `LACY_MODE=true` / `lacy.enabled`). For
   `twitch/lacy` only, `Bot.handle()` re-checks the category with Helix Get Streams at the
   spike (`fresh_state`) and, for exactly Grand Theft Auto V/VI, `LacyMode.enqueue()` writes
