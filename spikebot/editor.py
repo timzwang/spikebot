@@ -411,7 +411,7 @@ def render(src: Path, out: Path, lay: Layout, ass_file: Path | None) -> Path:
 
 def render_variant(src: Path, out: Path, lay: Layout, ass_file: Path | None, src_w: int, src_h: int,
                    segments: list[tuple[float, float]], grade: str = "", transition: str = "cut",
-                   audio: bool = True) -> Path:
+                   audio: bool = True, sfx_cues: list | None = None) -> Path:
     """One review variant: keep `segments` of the source (jump cuts), optional
     zoom punch-in on every other segment or a white flash at each cut, then the
     facecam layout, colour grade and captions."""
@@ -435,8 +435,16 @@ def render_variant(src: Path, out: Path, lay: Layout, ass_file: Path | None, src
     if ass_file is not None:
         vf += f",ass={ass_file.name}"
     graph = ";".join(parts) + ";" + vf + "[v]"
-    run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-i", str(src.resolve()),
-         "-filter_complex", graph, "-map", "[v]", *(["-map", "[ca]"] if audio else []),
+    extra_inputs: list[str] = []
+    amap = "[ca]"
+    if audio and sfx_cues:
+        from .sfx import mix_graph
+        for c in sfx_cues:
+            extra_inputs += ["-i", str(Path(c.file).resolve())]
+        graph += ";" + mix_graph(sfx_cues, 1)
+        amap = "[am]"
+    run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-i", str(src.resolve()), *extra_inputs,
+         "-filter_complex", graph, "-map", "[v]", *(["-map", amap] if audio else []),
          "-c:v", "libx264", "-preset", "veryfast", "-crf", "21", "-pix_fmt", "yuv420p",
          *(["-c:a", "aac", "-b:a", "160k", "-ar", "48000"] if audio else []),
          "-movflags", "+faststart", str(out.resolve())], timeout=1800, cwd=(ass_file or out).parent)

@@ -82,6 +82,7 @@ CUSTOM_KEYS = {
     "shot_s": (0.2, 6.0), "words": (1, 6),
     # film look: grain strength, vignette on/off, cinema bars on/off (Tokyo Girl only)
     "grain": (0, 30), "vignette": (0, 1), "letterbox": (0, 1),
+    "sfx": (0, 1),   # sound-effect volume on Lacy clips (0 = off, default 0.35)
 }
 CUSTOM_STR = {"text_colour", "highlight", "hook_style"}
 

@@ -472,6 +472,9 @@ class ReviewAdapter:
         peak = (job["peak_time"] - job["clip_start"]) if job.get("peak_time") else None
         used = self._used() | {v["title"] for r in item["rounds"] for v in r["variants"]}
         hooks_used = instagram.PostLog(instagram.settings(self.cfg, self.base)["posts_csv"]).recent_hooks()
+        from . import sfx
+        dd = Path(self.cfg.get("data_dir", "data"))
+        sfx_lib = sfx.library((dd if dd.is_absolute() else self.base / dd) / "sfx")
         out = []
         for spec in specs:
             r = st.resolve(spec["style"])
@@ -521,8 +524,11 @@ class ReviewAdapter:
             mp4 = folder / f"{stem}.mp4"
             look = st.grade_filter(r["grade"])
             fx = st.look_filter(r["look"], "lacy")
+            vol = float((spec["style"].get("custom") or {}).get("sfx", sfx.DEFAULT_VOLUME))
+            cue_list = sfx.cues(segs, peak_cut, r["transition"], sfx_lib,
+                                random.Random(f"{item['id']}{n}{spec['label']}sfx"), vol)
             editor.render_variant(seg, mp4, lay, ass, w, h, segs, ",".join(x for x in (look, fx) if x),
-                                  r["transition"], audio=bool(job.get("audio", True)))
+                                  r["transition"], audio=bool(job.get("audio", True)), sfx_cues=cue_list)
             if ass is not None:
                 ass.unlink(missing_ok=True)
             prev = editor.preview(mp4, folder / f"{stem}_preview.mp4", preview_bytes, length)
