@@ -103,6 +103,28 @@ def test_add_from_url_keeps_only_the_song(tmp_path, monkeypatch):
                    "--json", str(out)]) == 0
     import json
     res = json.loads(out.read_text())
-    assert res["ok"] and res["name"] == "tokyo-girl" and abs(res["bpm"] - BPM) < 3
+    assert res["ok"] and res["name"] == "tokyo-girl" and abs(res["bpm"] - BPM) < 3 and res["tokyo_girl"]
     music_dir = next(p.parent for p in tmp_path.rglob("tokyo-girl.mp3"))
     assert [p.name for p in music_dir.iterdir() if p.is_dir()] == []      # temp download removed
+
+
+@needs_ffmpeg
+def test_trending_sound_never_replaces_the_tokyo_girl_song(tmp_path):
+    import os
+    lib = M.Library(tmp_path / "music")
+    tg = lib.add(song(tmp_path / "a.wav"), "Tokyo Girl")
+    trend = lib.add(song(tmp_path / "b.wav", seconds=20), "original sound - someone")
+    later = (tmp_path / "music" / f"{trend['file']}").stat().st_mtime + 100
+    os.utime(tmp_path / "music" / trend["file"], (later, later))       # the trend is the newest file
+    assert lib.current()["name"] == trend["name"]
+    song_name = TG.settings({}).get("song")
+    assert song_name == M.TOKYO_GIRL_SONG and lib.current(song_name)["name"] == tg["name"]
+    with pytest.raises(M.MusicError):
+        lib.current("not-there")
+
+
+def test_sound_meta_names_original_sounds_by_author():
+    html = '{"music":{"id":"1","title":"original sound","authorName":"gta\\u002Fedits"}}'
+    assert M.sound_meta(html) == "original sound - gta/edits"
+    assert M.sound_meta('{"title":"Tokyo Girl","authorName":"Passive"}') == "Tokyo Girl"
+    assert M.sound_meta("<html></html>") == ""

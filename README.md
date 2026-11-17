@@ -285,8 +285,10 @@ hand. On by default, 2 a day (`TOKYO_GIRL_PER_DAY` in `.env`, or `tokyo_girl.per
   TikTok won't hand over the sound page's file, the bot says so: use the `sound:` way. The bot finds its beats and
   the drop (librosa), starts the edit one bar before the drop (the logo intro fades away
   exactly on it) and every card says **where to start the sound** in the app, e.g. "start
-  it at 0:42". The newest song is used (`tokyo_girl.song` picks one by name). No song =
-  an even 120 BPM grid as before. The song itself is only measured, never put in the file.
+  it at 0:42". Tokyo Girl edits **only** use the Tokyo Girl song: a sound titled
+  "Tokyo Girl", or anything posted with `name: tokyo-girl` (`tokyo_girl.song` changes the
+  name). Any other sound is saved as a trending sound and never touches these edits. No
+  Tokyo Girl song yet = an even 120 BPM grid. The song itself is only measured, never put in the file.
 - **Rendered with Remotion** (motion design) when it's installed: eased push-ins and
   drifts, spring punch-ins with motion blur, eased flashes, words popping in one by one,
   the logo resolving from blur and scaling away into the edit, film grain, vignette,

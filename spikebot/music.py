@@ -10,7 +10,9 @@ link, or copy one in). A TikTok sound link (tiktok.com/music/..., or the vm.tikt
 link from "Share sound") is fetched from the sound page; any TikTok/Instagram/YouTube
 link with `sound:` in the message has just its audio track pulled (the video is never
 kept).
-The newest song is used unless `tokyo_girl.song` names one. Analysis (librosa,
+Tokyo Girl edits only ever use the Tokyo Girl song (`tokyo_girl.song`, default
+"tokyo-girl": a file data/music/tokyo-girl.*). Every other song is a trending sound kept in
+the library for other edits; it never replaces the Tokyo Girl song. Analysis (librosa,
 imported lazily in the render subprocess) is cached in data/music/library.json.
 
 CLI:
@@ -39,6 +41,7 @@ MAX_SONG_BYTES = 40 * 1024 * 1024
 SHORT_HOSTS = ("vm.tiktok.com", "vt.tiktok.com")
 SOUND_HINT = re.compile(r"\b(song|sound|audio)\s*:", re.I)
 PLAY_URL_RE = re.compile(r'"playUrl"\s*:\s*"(https?:[^"]+)"')
+TOKYO_GIRL_SONG = "tokyo-girl"
 BUILD_BEATS = 4   # the edit starts one bar before the drop: logo / build-up, then the drop hits
 
 
@@ -157,12 +160,13 @@ class Library:
         return row
 
     def current(self, name: str | None = None) -> dict | None:
-        """The named song, else the newest one; None if there are none."""
+        """The named song (matched like clean_name, so "Tokyo Girl" = tokyo-girl.mp3), else
+        the newest one; None if there are none."""
         files = self.files()
         if not files:
             return None
         if name:
-            pick = [p for p in files if p.stem == name or p.name == name]
+            pick = [p for p in files if p.name == name or clean_name(p.stem) == clean_name(name)]
             if not pick:
                 raise MusicError(f"no song called {name!r} in {self.root}")
             return self.get(pick[0])
@@ -224,6 +228,20 @@ def sound_title(url: str) -> str:
     return slug.replace("-", " ").strip() or "tiktok sound"
 
 
+def sound_meta(html: str) -> str:
+    """"Title - author" from a TikTok sound page; for "original sound" the author is what
+    tells sounds apart. Empty if the page doesn't say."""
+    def field(key):
+        m = re.search(r'"%s"\s*:\s*"((?:[^"\\]|\\.)*)"' % key, html or "")
+        try:
+            return json.loads(f'"{m.group(1)}"').strip() if m else ""
+        except ValueError:
+            return ""
+    title, author = field("title"), field("authorName")
+    return f"{title} - {author}" if title and author and title.lower().startswith("original sound") \
+        else title
+
+
 def play_url(html: str) -> str | None:
     m = PLAY_URL_RE.search(html or "")
     if not m:
@@ -231,11 +249,12 @@ def play_url(html: str) -> str | None:
     return json.loads(f'"{m.group(1)}"')   # undo \u002F escapes
 
 
-def _fetch_sound_page(url: str, folder: Path) -> Path:
+def _fetch_sound_page(url: str, folder: Path) -> tuple[Path, str]:
     from curl_cffi import requests as http  # noqa: N813
     try:
         page = http.get(url, impersonate="chrome", timeout=20)
         src = play_url(page.text) if page.status_code == 200 else None
+        title = sound_meta(page.text) if page.status_code == 200 else ""
         if not src or urlparse(src).scheme != "https":
             raise MusicError("TikTok didn't hand over the sound file")
         r = http.get(src, impersonate="chrome", timeout=60, headers={"Referer": "https://www.tiktok.com/"})
@@ -249,7 +268,7 @@ def _fetch_sound_page(url: str, folder: Path) -> Path:
         raise MusicError("that sound file is too big")
     path = folder / "sound.mp3"
     path.write_bytes(r.content)
-    return path
+    return path, title
 
 
 def _fetch_audio_track(url: str, folder: Path) -> tuple[Path, str]:
@@ -283,7 +302,8 @@ def fetch(url: str, folder: Path) -> tuple[Path, str]:
     url = resolve_short(url)
     if is_sound_page(url):
         try:
-            return _fetch_sound_page(url, folder), sound_title(url)
+            path, title = _fetch_sound_page(url, folder)
+            return path, title or sound_title(url)
         except MusicError as e:
             raise MusicError(f"{e}. Send a link to any TikTok that uses this sound with `sound:` in "
                              "front of it, or upload the audio file") from e
@@ -353,8 +373,10 @@ def main(argv: list[str] | None = None) -> int:
                     row = lib.add(path, args.name or title)
             else:
                 row = lib.add(Path(args.file), args.name)
+            tg_song = tokyo_girl.settings(cfg, base).get("song") or TOKYO_GIRL_SONG
             res = {"ok": True, "name": row["name"], "bpm": row["bpm"], "drop_s": row["drop_s"],
-                   "duration": row["duration"], "start_s": start_for(row)}
+                   "duration": row["duration"], "start_s": start_for(row),
+                   "tokyo_girl": clean_name(row["name"]) == clean_name(tg_song)}
         except MusicError as e:
             res = {"ok": False, "error": str(e)}
         if args.json:

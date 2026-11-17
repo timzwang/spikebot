@@ -62,12 +62,13 @@ DEFAULTS = {
     # official GTA VI logo (transparent PNG from Rockstar's own media) for the "logo" intro;
     # kept outside media_dir so it is never picked as a shot. Missing file = no intro.
     "logo_file": "data/brand/gta6_logo.png",
-    # songs to sync cuts to (only measured; edits stay silent). Newest is used unless
-    # "song" names one (file stem). Empty folder = the fixed `bpm` grid.
+    # songs (only measured; edits stay silent). Tokyo Girl edits use ONLY the song named by
+    # "song" (default tokyo-girl -> data/music/tokyo-girl.*); trending sounds in the same
+    # folder are never used here. No such file = the fixed `bpm` grid.
     "music_dir": "data/music",
     # renderer: "auto" = Remotion (motion design) when installed, else ffmpeg; "ffmpeg"; "remotion"
     "engine": "auto",
-    "song": "",
+    "song": "tokyo-girl",
     "export_dir": "exports/tokyo_girl",
     "state_file": "data/tokyo_girl/state.json",
     "sources": [
@@ -901,7 +902,7 @@ class ReviewAdapter:
         from . import music
         song = None
         try:
-            song = music.Library(self.lcfg["music_dir"]).current(self.lcfg.get("song") or None)
+            song = music.Library(self.lcfg["music_dir"]).current(self.lcfg.get("song") or music.TOKYO_GIRL_SONG)
         except (music.MusicError, OSError) as e:
             log.warning("song beat map unavailable, using the %s BPM grid: %s", self.lcfg["bpm"], e)
         out = []

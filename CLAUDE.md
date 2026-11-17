@@ -177,7 +177,8 @@ it in sync when behaviour or config changes.
   approved edits are copied to `exports/tokyo_girl/`. With review off the old `make` +
   `deliver` (webhook) path runs.
 - `spikebot/music.py`: song beat maps (librosa, lazy): `analyse` (bpm, beats filled back to 0,
-  drop = biggest loudness rise), `Library` (`data/music/`, cache `library.json`, newest = current),
+  drop = biggest loudness rise), `Library` (`data/music/`, cache `library.json`; Tokyo Girl uses only `tokyo_girl.song`
+  (default `tokyo-girl`, `TOKYO_GIRL_SONG`), other songs are trending sounds and never replace it),
   `start_for` (one bar before the drop), `grid` (beat times from the start), `note` (where to
   start the sound). Audio uploaded in #inspiration -> `python -m spikebot.music add`; TikTok sound
   links (`/music/`, vm.tiktok short links resolved by `resolve_short`) or `sound:` + a video link

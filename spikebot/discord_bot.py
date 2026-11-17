@@ -870,13 +870,20 @@ class ReviewBot:
                 if path:
                     path.unlink(missing_ok=True)
                 out.unlink(missing_ok=True)
-            if res.get("ok"):
+            if res.get("ok") and res.get("tokyo_girl"):
                 from .music import mmss
                 await message.reply(
-                    f"🎵 **{res['name']}** is now the song for Tokyo Girl edits: {res['bpm']:.0f} BPM, drop at"
-                    f" {mmss(res['drop_s'])}. Cuts will land on its beats and the drop; each card says where to"
-                    f" start the sound (about {mmss(res['start_s'])}). The edits stay silent: add the sound in the"
-                    " app.", mention_author=False)
+                    f"🎵 Got the Tokyo Girl song: {res['bpm']:.0f} BPM, drop at {mmss(res['drop_s'])}. Tokyo Girl"
+                    f" cuts now land on its beats and the drop; each card says where to start the sound (about"
+                    f" {mmss(res['start_s'])}). The edits stay silent: add the sound in the app.",
+                    mention_author=False)
+            elif res.get("ok"):
+                from .music import mmss
+                await message.reply(
+                    f"🎵 Saved **{res['name']}** as a trending sound: {res['bpm']:.0f} BPM, drop at"
+                    f" {mmss(res['drop_s'])}. It won't touch the Tokyo Girl edits, which always use the Tokyo Girl"
+                    " song. (If this *is* the Tokyo Girl sound, post it again with `name: tokyo-girl`.)",
+                    mention_author=False)
             else:
                 await message.reply(f"⚠️ Couldn't read that song: {res.get('error')}", mention_author=False)
 
