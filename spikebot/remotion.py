@@ -78,9 +78,13 @@ def props_for(plan, lcfg: dict, r: dict, cards: list[tuple[float, float, str]], 
             "y": float(y) if y is not None else TEXT_Y.get(r.get("position") or "high", 0.27)}
     props = {"fps": 30, "width": 1080, "height": 1920, "duration": round(plan.duration, 4),
              "shots": shots,
-             "cards": [{"from": a, "to": b, "text": t, "ask": bool(plan.cards) and t == plan.cards[-1][2]
-                        and len(plan.cards) > 1} for a, b, t in cards],
-             "logo": {"src": public(logo), "until": round(intro_s, 4)} if logo and intro_s else None,
+             "cards": [{"from": a, "to": b, "text": t, "ask": i == len(cards) - 1 and t.replace("*", "").rstrip().endswith("?")}
+                       for i, (a, b, t) in enumerate(cards)],
+             # the logo builds until `until` (the drop), then bursts away over `out` seconds
+             "logo": ({"src": public(logo), "until": round(intro_s, 4), "out": 0.4,
+                       "size": float(r.get("logo_size") or 0.78)} if logo and intro_s else None),
+             "motion": r.get("motion") or "full", "framing": r.get("framing") or "fill",
+             "fade": float(r.get("fade_s") or 0.45) if r.get("transition") == "fade" else 0,
              "look": {"saturation": g.get("saturation", 1.0), "contrast": g.get("contrast", 1.0),
                       "brightness": g.get("brightness", 0.0), "warmth": g.get("warmth", 0.0),
                       "grain": float(look.get("grain") or 0), "vignette": bool(look.get("vignette")),

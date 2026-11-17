@@ -32,7 +32,7 @@ def test_props_from_plan(tmp_path):
     assert [s["src"] for s in props["shots"]] == ["m000.jpg", "m001.mp4"]
     assert files["m001.mp4"] == (tmp_path / "trailer.mp4").resolve()
     assert props["shots"][1]["crop"] == [1280, 600, 0, 60] and props["shots"][1]["punch"]
-    assert props["logo"] == {"src": "m002.png", "until": 1.0}
+    assert props["logo"] == {"src": "m002.png", "until": 1.0, "out": 0.4, "size": 0.78}
     assert props["cards"] == [{"from": 2.0, "to": 4.0, "text": "Couple goals or *red flag?*", "ask": True}]
     assert props["look"]["saturation"] == 1.3 and props["look"]["letterbox"] and props["look"]["grain"] == 6
     assert props["text"]["y"] == R.TEXT_Y["middle"] and props["duration"] == 4.0

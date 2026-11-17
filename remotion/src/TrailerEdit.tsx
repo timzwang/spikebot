@@ -15,39 +15,79 @@ export type Look = {
   grain: number; vignette: boolean; letterbox: boolean;
 };
 export type TextStyle = {font: string; sizePx: number; colour: string; highlight: string; y: number};
+// motion: camera movement the editor adds ('none' = every shot completely still).
+// framing: 'fill' crops to fill 9:16, 'fit' shows the whole frame over a blurred copy.
+// fade: crossfade length in seconds (0 = hard cuts).
+export type Motion = 'none' | 'subtle' | 'full';
+export type Logo = {src: string; until: number; out: number; size: number};
 export type EditProps = {
   fps: number; width: number; height: number; duration: number;
-  shots: Shot[]; cards: Card[]; logo: {src: string; until: number} | null;
-  look: Look; text: TextStyle;
+  shots: Shot[]; cards: Card[]; logo: Logo | null;
+  look: Look; text: TextStyle; motion: Motion; framing: 'fill' | 'fit'; fade: number;
 };
 
 export const defaultProps: EditProps = {
   fps: 30, width: 1080, height: 1920, duration: 2, shots: [], cards: [], logo: null,
+  motion: 'full', framing: 'fill', fade: 0,
   look: {saturation: 1, contrast: 1, brightness: 0, warmth: 0, grain: 0, vignette: false, letterbox: false},
   text: {font: 'Montserrat', sizePx: 96, colour: '#FFFFFF', highlight: '#FFE500', y: 0.3},
 };
 
 const smooth = Easing.bezier(0.45, 0, 0.2, 1); // gentle ease-in-out, like a hand-keyed move
 
-// One shot: cover-cropped, slow eased push + drift; optional punch-in with motion blur.
-const ShotView: React.FC<{shot: Shot}> = ({shot}) => {
+const AMOUNT: Record<Motion, number> = {none: 0, subtle: 0.5, full: 1};
+
+const Media: React.FC<{shot: Shot; style: React.CSSProperties}> = ({shot, style}) => {
+  const {fps} = useVideoConfig();
+  return shot.kind === 'video'
+    ? <OffthreadVideo src={staticFile(shot.src)} trimBefore={Math.round(shot.offset * fps)} muted style={style} />
+    : <Img src={staticFile(shot.src)} style={style} />;
+};
+
+// One shot. 'fill': cover-cropped, with a slow eased push + drift scaled by `motion` (none
+// with motion 'none') and an optional punch-in. 'fit': the whole frame, still, over a
+// blurred copy. `fadeIn` frames: crossfade in over the previous shot.
+const ShotView: React.FC<{shot: Shot; motion: Motion; framing: 'fill' | 'fit'; fadeIn: number}> = (
+  {shot, motion, framing, fadeIn},
+) => {
   const frame = useCurrentFrame();
   const {fps, width: W, height: H, durationInFrames} = useVideoConfig();
+  const amount = AMOUNT[motion] ?? 1;
+  const opacity = fadeIn > 0 ? interpolate(frame, [0, fadeIn], [0, 1], {extrapolateRight: 'clamp'}) : 1;
+  const [cw, ch, cx, cy] = shot.crop ?? [shot.srcW, shot.srcH, 0, 0];
+  if (framing === 'fit') {
+    const fit = Math.min(W / cw, H / ch);
+    const cover = Math.max(W / cw, H / ch);
+    const place = (k: number): React.CSSProperties => ({
+      position: 'absolute', width: shot.srcW * k, height: shot.srcH * k,
+      left: W / 2 - (cx + cw / 2) * k, top: H / 2 - (cy + ch / 2) * k,
+    });
+    return (
+      <AbsoluteFill style={{overflow: 'hidden', backgroundColor: 'black', opacity}}>
+        <AbsoluteFill style={{filter: 'blur(36px) brightness(0.82) saturate(0.85)', transform: 'scale(1.08)'}}>
+          <Media shot={shot} style={place(cover)} />
+        </AbsoluteFill>
+        <Media shot={shot} style={place(fit)} />
+        {shot.flash ? <Flash /> : null}
+      </AbsoluteFill>
+    );
+  }
   const p = interpolate(frame, [0, Math.max(1, durationInFrames - 1)], [0, 1], {
     easing: smooth, extrapolateLeft: 'clamp', extrapolateRight: 'clamp',
   });
-  const [cw, ch, cx, cy] = shot.crop ?? [shot.srcW, shot.srcH, 0, 0];
-  const base = Math.max(W / cw, H / ch) * (shot.kind === 'image' ? 1.12 : 1.06);
-  const push = shot.pan > 0 ? interpolate(p, [0, 1], [1.0, 1.06]) : interpolate(p, [0, 1], [1.06, 1.0]);
+  const extra = (shot.kind === 'image' ? 0.12 : 0.06) * amount;
+  const base = Math.max(W / cw, H / ch) * (1 + extra);
+  const range = 0.06 * amount;
+  const push = shot.pan > 0 ? interpolate(p, [0, 1], [1.0, 1 + range]) : interpolate(p, [0, 1], [1 + range, 1.0]);
   let scale = base * push;
   let blur = 0;
-  if (shot.punch) {
+  if (shot.punch && amount > 0) {
     const s = spring({frame, fps, config: {damping: 18, stiffness: 180, mass: 0.6}});
     scale *= interpolate(s, [0, 1], [1.22, 1]);
     blur = interpolate(frame, [0, 6], [10, 0], {extrapolateRight: 'clamp'});
   }
   const room = Math.max(0, cw * scale - W);
-  const drift = Math.min(140, room / 2) * shot.pan * (p - 0.5);
+  const drift = Math.min(140, room / 2) * shot.pan * (p - 0.5) * amount;
   const left = W / 2 - (cx + cw / 2) * scale + drift;
   const top = H / 2 - (cy + ch / 2) * scale;
   const style: React.CSSProperties = {
@@ -55,10 +95,8 @@ const ShotView: React.FC<{shot: Shot}> = ({shot}) => {
     filter: blur > 0.1 ? `blur(${blur}px)` : undefined,
   };
   return (
-    <AbsoluteFill style={{overflow: 'hidden', backgroundColor: 'black'}}>
-      {shot.kind === 'video'
-        ? <OffthreadVideo src={staticFile(shot.src)} trimBefore={Math.round(shot.offset * fps)} muted style={style} />
-        : <Img src={staticFile(shot.src)} style={style} />}
+    <AbsoluteFill style={{overflow: 'hidden', backgroundColor: 'black', opacity}}>
+      <Media shot={shot} style={style} />
       {shot.flash ? <Flash /> : null}
     </AbsoluteFill>
   );
@@ -110,23 +148,32 @@ const CardView: React.FC<{card: Card; text: TextStyle}> = ({card, text}) => {
   );
 };
 
-// Logo reveal: blurred and large -> sharp, holds, then scales up and fades away into the edit.
-const LogoView: React.FC<{src: string}> = ({src}) => {
+// Logo: builds up gradually (fades in and sharpens) until the drop, then on the drop grows
+// quickly while fading to transparent. Never wider than `size` of the screen.
+const GROW = 0.35;
+const LogoView: React.FC<{logo: Logo}> = ({logo}) => {
   const frame = useCurrentFrame();
-  const {fps, durationInFrames: d, width: W} = useVideoConfig();
-  const inS = spring({frame, fps, config: {damping: 20, stiffness: 90}});
-  const outP = interpolate(frame, [d - Math.round(fps * 0.5), d], [0, 1], {
-    easing: Easing.in(Easing.cubic), extrapolateLeft: 'clamp', extrapolateRight: 'clamp',
+  const {fps, width: W} = useVideoConfig();
+  const drop = Math.round(logo.until * fps);
+  const out = Math.max(1, Math.round(logo.out * fps));
+  const build = interpolate(frame, [0, Math.max(1, drop * 0.85)], [0, 1], {
+    easing: Easing.inOut(Easing.cubic), extrapolateLeft: 'clamp', extrapolateRight: 'clamp',
   });
-  const scale = interpolate(inS, [0, 1], [1.18, 1]) * interpolate(outP, [0, 1], [1, 1.35]);
-  const blur = interpolate(inS, [0, 1], [14, 0]) + outP * 10;
-  const opacity = Math.min(inS, 1 - outP);
-  const dim = interpolate(frame, [0, d - Math.round(fps * 0.4), d], [0.55, 0.55, 0], {extrapolateRight: 'clamp'});
+  const burst = interpolate(frame, [drop, drop + out], [0, 1], {
+    easing: Easing.out(Easing.cubic), extrapolateLeft: 'clamp', extrapolateRight: 'clamp',
+  });
+  const scale = 1 + GROW * burst;
+  const opacity = build * (1 - burst);
+  const blur = (1 - build) * 12;
+  const dim = interpolate(frame, [0, drop, drop + out], [0.55, 0.55, 0], {
+    extrapolateLeft: 'clamp', extrapolateRight: 'clamp',
+  });
   return (
     <AbsoluteFill style={{alignItems: 'center', justifyContent: 'center'}}>
       <AbsoluteFill style={{backgroundColor: 'black', opacity: dim}} />
-      <Img src={staticFile(src)} style={{
-        width: W * 0.78, transform: `scale(${scale})`, filter: `blur(${blur}px)`, opacity,
+      <Img src={staticFile(logo.src)} style={{
+        width: (W * logo.size) / (1 + GROW), transform: `scale(${scale})`,
+        filter: blur > 0.1 ? `blur(${blur}px)` : undefined, opacity,
       }} />
     </AbsoluteFill>
   );
@@ -148,8 +195,9 @@ const Grain: React.FC<{amount: number}> = ({amount}) => {
 };
 
 export const TrailerEdit: React.FC<EditProps> = (props) => {
-  const {fps, shots, cards, logo, look, text, height: H} = props;
+  const {fps, shots, cards, logo, look, text, height: H, motion, framing, fade} = props;
   const f = (s: number) => Math.round(s * fps);
+  const fadeF = fade > 0 ? Math.max(1, f(fade)) : 0;
   const grade = `saturate(${look.saturation}) contrast(${look.contrast}) brightness(${1 + look.brightness})`
     + (look.warmth > 0 ? ` sepia(${Math.min(0.35, look.warmth * 2.5)})` : '')
     + (look.warmth < 0 ? ` hue-rotate(${look.warmth * 60}deg)` : '');
@@ -158,8 +206,10 @@ export const TrailerEdit: React.FC<EditProps> = (props) => {
     <AbsoluteFill style={{backgroundColor: 'black'}}>
       <AbsoluteFill style={{filter: grade}}>
         {shots.map((s, i) => (
-          <Sequence key={i} from={f(s.start)} durationInFrames={Math.max(1, f(s.start + s.dur) - f(s.start))}>
-            <ShotView shot={s} />
+          // with a crossfade each shot runs on under the next one while it fades in
+          <Sequence key={i} from={f(s.start)}
+            durationInFrames={Math.max(1, f(s.start + s.dur) - f(s.start) + (i < shots.length - 1 ? fadeF : 0))}>
+            <ShotView shot={s} motion={motion ?? 'full'} framing={framing ?? 'fill'} fadeIn={i > 0 ? fadeF : 0} />
           </Sequence>
         ))}
       </AbsoluteFill>
@@ -168,7 +218,7 @@ export const TrailerEdit: React.FC<EditProps> = (props) => {
       ) : null}
       {look.grain > 0 ? <Grain amount={look.grain} /> : null}
       {logo ? (
-        <Sequence from={0} durationInFrames={Math.max(1, f(logo.until))}><LogoView src={logo.src} /></Sequence>
+        <Sequence from={0} durationInFrames={Math.max(1, f(logo.until + logo.out))}><LogoView logo={logo} /></Sequence>
       ) : null}
       {cards.map((c, i) => (
         <Sequence key={`c${i}`} from={f(c.from)} durationInFrames={Math.max(1, f(c.to) - f(c.from))}>

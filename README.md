@@ -479,10 +479,27 @@ each #inspiration analysis about 5-8p. Without a key the rule parser is used (fe
 **On-screen text** (`text_level`, varied across A/B/C and learned like the others):
 `none` = no captions, hook or end card at all; `minimal` = a 2.5 s opening hook and captions
 only for the lines around the payoff (Lacy) / only the opening card (Tokyo Girl); `full` =
-every word (Lacy) / every story card (Tokyo Girl). **Logo intro** (`intro: logo`, Tokyo Girl):
-the official GTA VI logo fades in over darkened footage for one bar, then fades away into the
-edit. Put Rockstar's official transparent logo PNG at `/opt/spikebot/data/brand/gta6_logo.png`;
-without the file the intro is skipped. **Film look** (exact values, via `/feedback`,
+every word (Lacy) / every story card (Tokyo Girl); `plain` (Tokyo Girl) = one short factual
+line such as "2 days until GTA 6", never a question or a story card. **Logo intro**
+(`intro: logo`, Tokyo Girl): the official GTA VI logo builds up over `logo_s` seconds (default
+one bar) over the calmest trailer clip, then on the song's drop grows quickly while fading to
+transparent, never wider than `logo_size` of the screen (e.g. 0.6). The sound note on each card
+says where to start the song so the drop lands there. Put Rockstar's official transparent logo
+PNG at `/opt/spikebot/data/brand/gta6_logo.png`; without the file the intro is skipped.
+`intro: countdown` shows a plain "N days until GTA 6" line instead.
+
+**Movement, framing and footage** (all settings, so `/feedback` and `/rules` control them):
+`motion` `none` (every shot completely still: no pans, push-ins, punch-in zooms or animated
+stills; a zoom transition becomes a cut) / `subtle` / `full`, for every mode. Tokyo Girl only:
+`framing` `fit` (the whole 16:9 trailer frame, nothing cut off, over a blurred copy of itself) or
+`fill` (cropped to fill the screen); `media` `clips` (trailer video only, never screenshots) or
+`mixed`; `transition` `fade` (a soft crossfade, `fade_s` seconds); `hold_beats` (no clip shorter
+than that many beats, and each shows the middle of its clip so the action stays intact);
+`max_s` (the longest an edit may be, logo intro included). Footage is picked by each story's
+tags; the logo intro uses the calmest clip (measured once per trailer).
+
+Notes saved before these settings existed were turned into them automatically: in `/rules`
+those notes show as off with "now #N" (the setting that replaced them). **Film look** (exact values, via `/feedback`,
 `/style`-like pins or presets): `grain` (0-30), `vignette` (0/1), `letterbox` (0/1, cinema bars,
 Tokyo Girl only).
 

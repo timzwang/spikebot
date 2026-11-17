@@ -59,12 +59,26 @@ COLOURS = {  # main text, highlighted word
     "pink": ("#FFFFFF", "#FF5FC8"),
 }
 TRANSITIONS = ("cut", "flash", "zoom")
+TG_TRANSITIONS = TRANSITIONS + ("fade",)   # Tokyo Girl also has a soft crossfade
+# Camera movement added by the editor: "none" = every shot completely still (no pans,
+# push-ins, punch-in zooms or animated stills), "subtle" = half the drift, "full" = as designed.
+MOTIONS = ("none", "subtle", "full")
+# Tokyo Girl framing of the 16:9 trailers in the 9:16 frame: "fill" crops the sides to fill
+# the screen, "fit" shows the whole frame (nothing cut off) over a blurred copy of itself.
+FRAMINGS = ("fill", "fit")
+# Tokyo Girl source media: "clips" = trailer video only (never screenshots), "mixed" = both.
+MEDIA = ("clips", "mixed")
 # How much on-screen text an edit carries. "none": no captions, no hook box, no end
 # card (a clean edit); "minimal": a short hook at the start and captions only where
 # the payoff is said (Lacy) / only the opening card (Tokyo Girl); "full": every word
 # (Lacy) / every story card (Tokyo Girl).
 TEXT_LEVELS = ("none", "minimal", "full")
-INTROS = ("none", "logo")   # Tokyo Girl: official GTA VI logo fading into the edit
+# Tokyo Girl also has "plain": one short factual line (e.g. "GTA 6 is almost here...", the
+# release countdown), never a question or a story card.
+TG_TEXT_LEVELS = TEXT_LEVELS + ("plain",)
+# Tokyo Girl intro: the official GTA VI logo builds up and bursts away on the drop, or a
+# plain "N days until GTA 6" countdown line.
+INTROS = ("none", "logo", "countdown")
 ENDINGS = ("none", "question", "cta")
 HOOKS = {
     "lacy": ("matched", "funny", "shock", "hype", "neutral"),
@@ -72,7 +86,11 @@ HOOKS = {
 }
 DEFAULT = {"grade": "natural", "pace": "normal", "font": "dejavu", "size": "m",
            "position": "low", "colour": "classic", "transition": "flash",
-           "ending": "none", "text_level": "minimal", "intro": "none"}
+           "ending": "none", "text_level": "minimal", "intro": "none", "motion": "full",
+           "framing": "fill", "media": "mixed"}
+TG_ONLY = ("intro", "framing", "media")   # dimensions only Tokyo Girl has
+# Not varied between A/B/C: a rule, not a style to explore. Default unless Tim sets it.
+FIXED = ("media",)
 
 # Exact values a preset or feedback can set (shown and editable with /preset edit).
 CUSTOM_KEYS = {
@@ -83,20 +101,28 @@ CUSTOM_KEYS = {
     # film look: grain strength, vignette on/off, cinema bars on/off (Tokyo Girl only)
     "grain": (0, 30), "vignette": (0, 1), "letterbox": (0, 1),
     "sfx": (0, 1),   # sound-effect volume on Lacy clips (0 = off, default 0.35)
+    # Tokyo Girl timing: longest edit (seconds, logo intro included), fewest beats a shot is
+    # held (2+ keeps a clip's action intact), logo build-up before the drop (s), the logo's
+    # largest width as a share of the screen, crossfade length (s)
+    "max_s": (8, 60), "hold_beats": (1, 8), "logo_s": (1, 8), "logo_size": (0.2, 0.9), "fade_s": (0.1, 1.5),
 }
+TG_CUSTOM = ("max_s", "hold_beats", "logo_s", "logo_size", "fade_s")
 CUSTOM_STR = {"text_colour", "highlight", "hook_style"}
 
 
 def dims(mode: str) -> dict[str, tuple[str, ...]]:
     """Every dimension a variant varies in for this mode, with its options."""
+    tg = mode == "tokyo_girl"
     out = {"grade": tuple(GRADES), "pace": tuple(PACES), "font": tuple(FONTS),
            "size": tuple(SIZES), "position": POSITIONS, "colour": tuple(COLOURS),
-           "transition": TRANSITIONS, "hook": HOOKS.get(mode, ("matched",)),
-           "text_level": TEXT_LEVELS}
+           "transition": TG_TRANSITIONS if tg else TRANSITIONS, "hook": HOOKS.get(mode, ("matched",)),
+           "text_level": TG_TEXT_LEVELS if tg else TEXT_LEVELS, "motion": MOTIONS}
     if mode == "lacy":
         out["ending"] = ENDINGS
-    if mode == "tokyo_girl":
+    if tg:
         out["intro"] = INTROS
+        out["framing"] = FRAMINGS
+        out["media"] = MEDIA
     return out
 
 
@@ -111,7 +137,8 @@ def default_style(mode: str) -> dict:
     if mode != "lacy":
         s.pop("ending")
     if mode != "tokyo_girl":
-        s.pop("intro")
+        for k in TG_ONLY:
+            s.pop(k)
     return s
 
 
@@ -141,6 +168,13 @@ def resolve(style: dict) -> dict:
     if "shot_s" in c:
         p["shot_s"] = float(c["shot_s"])
     text, hi = COLOURS.get(style.get("colour"), COLOURS["classic"])
+    motion = style.get("motion") if style.get("motion") in MOTIONS else "full"
+    transition = style.get("transition") if style.get("transition") in TG_TRANSITIONS else "flash"
+    if motion == "none" and transition == "zoom":
+        transition = "cut"   # a punch-in zoom is camera movement
+
+    def num(k, default):
+        return float(c[k]) if c.get(k) is not None else default
     return {
         "grade": g, "pace": p,
         "font": FONTS.get(style.get("font"), FONTS["dejavu"]),
@@ -151,11 +185,15 @@ def resolve(style: dict) -> dict:
         "text_colour": c["text_colour"] if hex_ok(c.get("text_colour", "")) else text,
         "highlight": c["highlight"] if hex_ok(c.get("highlight", "")) else hi,
         "outline": c.get("outline"), "shadow": c.get("shadow"),
-        "transition": style.get("transition") if style.get("transition") in TRANSITIONS else "flash",
+        "transition": transition, "motion": motion,
+        "framing": style.get("framing") if style.get("framing") in FRAMINGS else "fill",
+        "media": style.get("media") if style.get("media") in MEDIA else "mixed",
+        "max_s": num("max_s", None), "hold_beats": int(num("hold_beats", 1)),
+        "logo_s": num("logo_s", None), "logo_size": num("logo_size", 0.78), "fade_s": num("fade_s", 0.45),
         "ending": style.get("ending") if style.get("ending") in ENDINGS else "none",
         "hook_s": c.get("hook_s"), "payoff": c.get("payoff"),
         "hook_style": c.get("hook_style"),
-        "text_level": style.get("text_level") if style.get("text_level") in TEXT_LEVELS else "full",
+        "text_level": style.get("text_level") if style.get("text_level") in TG_TEXT_LEVELS else "full",
         "intro": style.get("intro") if style.get("intro") in INTROS else "none",
         "look": {"grain": float(c.get("grain") or 0), "vignette": bool(c.get("vignette")),
                  "letterbox": bool(c.get("letterbox"))},
@@ -200,6 +238,9 @@ def describe(style: dict) -> str:
         bits.append(f"on-screen text **{style['text_level']}**")
     if style.get("intro") not in (None, "none"):
         bits.append(f"intro **{style['intro']}**")
+    for k in ("motion", "framing", "media"):
+        if style.get(k) and style.get(k) != DEFAULT.get(k):
+            bits.append(f"{k} **{style[k]}**")
     if style.get("ending") not in (None, "none"):
         bits.append(f"ending **{style['ending']}**")
     if c:
@@ -275,6 +316,9 @@ class Profile:
         d = _blank() | d
         if not d.get("entries") and (d.get("rules") or d.get("pinned") or d.get("custom_pins")):
             d["entries"] = migrate(d)
+        if NOTES_UPGRADE not in (d.get("upgrades") or []):
+            upgrade_notes(d["entries"])
+            d["upgrades"] = list(d.get("upgrades") or []) + [NOTES_UPGRADE]
         return d
 
     def save(self) -> None:
@@ -504,6 +548,9 @@ def pick_variants(profile: Profile, mode: str, rng: random.Random,
             if dim in pins and pins[dim] in opts:
                 style[dim] = pins[dim]
                 continue
+            if dim in FIXED:
+                style[dim] = DEFAULT[dim]
+                continue
             if dim == "ending" and base.get("ending") not in opts:
                 # end cards ("Would you have done the same?") add nothing unless Tim asks
                 # for one (/feedback or /style) or a preset he chose has one
@@ -571,6 +618,13 @@ RULES: list[tuple[str, str]] = [  # (intent, regex)
     ("less_text", r"\b(less|fewer|minimal|only key|only important)\b.*\b(captions?|text)\b"),
     ("full_text", r"\b(caption everything|full captions|every word|more captions)\b"),
     ("logo_intro", r"\blogo\b.*\b(intro|start|open\w*|fade\w*)\b|\b(intro|start|open\w*)\b.*\blogo\b"),
+    ("static", r"\b(no|without|stop|remove)\b.*\b(camera )?(movement|motion|panning|pans?|push.?ins?|zooms?|drift\w*|shake)\b"
+               r"|\b(static|still) (shots?|camera|frames?)\b|\bkeep (every|each|all|the) shots? (still|static)\b"),
+    ("clips_only", r"\b(no|never|without|stop using|avoid)\b.*\b(screenshots?|stills?|images?|photos?)\b"
+                   r"|\b(only|just) (real )?(trailer )?(video )?clips\b"),
+    ("fit_frame", r"\b(crop\w*|cut(ting)? off|cropped)\b.*\b(details?|text|content|subjects?|edges?)\b"
+                  r"|\b(full|whole) (frame|composition|shot)\b|\bsafe area\b"),
+    ("crossfade", r"\b(cross.?fades?|dissolves?|softer (transitions?|cuts?)|smoother transitions?)\b"),
 ]
 COLOUR_WORDS = {"yellow": "classic", "green": "lime", "lime": "lime", "blue": "ice", "cyan": "ice",
                 "red": "fire", "orange": "fire", "pink": "pink", "purple": "pink"}
@@ -655,6 +709,16 @@ def parse_feedback(text: str, mode: str) -> tuple[dict, dict, list[str], list[st
             changes["text_level"] = {"no_text": "none", "less_text": "minimal", "full_text": "full"}[intent]
         elif intent == "logo_intro" and mode == "tokyo_girl":
             changes["intro"] = "logo"
+        elif intent == "static":
+            changes["motion"] = "none"
+            if changes.get("transition") == "zoom":
+                changes["transition"] = "cut"
+        elif intent == "clips_only" and mode == "tokyo_girl":
+            changes["media"] = "clips"
+        elif intent == "fit_frame" and mode == "tokyo_girl":
+            changes["framing"] = "fit"
+        elif intent == "crossfade" and mode == "tokyo_girl":
+            changes["transition"] = "fade"
     return changes, texts, list(dict.fromkeys(intents)), unknown
 
 
@@ -732,6 +796,69 @@ def parse_numbers(text: str) -> list[int]:
     return out
 
 
+# Notes saved before the editor had these settings -> real settings (once, on load). Each
+# rule: (pattern, [(setting, value, mode or None = the note's own mode)]). A note that
+# matches becomes those setting entries and is switched off; an empty list means the editor
+# now does it by itself (e.g. the logo builds over a calm clip and bursts on the drop).
+NOTES_UPGRADE = "notes-to-settings-1"
+_TG = "tokyo_girl"
+NOTE_RULES: list[tuple[str, list[tuple[str, object, str | None]]]] = [
+    (r"camera movement|virtual camera|fully static|completely static|shots? (fully |completely )?static"
+     r"|no (camera )?(panning|zoom)|animated stills|artificial movement|random camera",
+     [("motion", "none", None)]),
+    (r"screenshots?|still images|animating still", [("media", "clips", _TG)]),
+    (r"\bcrop|safe area|cut off|cut-off|full composition|full frame|9:16|cropping", [("framing", "fit", _TG)]),
+    (r"\b24[- ]?second|24 seconds", [("max_s", 24.0, _TG)]),
+    (r"two or more beats|cut away mid-action|longer holds|chopped", [("hold_beats", 2.0, _TG)]),
+    (r"slower and softer|softer|crossfade|dissolve", [("transition", "fade", _TG)]),
+    (r"logo gradually|build the gta vi logo|expand it quickly", [("intro", "logo", _TG), ("logo_s", 4.0, _TG),
+                                                               ("logo_size", 0.6, _TG)]),
+    (r"no captions, hook text or on-screen text|captions must be blank", [("text_level", "none", None)]),
+    (r"fade out 1-2 seconds sooner|beat drop can be matched|ambient atmosphere trailer clip"
+     r"|logo is a deliberate exception|logo intro remains the one allowed exception", []),
+]
+# "Not possible yet" items the editor can now do.
+NOW_POSSIBLE = (r"logo intro stays|fade-out timing|zoom or crop|crop setting|clips over screenshots|source media mix"
+                r"|prefer video clips|camera movement|static-shot|16:9|safe-area|safe area|4-second|gradual reveal"
+                r"|beat drop|logo expansion|total video length|clip start times|crossfades?|dissolves|framing works"
+                r"|approved phrase list|no-screenshots")
+
+
+def upgrade_notes(entries: list[dict], now: float | None = None) -> list[dict]:
+    """Turn notes that the editor can now enforce into setting entries (appended, so they
+    are the newest and win) and switch the notes, and the "not possible" items that are
+    possible now, off. Returns the added entries."""
+    added: list[dict] = []
+    done: dict[tuple, dict] = {}
+    for e in list(entries):
+        if not e.get("on", True):
+            continue
+        text = (e.get("text") or "").lower()
+        if e.get("kind") == "unsupported" and re.search(NOW_POSSIBLE, text):
+            e["on"], e["upgraded"] = False, "possible now"
+            continue
+        if e.get("kind") != "note":
+            continue
+        hits = [row for rx, rows in NOTE_RULES if re.search(rx, text) for row in rows]
+        matched = any(re.search(rx, text) for rx, _ in NOTE_RULES)
+        if not matched:
+            continue
+        nums = []
+        for setting, value, mode in hits:
+            key = (mode or e.get("mode", "all"), setting, value)
+            if key not in done:
+                new = {"n": max([x["n"] for x in entries] or [0]) + 1, "ts": now or time.time(), "kind": "setting",
+                       "mode": key[0], "setting": setting, "value": value, "text": "",
+                       "said": e.get("text", "")[:500], "source": "from your notes", "on": True}
+                entries.append(new)
+                added.append(new)
+                done[key] = new
+            nums.append(done[key]["n"])
+        e["on"] = False
+        e["upgraded"] = ("now " + ", ".join(f"#{n}" for n in dict.fromkeys(nums))) if nums else "built in now"
+    return added
+
+
 def migrate(d: dict) -> list[dict]:
     """Version 1 profiles (rules with pins + /style pins) -> the numbered rules list.
     Rules are replayed oldest first so the newest instruction wins; /style pins that no rule
@@ -767,7 +894,7 @@ def apply_settings(rows: list[dict], default_mode: str = "all") -> tuple[list[di
     """Validate [{"mode", "setting", "value"}] (from /feedback or the AI) against the
     real options. Returns (clean rows, reasons for the ones dropped). A setting that
     only exists in one mode (ending: Lacy, intro: Tokyo Girl) is moved to that mode."""
-    only = {"ending": "lacy", "intro": "tokyo_girl"}
+    only = {"ending": "lacy", **{k: "tokyo_girl" for k in TG_ONLY + TG_CUSTOM}}
     ok, bad = [], []
     for row in rows or []:
         setting = str(row.get("setting") or "").strip()

@@ -344,6 +344,7 @@ class Shot:
     crop: list[int] | None = None   # letterbox crop w, h, x, y in the source
     w: int = 0
     h: int = 0
+    motion: float | None = None     # mean frame-to-frame change (low = calm, ambient shot)
 
     @property
     def key(self) -> str:
@@ -400,6 +401,20 @@ def analyse_video(path: Path, threshold: float = 0.3) -> dict:
             "cuts": [round(c, 3) for c in cuts], "yavg": yavg, "crop": crop}
 
 
+def measure_motion(path: Path) -> list[list[float]]:
+    """How much the picture changes, 4 times a second (mean grey-level difference between
+    frames): low values are calm, ambient shots. Cheap: tiny greyscale frames."""
+    with tempfile.TemporaryDirectory() as tmp:
+        editor.run(["ffmpeg", "-hide_banner", "-nostats", "-loglevel", "error", "-i", str(path.resolve()),
+                    "-vf", "fps=4,scale=160:-2,format=gray,tblend=all_mode=difference,signalstats,"
+                    "metadata=print:key=lavfi.signalstats.YAVG:file=motion.txt", "-f", "null", "-"],
+                   timeout=1800, cwd=Path(tmp))
+        f = Path(tmp) / "motion.txt"
+        text = f.read_text(errors="replace") if f.exists() else ""
+    return [[round(t, 2), round(float(d["lavfi.signalstats.YAVG"]), 2)]
+            for t, d in parse_meta(text) if "lavfi.signalstats.YAVG" in d]
+
+
 def build_shots(rel: str, entry: dict, override: dict, lcfg: dict) -> list[Shot]:
     """Turn a cached analysis + tags.json override into usable shots (pure)."""
     if override.get("skip"):
@@ -433,8 +448,10 @@ def build_shots(rel: str, entry: dict, override: dict, lcfg: dict) -> list[Shot]
         for r in ranges:
             if s < r["end"] and e > r["start"]:
                 stags |= set(r.get("tags") or [])
+        # skip the first/last half second: the cut itself shows up as a big change
+        mv = [m for t, m in entry.get("motion") or [] if s + 0.5 <= t < e - 0.5]
         out.append(Shot(rel, "video", round(s, 3), round(e, 3), sorted(stags), entry.get("crop"),
-                        entry["w"], entry["h"]))
+                        entry["w"], entry["h"], round(statistics.mean(mv), 2) if mv else None))
     return out
 
 
@@ -467,6 +484,13 @@ class Library:
             sig = [st.st_size, int(st.st_mtime)]
             if rel in cache and cache[rel].get("sig") == sig:
                 out[rel] = cache[rel]
+                if cache[rel].get("kind") == "video" and "motion" not in cache[rel]:
+                    try:   # files analysed before the motion measure: add it once
+                        log.info("measuring motion in %s (once)", rel)
+                        out[rel]["motion"] = measure_motion(p)
+                    except (editor.EditError, subprocess.TimeoutExpired) as e:
+                        log.warning("motion measure failed for %s: %s", rel, e)
+                        out[rel]["motion"] = []
                 continue
             try:
                 if p.suffix.lower() in IMAGE_EXT:
@@ -475,6 +499,7 @@ class Library:
                 else:
                     log.info("analysing %s (one pass, can take a minute)", rel)
                     entry = analyse_video(p, self.cfg["scene_threshold"])
+                    entry["motion"] = measure_motion(p)
             except (editor.EditError, subprocess.TimeoutExpired, ValueError) as e:
                 log.warning("skipping %s: %s", rel, e)
                 continue
@@ -581,11 +606,58 @@ def beat_pattern(n_bars: int, rng: random.Random, pace: str = "normal") -> list[
     return out
 
 
+def merge_holds(lens: list[int], hold: int) -> list[int]:
+    """Beats per shot with every shot held at least `hold` beats (same total)."""
+    out: list[int] = []
+    for x in lens:
+        if out and out[-1] < hold:
+            out[-1] += x
+        else:
+            out.append(x)
+    if len(out) > 1 and out[-1] < hold:
+        last = out.pop()
+        out[-1] += last
+    return out
+
+
+CALM_TAGS = {"beach", "sunset", "skyline", "city", "ocean", "scenery", "palm", "night", "aerial", "ambient"}
+
+
+def calm_shot(shots: list[Shot], dur: float, avoid: set[str], uses: dict[str, int]) -> Shot | None:
+    """A long, calm trailer clip (low motion, scenery tags) for the logo intro."""
+    fits = [s for s in shots if s.kind == "video" and s.length >= dur]
+    if not fits:
+        return None
+    def calm(s: Shot):
+        return (s.motion if s.motion is not None else 50.0) - (8.0 if CALM_TAGS & set(s.tags) else 0.0)
+    least = min(calm(s) for s in fits)
+    calmest = [s for s in fits if calm(s) <= least + 4.0]      # calm first, then variety
+    fresh = [s for s in calmest if s.key not in avoid] or calmest
+    return min(fresh, key=lambda s: (uses.get(s.key, 0), calm(s)))
+
+
+def with_intro_shot(plan: Plan, shots: list[Shot], intro_s: float, uses: dict[str, int]) -> Plan:
+    """The logo builds over one calm clip: the shots before the drop become one."""
+    if intro_s <= 0 or not plan.slots:
+        return plan
+    k = next((i for i, sl in enumerate(plan.slots) if sl.start + sl.dur >= intro_s - 1e-3), len(plan.slots) - 1)
+    end = plan.slots[k].start + plan.slots[k].dur
+    shot = calm_shot(shots, end, {sl.shot.key for sl in plan.slots[k + 1:]}, uses)
+    if shot is None:
+        return plan
+    first = Slot(shot, round(shot.start + (shot.length - end) / 2, 3), sum(sl.beats for sl in plan.slots[:k + 1]),
+                 0.0, end, 0, flash=False, pan=0)
+    return Plan(plan.story, plan.cards, [first] + plan.slots[k + 1:], plan.duration)
+
+
 def plan_clip(story: Story, shots: list[Shot], lcfg: dict, today: date, rng: random.Random,
               uses: dict[str, int] | None = None, pace: str = "normal", transition: str = "flash",
-              cards: list[str] | None = None, beats: list[float] | None = None) -> Plan:
+              cards: list[str] | None = None, beats: list[float] | None = None, hold_beats: int = 1,
+              intro_s: float = 0.0, intact: bool = False) -> Plan:
     """`beats`: real beat times (seconds from the edit start, from music.grid) so cuts
-    follow the song; None = an even grid at lcfg["bpm"]."""
+    follow the song; None = an even grid at lcfg["bpm"]. `hold_beats`: no shot shorter than
+    that; `intact`: show the middle of each clip (its main action) instead of a random part;
+    `intro_s`: the first seconds are one calm clip (for the logo intro)."""
     if not shots:
         raise editor.EditError("no usable media: run `fetch`, or drop official Rockstar "
                                f"screenshots/trailers into {lcfg['media_dir']}")
@@ -608,28 +680,29 @@ def plan_clip(story: Story, shots: list[Shot], lcfg: dict, today: date, rng: ran
     k = 0
     for ci, (text, nb) in enumerate(zip(texts, bars)):
         cstart = at(t)
-        for _ in range(nb):
-            for j, n_beats in enumerate(pattern[bar_i]):
-                dur = at(t + n_beats) - at(t)
-                tag = want[k % len(want)]
-                k += 1
-                shot = choose_shot(shots, tag, dur, used_here, uses, rng)
-                used_here.add(shot.key)
-                uses[shot.key] = uses.get(shot.key, 0) + 1
-                if shot.kind == "video":
-                    room = shot.length - dur
-                    offset = shot.start + room * rng.uniform(0.2, 0.8)
-                else:
-                    offset = 0.0
-                first_of_card = (at(t) == cstart)
-                slots.append(Slot(shot, round(offset, 3), n_beats, round(at(t), 3), dur, ci,
-                                  flash=first_of_card and ci > 0 and transition == "flash",
-                                  pan=rng.choice((-1, 1)),
-                                  punch=first_of_card and transition == "zoom"))
-                t += n_beats
-            bar_i += 1
+        lens = merge_holds([x for b in range(nb) for x in pattern[bar_i + b]], max(1, int(hold_beats)))
+        bar_i += nb
+        for n_beats in lens:
+            dur = at(t + n_beats) - at(t)
+            tag = want[k % len(want)]
+            k += 1
+            shot = choose_shot(shots, tag, dur, used_here, uses, rng)
+            used_here.add(shot.key)
+            uses[shot.key] = uses.get(shot.key, 0) + 1
+            if shot.kind == "video":
+                room = shot.length - dur
+                offset = shot.start + room * (0.5 if intact else rng.uniform(0.2, 0.8))
+            else:
+                offset = 0.0
+            first_of_card = (at(t) == cstart)
+            slots.append(Slot(shot, round(offset, 3), n_beats, round(at(t), 3), dur, ci,
+                              flash=first_of_card and ci > 0 and transition == "flash",
+                              pan=rng.choice((-1, 1)),
+                              punch=first_of_card and transition == "zoom"))
+            t += n_beats
         cards.append((cstart, at(t), text))
-    return Plan(story, cards, slots, at(t))
+    plan = Plan(story, cards, slots, at(t))
+    return with_intro_shot(plan, shots, intro_s, uses) if intro_s > 0 else plan
 
 
 def choose_shot(shots: list[Shot], tag: str, dur: float, used_here: set[str],
@@ -693,7 +766,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
     pop = r"{\fad(60,0)\fscx72\fscy72\t(0,140,\fscx100\fscy100)}"
     lines = []
     for i, (s, e, text) in enumerate(cards):
-        style_name = "Ask" if i == len(cards) - 1 else "Card"
+        style_name = "Ask" if i == len(cards) - 1 and plain(text).rstrip().endswith("?") else "Card"
         lines.append(f"Dialogue: 0,{editor.ass_time(s)},{editor.ass_time(e)},{style_name},,0,0,0,,"
                      f"{pop}{card_markup(text, hi)}")
     return head + "\n".join(lines) + "\n"
@@ -702,8 +775,24 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 # --------------------------------------------------------------------------
 # Render
 # --------------------------------------------------------------------------
-def slot_filter(slot: Slot, zoom: float) -> str:
-    """Cover-crop to 1080x1920 with a slow horizontal pan across the shot."""
+MOTION_AMOUNT = {"none": 0.0, "subtle": 0.5, "full": 1.0}
+
+
+def fit_filter(pre: list[str], flash: bool) -> str:
+    """The whole frame, nothing cropped, centred over a blurred, darker copy of itself."""
+    head = ",".join(pre) + "," if pre else ""
+    tail = ",fade=t=in:st=0:d=0.12:color=white" if flash else ""
+    return (f"{head}split[a][b];"
+            f"[a]scale=270:480:force_original_aspect_ratio=increase,crop=270:480,boxblur=18:2,"
+            f"eq=brightness=-0.12:saturation=0.85,scale={W}:{H}[bg];"
+            f"[b]scale={W}:{H}:force_original_aspect_ratio=decrease:flags=bicubic,setsar=1[fg];"
+            f"[bg][fg]overlay=(W-w)/2:(H-h)/2,fps={FPS},setsar=1,format=yuv420p{tail}")
+
+
+def slot_filter(slot: Slot, zoom: float, motion: str = "full", framing: str = "fill",
+                extra: float = 0.0) -> str:
+    """Cover-crop to 1080x1920 with a slow horizontal pan across the shot (none with
+    motion "none"), or the whole frame over a blurred copy with framing "fit"."""
     sh = slot.shot
     vf = []
     sw, shh = sh.w, sh.h
@@ -711,13 +800,19 @@ def slot_filter(slot: Slot, zoom: float) -> str:
         cw, ch, cx, cy = sh.crop
         vf.append(f"crop={cw}:{ch}:{cx}:{cy}")
         sw, shh = cw, ch
+    if framing == "fit":
+        return fit_filter(vf, slot.flash)
     s = max(W / sw, H / shh) * zoom
     ow, oh = max(editor.even(sw * s), W), max(editor.even(shh * s), H)
     room = ow - W
-    amp = min(160, room)
-    x = f"clip({room / 2:.1f}+{slot.pan * amp:.1f}*(t/{slot.dur:.3f}-0.5),0,{room})"
+    amp = min(160, room) * MOTION_AMOUNT.get(motion, 1.0)
     yroom = oh - H
-    y = f"clip({yroom / 2:.1f}+{-slot.pan * min(80, yroom):.1f}*(t/{slot.dur:.3f}-0.5),0,{yroom})"
+    if amp == 0:   # no camera movement: a fixed, centred crop (nothing depends on time)
+        x, y = f"{room / 2:.1f}", f"{yroom / 2:.1f}"
+    else:
+        x = f"clip({room / 2:.1f}+{slot.pan * amp:.1f}*(t/{slot.dur:.3f}-0.5),0,{room})"
+        y = (f"clip({yroom / 2:.1f}+{-slot.pan * min(80, yroom) * MOTION_AMOUNT.get(motion, 1.0):.1f}"
+             f"*(t/{slot.dur:.3f}-0.5),0,{yroom})")
     vf += [f"scale={ow}:{oh}:flags=bicubic", f"crop={W}:{H}:'{x}':'{y}'",
            f"fps={FPS}", "setsar=1", "format=yuv420p"]
     if slot.flash:
@@ -725,22 +820,40 @@ def slot_filter(slot: Slot, zoom: float) -> str:
     return ",".join(vf)
 
 
-def render_slot(slot: Slot, media: Path, out: Path) -> None:
+def render_slot(slot: Slot, media: Path, out: Path, motion: str = "full", framing: str = "fill",
+                extra: float = 0.0) -> None:
+    """`extra`: seconds rendered past the slot's end (the overlap of a crossfade)."""
     src = str((media / slot.shot.src).resolve())
     # frame count from the slot's edges, so uneven real beats never drift over a whole edit
-    frames = round((slot.start + slot.dur) * FPS) - round(slot.start * FPS)
+    frames = round((slot.start + slot.dur) * FPS) - round(slot.start * FPS) + round(extra * FPS)
+    still = motion == "none"
     if slot.shot.kind == "video":
-        inp = ["-ss", f"{slot.offset:.3f}", "-t", f"{slot.dur + 0.2:.3f}", "-i", src]
-        zoom = 1.0 if slot.shot.w / max(slot.shot.h, 1) > 1.2 else 1.08
+        inp = ["-ss", f"{slot.offset:.3f}", "-t", f"{slot.dur + extra + 0.2:.3f}", "-i", src]
+        zoom = 1.0 if (still or slot.shot.w / max(slot.shot.h, 1) > 1.2) else 1.08
     else:
-        inp = ["-loop", "1", "-framerate", str(FPS), "-t", f"{slot.dur + 0.2:.3f}", "-i", src]
-        zoom = 1.15
-    if slot.punch:
+        inp = ["-loop", "1", "-framerate", str(FPS), "-t", f"{slot.dur + extra + 0.2:.3f}", "-i", src]
+        zoom = 1.0 if still else 1.15
+    if slot.punch and not still:
         zoom *= 1.18
     editor.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", *inp, "-an",
-                "-vf", slot_filter(slot, zoom), "-frames:v", str(frames),
+                "-vf", slot_filter(slot, zoom, motion, framing, extra), "-frames:v", str(frames),
                 "-c:v", "libx264", "-preset", "veryfast", "-crf", "16", "-r", str(FPS),
                 str(out)], timeout=300)
+
+
+def plain_line(today: date) -> str:
+    """The one line `text_level: plain` shows: a plain fact, never a question."""
+    d = days_to_launch(today)
+    if d > 1:
+        return f"{d} days until GTA 6"
+    if d == 1:
+        return "GTA 6 is out tomorrow"
+    return "GTA 6 is out today" if d == 0 else "GTA 6 is out now"
+
+
+def countdown_line(today: date) -> str:
+    d = days_to_launch(today)
+    return f"{days_text(d)} until GTA 6" if d > 0 else ("GTA 6 is out today" if d == 0 else "GTA 6 is out now")
 
 
 def cards_for_level(cards: list[tuple[float, float, str]], level: str,
@@ -756,20 +869,54 @@ def cards_for_level(cards: list[tuple[float, float, str]], level: str,
     return out
 
 
-def intro_filter(logo_w: int, intro_s: float) -> str:
-    """Logo fades in over darkened footage, holds, then fades away into the edit."""
-    fade_out = max(0.4, min(0.7, intro_s * 0.35))
-    return (f"[1:v]scale={logo_w}:-2,format=rgba,fade=t=in:st=0:d=0.35:alpha=1,"
-            f"fade=t=out:st={intro_s - fade_out:.3f}:d={fade_out:.3f}:alpha=1[lg]")
+LOGO_GROW = 0.35    # how much bigger the logo gets as it bursts away on the drop
+LOGO_OUT_S = 0.4    # the burst: quick
+
+
+def intro_filter(logo_w: int, intro_s: float, out_s: float = LOGO_OUT_S) -> str:
+    """The logo builds up gradually until the drop (`intro_s`), then on the drop grows
+    quickly while fading to transparent. `logo_w` is its starting width; at its largest it
+    is logo_w * (1 + LOGO_GROW)."""
+    build = max(0.35, intro_s * 0.85)
+    return (f"[1:v]format=rgba,scale=w='{logo_w}*(1+{LOGO_GROW}*clip((t-{intro_s:.3f})/{out_s:.3f},0,1))'"
+            f":h=-1:eval=frame,fade=t=in:st=0:d={build:.3f}:alpha=1,"
+            f"fade=t=out:st={intro_s:.3f}:d={out_s:.3f}:alpha=1[lg]")
+
+
+def logo_width(logo_size: float) -> int:
+    """Starting width so the logo never gets wider than `logo_size` of the screen."""
+    return int(W * float(logo_size) / (1 + LOGO_GROW))
+
+
+def join_crossfade(names: list[str], plan: Plan, fade_s: float, cwd: Path) -> str:
+    """Join the shots with a soft crossfade starting on each cut's beat."""
+    inputs = []
+    for n in names:
+        inputs += ["-i", n]
+    graph, last = [], "0:v"
+    for k in range(1, len(names)):
+        out = f"x{k}"
+        graph.append(f"[{last}][{k}:v]xfade=transition=fade:duration={fade_s:.3f}"
+                     f":offset={plan.slots[k].start:.3f}[{out}]")
+        last = out
+    editor.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", *inputs,
+                "-filter_complex", ";".join(graph), "-map", f"[{last}]", "-an", "-c:v", "libx264",
+                "-preset", "veryfast", "-crf", "16", "-r", str(FPS), "joined.mp4"], timeout=600, cwd=cwd)
+    return "joined.mp4"
 
 
 def render_plan(plan: Plan, lcfg: dict, out: Path, grade: str = "", text_style: dict | None = None,
                 cards: list[tuple[float, float, str]] | None = None, logo: Path | None = None,
                 intro_s: float = 0.0, look: str = "") -> Path:
-    """`cards` overrides plan.cards (text level); `logo` + `intro_s` add the logo intro;
-    `look` is style.look_filter() (grain / vignette / cinema bars)."""
+    """`cards` overrides plan.cards (text level); `logo` + `intro_s` add the logo intro
+    (it bursts away exactly at `intro_s`, the drop); `look` is style.look_filter() (grain /
+    vignette / cinema bars). `text_style` (style.resolve) also carries motion, framing,
+    the crossfade and the logo size."""
     media = Path(lcfg["media_dir"])
     cards = plan.cards if cards is None else cards
+    r = text_style or {}
+    motion, framing = r.get("motion", "full"), r.get("framing", "fill")
+    fade = float(r.get("fade_s") or 0.45) if r.get("transition") == "fade" and len(plan.slots) > 1 else 0.0
     out.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory() as tmp:
         tmpd = Path(tmp)
@@ -778,19 +925,22 @@ def render_plan(plan: Plan, lcfg: dict, out: Path, grade: str = "", text_style: 
         job = progress.current()
         for i, slot in enumerate(plan.slots):
             seg = tmpd / f"s{i:03d}.mp4"
-            render_slot(slot, media, seg)
+            extra = fade if i < len(plan.slots) - 1 else 0.0
+            render_slot(slot, media, seg, motion, framing, extra)
             names.append(seg.name)
             job.update(0.8 * (i + 1) / len(plan.slots), detail=f"shot {i + 1}/{len(plan.slots)}")
         job.update(0.85, detail="joining shots, text and colour")
-        (tmpd / "list.txt").write_text("".join(f"file '{n}'\n" for n in names), encoding="utf-8")
         base_chain = ",".join(x for x in (grade, look) if x) or "null"
-        inputs = ["-f", "concat", "-safe", "0", "-i", "list.txt"]
+        if fade:
+            inputs = ["-i", join_crossfade(names, plan, fade, tmpd)]
+        else:
+            (tmpd / "list.txt").write_text("".join(f"file '{n}'\n" for n in names), encoding="utf-8")
+            inputs = ["-f", "concat", "-safe", "0", "-i", "list.txt"]
         if logo is not None and intro_s > 0:
-            inputs += ["-loop", "1", "-t", f"{intro_s:.3f}", "-i", str(Path(logo).resolve())]
-            dim_end = max(0.1, intro_s - 0.5)
-            graph = (f"[0:v]{base_chain},eq=brightness=-0.18:saturation=0.55:enable='lt(t,{dim_end:.3f})'[b];"
-                     + intro_filter(int(W * 0.78), intro_s)
-                     + ";[b][lg]overlay=x=(W-w)/2:y=(H-h)/2:eof_action=pass:format=auto[v0]")
+            inputs += ["-loop", "1", "-t", f"{intro_s + LOGO_OUT_S:.3f}", "-i", str(Path(logo).resolve())]
+            graph = (f"[0:v]{base_chain},eq=brightness=-0.18:saturation=0.55:enable='lt(t,{intro_s:.3f})'[b];"
+                     + intro_filter(logo_width(r.get("logo_size") or 0.78), intro_s)
+                     + ";[b][lg]overlay=x=(W-w)/2:y=(H-h)/2:eval=frame:eof_action=pass:format=auto[v0]")
         else:
             graph = f"[0:v]{base_chain}[v0]"
         if cards:
@@ -917,10 +1067,6 @@ class ReviewAdapter:
             if trend:   # a trending-sound edit without its sound makes no sense
                 raise editor.EditError(f"trending sound {src.get('song')!r} is unavailable: {e}") from e
             log.warning("song beat map unavailable, using the %s BPM grid: %s", self.lcfg["bpm"], e)
-        plan_cfg, song_start = self.lcfg, None
-        if song:
-            song_start, room = music.window(song, float(self.lcfg["min_s"]), float(self.lcfg["max_s"]))
-            plan_cfg = dict(self.lcfg, max_s=room, min_s=min(float(self.lcfg["min_s"]), room))
         out = []
         from . import progress
         job = progress.current()
@@ -928,6 +1074,25 @@ class ReviewAdapter:
           with job.span(vi / len(specs), (vi + 1) / len(specs)):
             job.update(0.0, f"Version {spec['label']} ({vi + 1}/{len(specs)}): planning")
             r = st.resolve(spec["style"])
+            shots = self.shots()
+            if r["media"] == "clips":   # trailer video only, never screenshots
+                shots = [x for x in shots if x.kind == "video"]
+                if not shots:
+                    raise editor.EditError("no trailer clips in the library (screenshots are switched off):"
+                                           " run `fetch` or add official trailers")
+            logo = Path(self.lcfg.get("logo_file") or "")
+            want_logo = r["intro"] == "logo" and logo.is_file()
+            if r["intro"] == "logo" and not want_logo:
+                log.warning("logo intro asked for but %s is missing: rendering without it", logo)
+            lead_s = r["logo_s"] or None    # how long the logo builds before the drop
+            cap = float(r["max_s"]) if r["max_s"] else float(self.lcfg["max_s"])
+            plan_cfg, song_start = dict(self.lcfg, max_s=cap, min_s=min(float(self.lcfg["min_s"]), cap)), None
+            build_beats = music.BUILD_BEATS
+            if song:
+                if lead_s and r["intro"] in ("logo", "countdown"):
+                    build_beats = max(1, round(lead_s / (60.0 / float(song["bpm"]))))
+                song_start, room = music.window(song, float(self.lcfg["min_s"]), cap, build_beats)
+                plan_cfg = dict(self.lcfg, max_s=room, min_s=min(float(self.lcfg["min_s"]), room))
             base_v = spec.get("from")
             texts = spec.get("texts") or {}
             if base_v:
@@ -950,22 +1115,25 @@ class ReviewAdapter:
             if r["pace"].get("shot_s"):
                 pace = pace_for_shot(r["pace"]["shot_s"], self.lcfg["bpm"])
             beats = music.grid(song, song_start, float(plan_cfg["max_s"]) + 8) if song else None
-            plan = plan_clip(story, self.shots(), plan_cfg, today, random.Random(seed), state.get("uses"),
-                             pace=pace, transition=r["transition"], cards=cards, beats=beats)
+            intro_s = 0.0
+            if want_logo or r["intro"] == "countdown":
+                # the build-up ends exactly on the drop (the song's, or the BPM grid's)
+                intro_s = beats[build_beats] if beats else (lead_s or bar_s(self.lcfg["bpm"]))
+            plan = plan_clip(story, shots, plan_cfg, today, random.Random(seed), state.get("uses"),
+                             pace=pace, transition=r["transition"], cards=cards, beats=beats,
+                             hold_beats=r["hold_beats"], intro_s=intro_s if want_logo else 0.0,
+                             intact=r["hold_beats"] >= 2 or r["motion"] == "none")
             stem = f"r{n}_{spec['label']}"
             mp4 = folder / f"{stem}.mp4"
-            logo = Path(self.lcfg.get("logo_file") or "")
-            intro_s = 0.0
-            if r["intro"] == "logo":
-                if logo.is_file():
-                    # one bar; with a song the logo fades away exactly on the drop
-                    intro_s = beats[music.BUILD_BEATS] if beats else bar_s(self.lcfg["bpm"])
-                else:
-                    log.warning("logo intro asked for but %s is missing: rendering without it", logo)
-            shown = cards_for_level(plan.cards, r["text_level"], intro_s)
+            if r["text_level"] == "plain":
+                shown = [(intro_s, plan.duration, plain_line(today))] if plan.duration - intro_s >= 1.5 else []
+            else:
+                shown = cards_for_level(plan.cards, r["text_level"], intro_s)
+            if r["intro"] == "countdown" and intro_s > 0:
+                shown = [(0.0, intro_s, countdown_line(today))] + shown
             job.update(0.05, f"Version {spec['label']} ({vi + 1}/{len(specs)}): rendering")
             with job.span(0.05, 0.9):
-                engine = self.render_edit(plan, mp4, r, shown, logo if intro_s else None, intro_s)
+                engine = self.render_edit(plan, mp4, r, shown, logo if want_logo and intro_s else None, intro_s)
             job.update(0.9, f"Version {spec['label']} ({vi + 1}/{len(specs)}): preview")
             prev = editor.preview(mp4, folder / f"{stem}_preview.mp4", preview_bytes, plan.duration)
             if song and song_start + plan.duration > float(song["duration"]) + 0.5:
@@ -988,7 +1156,8 @@ class ReviewAdapter:
                         "tags": ["GTA 6", "GTA VI", "Shorts", "Vice City"], "hook": title,
                         "captions": caps, "file": mp4.name, "preview": prev.name,
                         "duration": round(plan.duration, 1), "cuts": len(plan.slots) - 1, "silent": True,
-                        "text_cards": len(shown), "intro": "logo" if intro_s else "none", "engine": engine,
+                        "text_cards": len(shown), "engine": engine,
+                        "intro": r["intro"] if intro_s and (want_logo or r["intro"] == "countdown") else "none",
                         "music": ({"song": song["name"], "start_s": song_start, "bpm": song["bpm"]}
                                   if song else None),
                         "music_note": music.note(song, song_start) if song else None})

@@ -122,11 +122,20 @@ def settings_menu() -> str:
         "size: " + ", ".join(st.SIZES) + "  (text size)",
         "position: " + ", ".join(st.POSITIONS) + "  (text position)",
         "colour: " + ", ".join(st.COLOURS) + "  (caption colour scheme: white + highlight)",
-        "transition: " + ", ".join(st.TRANSITIONS) + "  (between cuts)",
-        "text_level: none, minimal, full  (none = no captions/hook/text at all; minimal = short "
+        "transition: " + ", ".join(st.TRANSITIONS) + "  (between cuts; zoom is a punch-in, i.e. camera"
+        " movement); Tokyo Girl also has fade  (a soft crossfade; length fade_s)",
+        "motion: none, subtle, full  (camera movement the editor adds: none = every shot completely still,"
+        " no pans, push-ins, zooms, drift or animated stills)",
+        "framing: fill, fit  (Tokyo Girl only: fill crops the 16:9 trailer to fill the 9:16 screen; fit shows"
+        " the whole frame so nothing is cut off, over a blurred copy of itself)",
+        "media: clips, mixed  (Tokyo Girl only: clips = real trailer video only, never screenshots)",
+        "text_level: none, minimal, full, plain  (none = no captions/hook/text at all; minimal = short "
         "opening hook and captions only around the payoff (Lacy) / only the opening card (Tokyo Girl); "
-        "full = every spoken word captioned (Lacy) / every story card (Tokyo Girl))",
-        "intro: none, logo  (Tokyo Girl only: official GTA VI logo fades into the edit)",
+        "full = every spoken word captioned (Lacy) / every story card (Tokyo Girl); plain = Tokyo Girl only:"
+        " one short factual line such as 'GTA 6 is almost here...' or the release countdown, never a question)",
+        "intro: none, logo, countdown  (Tokyo Girl only: logo = the official GTA VI logo builds up over logo_s"
+        " seconds over a calm trailer shot, then bursts outward and fades exactly on the song's drop, never"
+        " wider than logo_size of the screen; countdown = a plain 'N days until GTA 6' line instead)",
         "ending: " + ", ".join(st.ENDINGS) + "  (Lacy only: end card)",
         "hook: Lacy tones " + ", ".join(st.HOOKS["lacy"]) + "; Tokyo Girl story kinds "
         + ", ".join(st.HOOKS["tokyo_girl"]) + "  (needs mode lacy or tokyo_girl)",
@@ -137,6 +146,13 @@ def settings_menu() -> str:
     lines.append("grain: film grain strength (0 = off, 6-12 subtle); vignette: 1 = on, 0 = off; "
                  "letterbox: 1 = cinema bars (Tokyo Girl only)")
     lines.append("hook_s: seconds the opening hook stays on screen; payoff: where the peak lands (0.2-0.9)")
+    lines.append("Tokyo Girl timing: max_s = longest the whole edit may be, intro included (e.g. 24); hold_beats ="
+                 " fewest beats each clip is held (2+ keeps a clip's action intact, fewer cuts); logo_s = seconds"
+                 " the logo builds before the drop; logo_size = the logo's largest width as a share of the screen"
+                 " (0.6 = 60%); fade_s = crossfade length in seconds")
+    lines.append("Footage is matched to each story's tags; the #inspiration presets Tim approves steer pacing"
+                 " and look. Only text that is really impossible (e.g. music inside the file: edits are silent"
+                 " on purpose) belongs in unsupported.")
     lines.append("Value 'auto' (or null) clears a pinned setting so the editor goes back to learning it.")
     return "\n".join(lines)
 

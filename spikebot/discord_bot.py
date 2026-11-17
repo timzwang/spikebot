@@ -187,7 +187,8 @@ MAX_TEXT = 3800         # Discord allows 4000 characters of text per message
 def rule_line(e: dict, over: dict[int, int]) -> str:
     text = st.entry_text(e)
     if not e.get("on", True):
-        return f"~~**#{e['n']}** {text}~~ · _off_"[:500]
+        why = f"_{e['upgraded']}_" if e.get("upgraded") else "_off_"
+        return f"~~**#{e['n']}** {text}~~ · {why}"[:500]
     tag = f" · _replaced by #{over[e['n']]}_" if e["n"] in over else ""
     return f"**#{e['n']}** {text}{tag}"[:500]
 

@@ -180,7 +180,15 @@ it in sync when behaviour or config changes.
   With review on (default) `daily` makes `per_day` review items (`make_review`, 3 variants:
   own story/hook kind, `PACE_PATTERNS`, grade, text style, transition `flash`/`zoom`/`cut`);
   approved edits are copied to `exports/tokyo_girl/`. With review off the old `make` +
-  `deliver` (webhook) path runs.
+  `deliver` (webhook) path runs. Rules from style: `media: clips` drops images; `max_s` caps the plan
+  (logo included); `plan_clip(hold_beats=, intact=, intro_s=)` (`merge_holds`, middle of each clip,
+  `with_intro_shot` = one `calm_shot` under the logo: `Shot.motion` from `measure_motion`, cached in
+  library.json, added once to old entries); the logo builds for `logo_s` (song window starts that many
+  beats before the drop, `music.window(build_beats=)`) and bursts at the drop (`intro_filter`,
+  `LOGO_GROW`, `logo_width`); `slot_filter(motion, framing)`: motion none = fixed centred crop, `fit_filter`
+  = whole frame over a blurred copy; `transition: fade` renders slots with an overlap and joins them with
+  `join_crossfade` (xfade on each beat); `plain_line` / `countdown_line`; the dark "Ask" box only for a
+  card ending in "?". Remotion gets the same via props `motion`, `framing`, `fade`, `logo.size/out`.
 - `spikebot/music.py`: song beat maps (librosa, lazy): `analyse` (bpm, beats filled back to 0,
   drop = biggest loudness rise), `Library` (`data/music/`, cache `library.json`; Tokyo Girl uses only `tokyo_girl.song`
   (default `tokyo-girl`, `TOKYO_GIRL_SONG`), other songs are trending sounds and never replace it),
@@ -242,7 +250,13 @@ it in sync when behaviour or config changes.
   appends one, `set_enabled(nums, on)`; `pinned(mode)` / `custom_pins(mode)` are derived: the newest
   enabled entry for "all" or that mode wins (switching one off falls back). v1 profiles (`pinned`,
   `custom_pins`, `rules`) are replayed into entries by `migrate()` on load; `parse_numbers("3, 5-7")`;
-  `taste()` = enabled entries for the AI; `resolve()` -> render
+  `taste()` = enabled entries for the AI; `upgrade_notes()` (once per profile, flag `upgrades`:
+  `NOTES_UPGRADE`) turns old notes matching `NOTE_RULES` into setting entries and switches them and
+  `NOW_POSSIBLE` "not possible" items off (`upgraded` = "now #N" shown in /rules); new dims `motion`
+  (all modes; none = no pans/push-ins/punch zooms, zoom -> cut in `resolve`), Tokyo Girl `framing`
+  fill|fit, `media` clips|mixed, transition `fade`, text_level `plain`, intro `countdown` (`TG_ONLY`,
+  `TG_TRANSITIONS`, `TG_TEXT_LEVELS`); Tokyo Girl custom `max_s`, `hold_beats`, `logo_s`, `logo_size`,
+  `fade_s` (`TG_CUSTOM`); `resolve()` -> render
   numbers, `grade_filter()`; `Profile` = `data/style_profile.json` (shown/approved/passed/rejected
   per option, pins from `/style`, decisions, feedback notes + intent counts, preset stats);
   `pick_variants()`: A best-scoring, B from a most-approved preset in rotation (else weighted

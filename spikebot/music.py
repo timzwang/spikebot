@@ -377,12 +377,13 @@ def grid(song: dict, start_s: float, need_s: float) -> list[float]:
     return out
 
 
-def window(song: dict, min_s: float, max_s: float) -> tuple[float, float]:
+def window(song: dict, min_s: float, max_s: float, build_beats: int = BUILD_BEATS) -> tuple[float, float]:
     """(start in the song, longest the edit can be) so the edit never runs past the end of
-    the sound. Starts a bar before the drop when there's room; otherwise early enough to fit
-    at least `min_s` (or the whole sound if it's shorter than that)."""
+    the sound. Starts `build_beats` beats (a bar by default; longer for a slow logo build-up)
+    before the drop when there's room; otherwise early enough to fit at least `min_s` (or the
+    whole sound if it's shorter than that)."""
     dur = float(song["duration"])
-    start = start_for(song)
+    start = start_for(song, build_beats)
     if dur - start < min_s:
         fits = [b for b in song["beats"] if b <= dur - min_s]
         start = fits[-1] if fits else song["beats"][0]
