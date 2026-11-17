@@ -181,7 +181,8 @@ it in sync when behaviour or config changes.
   own story/hook kind, `PACE_PATTERNS`, grade, text style, transition `flash`/`zoom`/`cut`);
   approved edits are copied to `exports/tokyo_girl/`. With review off the old `make` +
   `deliver` (webhook) path runs. Rules from style: `media: clips` drops images; `max_s` caps the plan
-  (logo included); `plan_clip(hold_beats=, intact=, intro_s=)` (`merge_holds`, middle of each clip,
+  (logo included; `edit_cap`: Tokyo Girl only, trend edits ignore it); with a song the plan is re-planned /
+  `trim_plan`ned so it never runs past the sound's end from `song_start`; `plan_clip(hold_beats=, intact=, intro_s=)` (`merge_holds`, middle of each clip,
   `with_intro_shot` = one `calm_shot` under the logo: `Shot.motion` from `measure_motion`, cached in
   library.json, added once to old entries); the logo builds for `logo_s` (song window starts that many
   beats before the drop, `music.window(build_beats=)`) and bursts at the drop (`intro_filter`,

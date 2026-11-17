@@ -495,7 +495,9 @@ stills; a zoom transition becomes a cut) / `subtle` / `full`, for every mode. To
 `fill` (cropped to fill the screen); `media` `clips` (trailer video only, never screenshots) or
 `mixed`; `transition` `fade` (a soft crossfade, `fade_s` seconds); `hold_beats` (no clip shorter
 than that many beats, and each shows the middle of its clip so the action stays intact);
-`max_s` (the longest an edit may be, logo intro included). Footage is picked by each story's
+`max_s` (the longest a Tokyo Girl edit may be, logo intro included; trending-sound edits
+ignore it and are only limited by their sound: an edit never runs past the end of the sound
+from its start point). Footage is picked by each story's
 tags; the logo intro uses the calmest clip (measured once per trailer).
 
 Notes saved before these settings existed were turned into them automatically: in `/rules`

@@ -146,7 +146,8 @@ def settings_menu() -> str:
     lines.append("grain: film grain strength (0 = off, 6-12 subtle); vignette: 1 = on, 0 = off; "
                  "letterbox: 1 = cinema bars (Tokyo Girl only)")
     lines.append("hook_s: seconds the opening hook stays on screen; payoff: where the peak lands (0.2-0.9)")
-    lines.append("Tokyo Girl timing: max_s = longest the whole edit may be, intro included (e.g. 24); hold_beats ="
+    lines.append("Tokyo Girl timing: max_s = longest a Tokyo Girl edit may be, intro included (e.g. 24; trending-"
+                 "sound edits ignore it and only stop before their sound ends); hold_beats ="
                  " fewest beats each clip is held (2+ keeps a clip's action intact, fewer cuts); logo_s = seconds"
                  " the logo builds before the drop; logo_size = the logo's largest width as a share of the screen"
                  " (0.6 = 60%); fade_s = crossfade length in seconds")

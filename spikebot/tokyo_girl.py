@@ -841,6 +841,30 @@ def render_slot(slot: Slot, media: Path, out: Path, motion: str = "full", framin
                 str(out)], timeout=300)
 
 
+def edit_cap(r: dict, lcfg: dict, trend: bool) -> float:
+    """Longest an edit may be. Tokyo Girl edits: the `max_s` setting (Tim: 24 s, logo included).
+    Trending-sound edits ignore it: only the config's max and the sound itself limit them."""
+    if r.get("max_s") and not trend:
+        return float(r["max_s"])
+    return float(lcfg["max_s"])
+
+
+def trim_plan(plan: Plan, limit: float) -> Plan:
+    """The plan cut to end by `limit` seconds (never runs past the end of the sound)."""
+    if plan.duration <= limit + 1e-3:
+        return plan
+    slots = []
+    for sl in plan.slots:
+        if sl.start >= limit - 0.25:
+            break
+        if sl.start + sl.dur > limit:
+            sl = Slot(sl.shot, sl.offset, sl.beats, sl.start, round(limit - sl.start, 3), sl.card, sl.flash,
+                      sl.pan, sl.punch)
+        slots.append(sl)
+    cards = [(a, min(b, limit), t) for a, b, t in plan.cards if a < limit - 0.25]
+    return Plan(plan.story, cards, slots, round(slots[-1].start + slots[-1].dur, 3) if slots else limit)
+
+
 def plain_line(today: date) -> str:
     """The one line `text_level: plain` shows: a plain fact, never a question."""
     d = days_to_launch(today)
@@ -1085,7 +1109,7 @@ class ReviewAdapter:
             if r["intro"] == "logo" and not want_logo:
                 log.warning("logo intro asked for but %s is missing: rendering without it", logo)
             lead_s = r["logo_s"] or None    # how long the logo builds before the drop
-            cap = float(r["max_s"]) if r["max_s"] else float(self.lcfg["max_s"])
+            cap = edit_cap(r, self.lcfg, trend)
             plan_cfg, song_start = dict(self.lcfg, max_s=cap, min_s=min(float(self.lcfg["min_s"]), cap)), None
             build_beats = music.BUILD_BEATS
             if song:
@@ -1123,6 +1147,17 @@ class ReviewAdapter:
                              pace=pace, transition=r["transition"], cards=cards, beats=beats,
                              hold_beats=r["hold_beats"], intro_s=intro_s if want_logo else 0.0,
                              intact=r["hold_beats"] >= 2 or r["motion"] == "none")
+            if song:   # the edit starts at song_start: it must end before the sound does
+                end = float(song["duration"]) - song_start
+                for _ in range(4):
+                    if plan.duration <= end + 1e-3 or float(plan_cfg["max_s"]) <= float(plan_cfg["min_s"]):
+                        break
+                    plan_cfg = dict(plan_cfg, max_s=float(plan_cfg["max_s"]) - bar_s(float(song["bpm"])))
+                    plan = plan_clip(story, shots, plan_cfg, today, random.Random(seed), state.get("uses"),
+                                     pace=pace, transition=r["transition"], cards=cards, beats=beats,
+                                     hold_beats=r["hold_beats"], intro_s=intro_s if want_logo else 0.0,
+                                     intact=r["hold_beats"] >= 2 or r["motion"] == "none")
+                plan = trim_plan(plan, end)
             stem = f"r{n}_{spec['label']}"
             mp4 = folder / f"{stem}.mp4"
             if r["text_level"] == "plain":
@@ -1136,9 +1171,6 @@ class ReviewAdapter:
                 engine = self.render_edit(plan, mp4, r, shown, logo if want_logo and intro_s else None, intro_s)
             job.update(0.9, f"Version {spec['label']} ({vi + 1}/{len(specs)}): preview")
             prev = editor.preview(mp4, folder / f"{stem}_preview.mp4", preview_bytes, plan.duration)
-            if song and song_start + plan.duration > float(song["duration"]) + 0.5:
-                log.warning("edit runs %.1fs past the end of %s", song_start + plan.duration - song["duration"],
-                            song["name"])
             uses = state.setdefault("uses", {})
             for sl in plan.slots:
                 uses[sl.shot.key] = uses.get(sl.shot.key, 0) + 1

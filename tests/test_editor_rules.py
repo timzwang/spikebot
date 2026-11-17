@@ -211,3 +211,16 @@ def test_remotion_render_with_still_fit_crossfade_and_logo(tmp_path, monkeypatch
                                   capture_output=True, text=True, check=True).stdout)
     assert [x["codec_type"] for x in j["streams"]] == ["video"]
     assert float(j["format"]["duration"]) == pytest.approx(plan.duration, abs=0.1)
+
+
+def test_length_cap_is_tokyo_girl_only_and_edits_never_outrun_the_sound():
+    r = S.resolve(S.default_style("tokyo_girl") | {"custom": {"max_s": 24}})
+    assert TG.edit_cap(r, {"max_s": 30}, trend=False) == 24.0
+    assert TG.edit_cap(r, {"max_s": 30}, trend=True) == 30.0              # trending sounds: the sound limits it
+    assert TG.edit_cap(S.resolve(S.default_style("tokyo_girl")), {"max_s": 30}, trend=False) == 30.0
+    story = next(x for x in TG.STORIES if x.id == "partners")
+    plan = TG.plan_clip(story, shots(), {"bpm": 120, "min_s": 8, "max_s": 12, "media_dir": "x"},
+                        date(2026, 11, 17), random.Random(2))
+    cut = TG.trim_plan(plan, 9.3)
+    assert cut.duration <= 9.3 and abs(sum(sl.dur for sl in cut.slots) - cut.duration) < 0.01
+    assert all(b <= 9.3 for _, b, _ in cut.cards) and TG.trim_plan(plan, 99) is plan
