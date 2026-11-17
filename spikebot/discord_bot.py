@@ -577,6 +577,10 @@ class ReviewBot:
                     g = discord.Object(id=bot.rcfg["guild_id"])
                     tree.copy_global_to(guild=g)
                     await tree.sync(guild=g)
+                    # Old global copies (with old options) would show twice and fail when picked:
+                    # the server's own copies are the only ones needed. Cleared on Discord's side
+                    # only, so the tree (and a later on_ready) still has every command.
+                    await client.http.bulk_upsert_global_commands(client.application_id, [])
                 else:
                     await tree.sync()
             except Exception as e:  # noqa: BLE001
@@ -588,12 +592,20 @@ class ReviewBot:
                              bot.progress_loop(), bot.stats_loop()):
                     asyncio.create_task(coro)
 
+        @tree.error
+        async def on_command_error(interaction, error):
+            await bot.report_error(interaction, getattr(error, "original", error),
+                                   f"/{getattr(interaction.command, 'name', '?')}")
+
         @client.event
         async def on_interaction(interaction):
             if interaction.type == discord.InteractionType.component:
                 data = parse_cid((interaction.data or {}).get("custom_id", ""))
                 if data:
-                    await bot.on_button(interaction, data)
+                    try:
+                        await bot.on_button(interaction, data)
+                    except Exception as e:  # noqa: BLE001 - say what went wrong instead of "interaction failed"
+                        await bot.report_error(interaction, e, f"button {data['action']}")
 
         @client.event
         async def on_message(message):
@@ -1534,6 +1546,18 @@ class ReviewBot:
             profile.save()
         return rule, problems
 
+    async def report_error(self, inter, error: BaseException, what: str) -> None:
+        """Log the traceback and tell Tim what failed (Discord's own message says nothing)."""
+        log.error("%s failed", what, exc_info=(type(error), error, error.__traceback__))
+        text = f"⚠️ {what} failed: {type(error).__name__}: {error}"[:1900]
+        try:
+            if inter.response.is_done():
+                await inter.followup.send(text, ephemeral=True)
+            else:
+                await inter.response.send_message(text, ephemeral=True)
+        except Exception as e:  # noqa: BLE001 - the interaction may have expired
+            log.warning("could not report the error to Discord: %s", e)
+
     # ---- the rules list ----------------------------------------------------------------
     def entry_states(self) -> dict[int, bool]:
         return {e["n"]: e.get("on", True) for e in self.store.profile().entries()}
@@ -1558,27 +1582,29 @@ class ReviewBot:
     async def on_rules_click(self, inter, data: dict) -> None:
         """The /rules menus (several entries at once) and the Turn off/on buttons under a
         /feedback reply or a feedback re-render card."""
+        await inter.response.defer()   # answer within Discord's 3 s; the message is edited below
         if data["action"] == "rule":
             n = int(data["label"])
-            e = self.store.profile().entry(n)
+            e = (await asyncio.to_thread(self.store.profile)).entry(n)
             if e is None:
-                await inter.response.send_message(f"No entry #{n}.", ephemeral=True)
+                await inter.followup.send(f"No entry #{n}.", ephemeral=True)
                 return
             on = not e.get("on", True)
-            changed, missing, _ = self.toggle_entries([n], on)
+            changed, missing, _ = await asyncio.to_thread(self.toggle_entries, [n], on)
             rows = flip_rows(self.rows_of(inter.message), n, on)
-            await inter.response.edit_message(view=self.view(rows))
+            await inter.edit_original_response(view=self.view(rows))
             await inter.followup.send(self.toggle_notice(changed, missing, on) + f": {st.entry_text(e)}",
                                       ephemeral=True)
             return
         values = [int(v) for v in (getattr(inter, "data", None) or {}).get("values") or [] if str(v).isdigit()]
         on = data["action"] == "rules_on"
-        changed, missing, entries = self.toggle_entries(values, on)
+        changed, missing, entries = await asyncio.to_thread(self.toggle_entries, values, on)
         payload = rules_payload(entries, self.toggle_notice(changed, missing, on))
-        await inter.response.edit_message(content=payload["content"], embeds=self.embeds(payload["embeds"]),
+        await inter.edit_original_response(content=payload["content"], embeds=self.embeds(payload["embeds"]),
                                            view=self.view(payload["rows"]))
 
     async def rules_command(self, inter, disable: str | None = None, enable: str | None = None) -> None:
+        await inter.response.defer(thinking=True)   # answer within Discord's 3 s
         notice = []
         for text, on in ((disable, False), (enable, True)):
             if text:
@@ -1586,11 +1612,12 @@ class ReviewBot:
                 if not nums:
                     notice.append(f"⚠️ No numbers in `{text}` (e.g. `3, 5-7`).")
                     continue
-                changed, missing, _ = self.toggle_entries(nums, on)
+                changed, missing, _ = await asyncio.to_thread(self.toggle_entries, nums, on)
                 notice.append(self.toggle_notice(changed, missing, on))
-        payload = rules_payload(list(self.store.profile().entries()), " · ".join(notice))
-        await inter.response.send_message(payload["content"], embeds=self.embeds(payload["embeds"]),
-                                          view=self.view(payload["rows"]))
+        entries = (await asyncio.to_thread(self.store.profile)).entries()
+        payload = rules_payload(list(entries), " · ".join(notice))
+        await inter.followup.send(payload["content"], embeds=self.embeds(payload["embeds"]),
+                                  view=self.view(payload["rows"]))
 
     # ---- slash commands -------------------------------------------------------------
     def register_commands(self, tree) -> None:
@@ -1667,7 +1694,10 @@ class ReviewBot:
                            " something funny*.")
             msg.append("`/rules` shows the whole list; the buttons below turn these off (or back on).")
             rows = entry_buttons([e["n"] for e in rule["entries"]], {})
-            await inter.followup.send("\n".join(msg)[:1990], view=bot.view(rows) if rows else None)
+            if rows:
+                await inter.followup.send("\n".join(msg)[:1990], view=bot.view(rows))
+            else:   # discord.py refuses view=None on a follow-up
+                await inter.followup.send("\n".join(msg)[:1990])
 
         @tree.command(name="trend", description="Make trailer edits cut to your trending sounds (#ready-to-post)")
         @app_commands.describe(song="Only this sound (default: every trending sound)", per_song="Edits per sound (1-3)")

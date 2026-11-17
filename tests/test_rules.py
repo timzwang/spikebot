@@ -12,6 +12,22 @@ from spikebot import style as S
 from .test_review import FakeInteraction, bot_for, new_item
 
 
+class Inter(FakeInteraction):
+    """Records follow-ups with their options and edits of the original message."""
+    def __init__(self, values=None, uid=42):
+        super().__init__(uid)
+        self.data = {"values": values or []}
+        self.sent, self.edited = [], None
+
+        class F:
+            async def send(self_, text, **kw):
+                self.sent.append((text, kw))
+        self.followup = F()
+
+    async def edit_original_response(self, **kw):
+        self.edited = kw
+
+
 def profile_with_rules(store) -> S.Profile:
     prof = store.profile()
     prof.pin("grade", "moody")                                                    # 1
@@ -65,9 +81,10 @@ def test_rules_command_disables_several_and_menus_toggle(tmp_path):
     store = R.Store(tmp_path / "data")
     b, _ = bot_for(tmp_path, store)
     profile_with_rules(store)
-    inter = FakeInteraction()
+    inter = Inter()
     asyncio.run(b.rules_command(inter, disable="2, 3-4, 99"))
-    text, kw = inter.response.sent[-1]
+    assert inter.response.done                                       # answered Discord at once
+    text, kw = inter.sent[-1]
     assert "⛔ Turned off #2, #3, #4" in text and "No entry #99" in text
     prof = store.profile()
     assert "text_level" not in prof.pinned("lacy") and prof.pinned("lacy")["grade"] == "warm"
@@ -75,23 +92,13 @@ def test_rules_command_disables_several_and_menus_toggle(tmp_path):
     assert {c.custom_id.split("|")[1] for c in view.children} == {"rules_off", "rules_on"}
 
     # pick two in the "Turn off" menu, then one in "Turn back on"
-    class Edit(FakeInteraction):
-        def __init__(self, values):
-            super().__init__()
-            self.data = {"values": values}
-            self.edited = None
-
-            async def edit_message(**kw):
-                self.edited = kw
-            self.response.edit_message = edit_message
-    i2 = Edit(["6", "1"])
+    i2 = Inter(["6", "1"])
     asyncio.run(b.on_button(i2, DB.parse_cid(DB.cid("rules_off", "-", 0))))
     assert "Turned off #6, #1" in i2.edited["content"] and "grade" not in store.profile().pinned("lacy")
-    i3 = Edit(["1"])
+    i3 = Inter(["1"])
     asyncio.run(b.on_button(i3, DB.parse_cid(DB.cid("rules_on", "-", 0))))
     assert store.profile().pinned("lacy")["grade"] == "moody"            # #1 back on, #6 still off
-    stranger = Edit(["1"])
-    stranger.user.id = 7
+    stranger = Inter(["1"], uid=7)
     asyncio.run(b.on_button(stranger, DB.parse_cid(DB.cid("rules_off", "-", 0))))
     assert stranger.edited is None and store.profile().entry(1)["on"]
 
@@ -115,16 +122,13 @@ def test_turn_off_buttons_on_feedback_reply_and_review_card(tmp_path):
 
     class Msg:
         components = []
-    inter = FakeInteraction()
+    inter = Inter()
     inter.message = Msg()
-    edits = []
-
-    async def edit_message(**kw):
-        edits.append(kw)
-    inter.response.edit_message = edit_message
     asyncio.run(b.on_button(inter, DB.parse_cid(DB.cid("rule", "-", 0, "2"))))
-    assert not store.profile().entry(2)["on"] and edits and "Turned off #2" in inter.followup.sent[-1]
-    asyncio.run(b.on_button(inter, DB.parse_cid(DB.cid("rule", "-", 0, "2"))))
+    assert not store.profile().entry(2)["on"] and "view" in inter.edited and "Turned off #2" in inter.sent[-1][0]
+    inter2 = Inter()
+    inter2.message = Msg()
+    asyncio.run(b.on_button(inter2, DB.parse_cid(DB.cid("rule", "-", 0, "2"))))
     assert store.profile().entry(2)["on"]
 
 
@@ -149,3 +153,29 @@ def test_experimental_variant_avoids_rejected_options(tmp_path):
     for seed in range(10):
         c = S.pick_variants(prof, "lacy", random.Random(seed))[2]
         assert c["experimental"] and c["style"]["grade"] != "natural"
+
+
+def test_errors_are_reported_instead_of_interaction_failed(tmp_path, caplog):
+    store = R.Store(tmp_path / "data")
+    b, _ = bot_for(tmp_path, store)
+    fresh = Inter()
+    asyncio.run(b.report_error(fresh, ValueError("bad entry"), "/rules"))
+    assert fresh.response.sent[-1][0] == "⚠️ /rules failed: ValueError: bad entry"
+    assert fresh.response.sent[-1][1]["ephemeral"] and "/rules failed" in caplog.text
+    late = Inter()
+    late.response.done = True                                        # already deferred
+    asyncio.run(b.report_error(late, RuntimeError("boom"), "button rules_off"))
+    assert late.sent[-1] == ("⚠️ button rules_off failed: RuntimeError: boom", {"ephemeral": True})
+
+
+def test_rules_reply_works_with_real_discord_objects(tmp_path):
+    """The view and embeds discord.py would send are built without errors."""
+    import discord
+    store = R.Store(tmp_path / "data")
+    b, _ = bot_for(tmp_path, store)
+    profile_with_rules(store)
+    inter = Inter()
+    asyncio.run(b.rules_command(inter))
+    text, kw = inter.sent[-1]
+    assert isinstance(kw["view"], discord.ui.View) and all(isinstance(e, discord.Embed) for e in kw["embeds"])
+    assert len(kw["view"].to_components()) == 1
