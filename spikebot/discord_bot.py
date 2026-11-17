@@ -987,23 +987,27 @@ class ReviewBot:
         await asyncio.sleep(20)          # let the cache fill after connecting
         while True:
             every = float((self.rcfg.get("stats") or {}).get("every_s") or 600)
+            ok = False
             try:
-                await self.stats_tick(time.time())
+                ok = await self.stats_tick(time.time())
             except Exception as e:  # noqa: BLE001
                 log.warning("stats channels: %s", e)
-            await asyncio.sleep(max(300.0, every))   # Discord: 2 renames per channel per 10 min
+            # Discord: 2 renames per channel per 10 min. Until it works (e.g. the permission was
+            # only just granted) try again every minute.
+            await asyncio.sleep(max(300.0, every) if ok else 60.0)
 
-    async def stats_tick(self, now: float) -> None:
+    async def stats_tick(self, now: float) -> bool:
+        """True when every stats channel is in place and up to date."""
         import discord
         scfg = self.rcfg.get("stats") or {}
         if not scfg.get("enabled"):
-            return
+            return True
         guild = self.client.get_guild(self.rcfg["guild_id"]) if self.rcfg["guild_id"] else None
         if guild is None:
             ch = await self.channel(self.rcfg["channel_id"])
             guild = getattr(ch, "guild", None)
         if guild is None:
-            return
+            return False
         path = self.data_dir / "discord_stats.json"
         try:
             ids = json.loads(path.read_text(encoding="utf-8"))
@@ -1031,6 +1035,8 @@ class ReviewBot:
                     ids[key] = ch.id
                 elif ch.name != names[key]:
                     await ch.edit(name=names[key], reason="spikebot stats")
+            self._stats_warned = False
+            return True
         except discord.Forbidden:
             if not self._stats_warned:
                 self._stats_warned = True
@@ -1038,7 +1044,7 @@ class ReviewBot:
                 if self.notifier:
                     await self.notifier.send("stats_perm", "📊 Stats channels need the bot's **Manage Channels**"
                                              " permission (Server Settings > Roles > the bot's role).")
-            return
+            return False
         finally:
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(json.dumps(ids), encoding="utf-8")
@@ -1294,6 +1300,22 @@ class ReviewBot:
                 f"🎬 Making trending-sound edits ({per_song} per sound{', ' + song if song else ''}). Each one"
                 " appears here in #ready-to-post with 3 versions when it's rendered (a few minutes each).")
             asyncio.create_task(bot.run_trend(inter, song, per_song))
+
+        @tree.command(name="stats", description="Refresh the 📊 Stats channels now")
+        async def stats_cmd(inter: discord.Interaction):
+            if not await guard(inter):
+                return
+            await inter.response.send_message("📊 Refreshing the stats channels (Discord allows 2 renames per"
+                                              " channel every 10 minutes, so a name may lag).", ephemeral=True)
+
+            async def go():
+                try:
+                    if not await bot.stats_tick(time.time()):
+                        await inter.followup.send("⚠️ Couldn't update them: check the bot has **Manage Channels**.",
+                                                  ephemeral=True)
+                except Exception as e:  # noqa: BLE001
+                    log.warning("/stats: %s", e)
+            asyncio.create_task(go())
 
         @tree.command(name="rules", description="What the editor has learned from /feedback (and undo one)")
         @app_commands.describe(remove="Number of a rule to undo")

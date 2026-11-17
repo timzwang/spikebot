@@ -433,7 +433,8 @@ channels whose names show live numbers: live streamers (of those watched), momen
 waiting for review, approved today, bot uptime and the GTA 6 countdown. The bot creates them
 itself and renames them every 10 minutes (Discord only allows 2 renames per channel per 10
 minutes, so they can't tick every second). It needs **Manage Channels**; without it #status
-says so. Settings: `review.stats` (`enabled`, `category`, `every_s`).
+says so (it retries every minute until it works). `/stats` refreshes them now. Settings:
+`review.stats` (`enabled`, `category`, `every_s`).
 
 **`/feedback text:<anything> [mode]`**: tell the editor what you think in plain words, e.g.
 *"the captions are AI slop, only caption when he says something that matters"* or *"open the
