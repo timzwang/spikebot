@@ -128,3 +128,16 @@ def test_sound_meta_names_original_sounds_by_author():
     assert M.sound_meta(html) == "original sound - gta/edits"
     assert M.sound_meta('{"title":"Tokyo Girl","authorName":"Passive"}') == "Tokyo Girl"
     assert M.sound_meta("<html></html>") == ""
+
+
+@needs_ffmpeg
+def test_same_name_never_overwrites_a_different_sound(tmp_path):
+    lib = M.Library(tmp_path / "music")
+    a = lib.add(song(tmp_path / "a.wav"), "original sound")
+    b = lib.add(song(tmp_path / "b.wav", seconds=20), "original sound")
+    again = lib.add(song(tmp_path / "c.wav"), "original sound")          # identical to a
+    assert (a["name"], b["name"], again["name"]) == ("original-sound", "original-sound-2", "original-sound")
+    assert len(lib.files()) == 2
+    tg = lib.add(song(tmp_path / "t.wav", seconds=25), "Tokyo Girl", replace=True)
+    tg2 = lib.add(song(tmp_path / "t2.wav", seconds=22), "Tokyo Girl", replace=True)
+    assert tg["name"] == tg2["name"] == "tokyo-girl" and tg2["duration"] < tg["duration"]

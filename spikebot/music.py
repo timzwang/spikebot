@@ -172,9 +172,29 @@ class Library:
             return self.get(pick[0])
         return self.get(max(files, key=lambda p: p.stat().st_mtime))
 
-    def add(self, src: Path, name: str | None = None) -> dict:
+    def add(self, src: Path, name: str | None = None, replace: bool = False) -> dict:
+        """Copy a song in. A different song with the same name gets -2, -3... instead of
+        overwriting it (many TikTok sounds are just "original sound"); the same file again
+        reuses the existing one. `replace=True` overwrites (the Tokyo Girl song)."""
         self.root.mkdir(parents=True, exist_ok=True)
-        dest = self.root / f"{clean_name(name or src.stem)}{src.suffix.lower()}"
+        stem, ext = clean_name(name or src.stem), src.suffix.lower()
+        dest = self.root / f"{stem}{ext}"
+        if not replace:
+            data = src.read_bytes()
+            n = 1
+            while True:
+                same = [p for p in self.files() if p.stem == dest.stem]
+                if not same:
+                    break
+                if any(p.read_bytes() == data for p in same):
+                    dest = next(p for p in same if p.read_bytes() == data)
+                    break
+                n += 1
+                dest = self.root / f"{stem}-{n}{ext}"
+        else:
+            for p in self.files():           # one Tokyo Girl song, whatever the format
+                if p.stem == stem and p.suffix.lower() != ext:
+                    p.unlink()
         if src.resolve() != dest.resolve():
             shutil.copyfile(src, dest)
         try:
@@ -365,15 +385,17 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "add":
         if not args.file and not args.url:
             ap.error("add needs FILE or --url")
+        tg_song = tokyo_girl.settings(cfg, base).get("song") or TOKYO_GIRL_SONG
         try:
             if args.url:
                 lib.root.mkdir(parents=True, exist_ok=True)
                 with tempfile.TemporaryDirectory(dir=lib.root) as tmp:
                     path, title = fetch(args.url, Path(tmp))
-                    row = lib.add(path, args.name or title)
+                    name = args.name or title
+                    row = lib.add(path, name, replace=clean_name(name) == clean_name(tg_song))
             else:
-                row = lib.add(Path(args.file), args.name)
-            tg_song = tokyo_girl.settings(cfg, base).get("song") or TOKYO_GIRL_SONG
+                name = args.name or Path(args.file).stem
+                row = lib.add(Path(args.file), name, replace=clean_name(name) == clean_name(tg_song))
             res = {"ok": True, "name": row["name"], "bpm": row["bpm"], "drop_s": row["drop_s"],
                    "duration": row["duration"], "start_s": start_for(row),
                    "tokyo_girl": clean_name(row["name"]) == clean_name(tg_song)}
