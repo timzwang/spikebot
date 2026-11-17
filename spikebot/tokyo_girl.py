@@ -24,6 +24,8 @@ CLI (run from /opt/spikebot):
   python -m spikebot.tokyo_girl make [-n N] [--story ID]
   python -m spikebot.tokyo_girl daily       what the timer runs: fetch if due, top up to per_day
   python -m spikebot.tokyo_girl stories     list the text stories and which are live today
+  python -m spikebot.tokyo_girl trend [--song NAME] [-n N]
+                                            edits cut to the trending sounds (not Tokyo Girl)
 """
 from __future__ import annotations
 
@@ -540,6 +542,7 @@ def card_bars(n_cards: int, bpm: float, min_s: float, max_s: float, rng: random.
     padded to at least min_s and maybe a bar longer, never over max_s."""
     bs = bar_s(bpm)
     lo, hi = math.ceil(min_s / bs - 1e-9), math.floor(max_s / bs + 1e-9)
+    lo = min(lo, hi)   # max_s always wins (a trending sound may leave little room)
     if hi < n_cards:
         raise ValueError("max_s too short for this many cards")
     bars = [2] * n_cards
@@ -900,11 +903,20 @@ class ReviewAdapter:
         state = load_state(state_path)
         taken = {v["story"] for r in item["rounds"] for v in r["variants"]} if n > 1 else set()
         from . import music
+        src = item.get("source") or {}
+        trend = src.get("kind") == "trend"
         song = None
         try:
-            song = music.Library(self.lcfg["music_dir"]).current(self.lcfg.get("song") or music.TOKYO_GIRL_SONG)
+            song = music.Library(self.lcfg["music_dir"]).current(
+                src.get("song") if trend else (self.lcfg.get("song") or music.TOKYO_GIRL_SONG))
         except (music.MusicError, OSError) as e:
+            if trend:   # a trending-sound edit without its sound makes no sense
+                raise editor.EditError(f"trending sound {src.get('song')!r} is unavailable: {e}") from e
             log.warning("song beat map unavailable, using the %s BPM grid: %s", self.lcfg["bpm"], e)
+        plan_cfg, song_start = self.lcfg, None
+        if song:
+            song_start, room = music.window(song, float(self.lcfg["min_s"]), float(self.lcfg["max_s"]))
+            plan_cfg = dict(self.lcfg, max_s=room, min_s=min(float(self.lcfg["min_s"]), room))
         out = []
         for spec in specs:
             r = st.resolve(spec["style"])
@@ -922,14 +934,15 @@ class ReviewAdapter:
             cards = list(base_v["cards"]) if base_v and base_v.get("cards") else list(story.cards)
             if texts.get("hook"):
                 cards[0] = texts["hook"]
+            if song:   # a short sound can't fit every card: keep the hook and the question
+                fit = max(2, int(float(plan_cfg["max_s"]) // bar_s(float(song["bpm"]))))
+                if len(cards) > fit:
+                    cards = cards[:fit - 1] + cards[-1:]
             pace = spec["style"].get("pace", "normal")
             if r["pace"].get("shot_s"):
                 pace = pace_for_shot(r["pace"]["shot_s"], self.lcfg["bpm"])
-            beats, song_start = None, None
-            if song:
-                song_start = music.start_for(song)
-                beats = music.grid(song, song_start, float(self.lcfg["max_s"]) + 8)
-            plan = plan_clip(story, self.shots(), self.lcfg, today, random.Random(seed), state.get("uses"),
+            beats = music.grid(song, song_start, float(plan_cfg["max_s"]) + 8) if song else None
+            plan = plan_clip(story, self.shots(), plan_cfg, today, random.Random(seed), state.get("uses"),
                              pace=pace, transition=r["transition"], cards=cards, beats=beats)
             stem = f"r{n}_{spec['label']}"
             mp4 = folder / f"{stem}.mp4"
@@ -944,12 +957,16 @@ class ReviewAdapter:
             shown = cards_for_level(plan.cards, r["text_level"], intro_s)
             engine = self.render_edit(plan, mp4, r, shown, logo if intro_s else None, intro_s)
             prev = editor.preview(mp4, folder / f"{stem}_preview.mp4", preview_bytes, plan.duration)
+            if song and song_start + plan.duration > float(song["duration"]) + 0.5:
+                log.warning("edit runs %.1fs past the end of %s", song_start + plan.duration - song["duration"],
+                            song["name"])
             uses = state.setdefault("uses", {})
             for sl in plan.slots:
                 uses[sl.shot.key] = uses.get(sl.shot.key, 0) + 1
             state["recent"] = (state.get("recent", []) + [story.id])[-12:]
             hook = plain(fill(texts["hook"], today)) if texts.get("hook") else None
-            caps = dict(base_v["captions"]) if base_v and not hook else tg_captions(story, today, self.lcfg, hook)
+            caps = dict(base_v["captions"]) if base_v and not hook else \
+                (trend_captions if trend else tg_captions)(story, today, self.lcfg, hook)
             title = (base_v["title"] if base_v and not hook
                      else (hook or plain(fill(story.caption, today)))[:95])
             out.append({"label": spec["label"], "style": spec["style"], "preset": spec.get("preset"),
@@ -1000,12 +1017,54 @@ class ReviewAdapter:
         a = item["approved"]
         v = review.variant_of(item, a["round"], a["label"])
         export = Path(self.lcfg["export_dir"])
+        if (item.get("source") or {}).get("kind") == "trend":
+            export = export.parent / "trend"
         export.mkdir(parents=True, exist_ok=True)
         stem = f"{item['id']}_{v['story']}"
         shutil.copyfile(src, export / f"{stem}.mp4")
         extra = (v.get("music_note") or "").replace("**", "").replace("🎵 ", "")
         (export / f"{stem}.txt").write_text(f"IG: {v['captions']['instagram']}\nTikTok: {v['captions']['tiktok']}\n"
                                             + (f"{extra}\n" if extra else ""), encoding="utf-8")
+
+
+def trend_captions(story: Story, today: date, lcfg: dict, hook: str | None = None) -> dict[str, str]:
+    """Trending-sound edits: the hook + GTA tags. No Tokyo Girl credit; the sound itself is
+    added in the app (that's what puts the edit on the sound's page)."""
+    h = hook or plain(fill(story.caption, today)).strip()
+    return {"instagram": f"{h} #GTA6 #GTAVI #ViceCity #Rockstar".strip(),
+            "tiktok": f"{h} #GTA6 #GTAVI #ViceCity #fyp".strip()}
+
+
+def make_trend(lcfg: dict, songs: list[str] | None = None, per_song: int = 1, now: float | None = None,
+               shots: list[Shot] | None = None) -> list[str]:
+    """Review items cut to trending sounds (every one in the library except the Tokyo Girl
+    song, or just `songs`). Same official trailer footage and style as Tokyo Girl, silent.
+    Not counted in Tokyo Girl's per_day. Returns the item ids."""
+    from . import music, review
+    now = now or time.time()
+    dt = datetime.fromtimestamp(now, UK)
+    lib = music.Library(lcfg["music_dir"])
+    rows = lib.trending(lcfg.get("song") or music.TOKYO_GIRL_SONG)
+    if songs:
+        want = {music.clean_name(x) for x in songs}
+        rows = [r for r in rows if music.clean_name(r["name"]) in want]
+    if not rows:
+        raise editor.EditError("no trending sounds saved: post a TikTok sound link in #inspiration first")
+    store = review.Store(Path(lcfg["data_dir"]))
+    cfg, base = lcfg.get("_cfg") or {}, lcfg.get("_base") or Path(".")
+    adapter = ReviewAdapter(cfg, base, lcfg, shots)
+    ids, k = [], 0
+    for row in rows:
+        for i in range(per_song):
+            item = store.create("tokyo_girl", {"day": dt.date().isoformat(), "kind": "trend",
+                                               "song": row["file"]}, now + k,
+                                title=f"Trending sound edit · {row['name']}" + (f" #{i + 1}" if per_song > 1 else ""))
+            item = review.render_round(store, item["id"], cfg, base, {"kind": "initial"}, now=now + k,
+                                       adapter=adapter)
+            log.info("trending-sound review item %s (%s): %s", item["id"], row["name"], item["status"])
+            ids.append(item["id"])
+            k += 1
+    return ids
 
 
 def make_review(lcfg: dict, n: int = 1, now: float | None = None, shots: list[Shot] | None = None) -> list[str]:
@@ -1236,6 +1295,9 @@ def main(argv: list[str] | None = None) -> None:
     sub.add_parser("stories")
     dv = sub.add_parser("deliver", help="send exports to Discord again (default: undelivered ones)")
     dv.add_argument("files", nargs="*")
+    tr = sub.add_parser("trend", help="edits cut to the trending sounds (one per sound by default)")
+    tr.add_argument("--song", action="append", help="only this sound (repeatable)")
+    tr.add_argument("-n", type=int, default=1, help="edits per sound")
     mk = sub.add_parser("make")
     mk.add_argument("-n", type=int, default=1)
     mk.add_argument("--story")
@@ -1290,6 +1352,21 @@ def main(argv: list[str] | None = None) -> None:
                 print(p.name, deliver_safe(lcfg, p) or "FAILED (see log)")
         else:
             print("delivered:", ", ".join(deliver_pending(lcfg)) or "nothing pending")
+    elif args.cmd == "trend":
+        shots = ensure_media(lcfg)
+        if not shots:
+            sys.exit(f"no usable media in {lcfg['media_dir']}")
+        from . import review
+        store = review.Store(Path(lcfg["data_dir"]))
+        failed = 0
+        for item_id in make_trend(lcfg, args.song, args.n, shots=shots):
+            item = store.load(item_id)
+            ok = item.get("status") != "failed"
+            failed += not ok
+            print(f"review item {item_id} ({item['source']['song']}): "
+                  + ("ready for #ready-to-post" if ok else f"FAILED: {item.get('error')}"))
+        if failed:
+            sys.exit(1)
     elif args.cmd == "daily":
         for p in daily(lcfg):
             print(p)

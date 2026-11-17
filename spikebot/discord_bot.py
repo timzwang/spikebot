@@ -37,6 +37,15 @@ from . import style as st
 log = logging.getLogger("discord_bot")
 
 MODE_LABEL = {"lacy": ("Lacy", 0x9146FF), "tokyo_girl": ("Tokyo Girl", 0xFF4FA3)}
+TREND_LABEL = ("Trending sound", 0x1DB954)
+
+
+def mode_label(item: dict) -> tuple[str, int]:
+    """Card label: trailer edits cut to a trending sound share Tokyo Girl's renderer and style
+    but are not Tokyo Girl edits."""
+    if (item.get("source") or {}).get("kind") == "trend":
+        return TREND_LABEL
+    return MODE_LABEL.get(item["mode"], (item["mode"], 0x5865F2))
 VARIANT_COLOUR = {"A": 0x3BA55D, "B": 0x5865F2, "C": 0xFAA61A, "P": 0xEB459E}
 SEP = "|"
 
@@ -68,7 +77,7 @@ def ts(t: float, style: str = "f") -> str:
 
 def round_payload(item: dict, rnd: dict, extra: str = "") -> dict:
     """Message for one review round: header + one embed per variant + button rows."""
-    label, colour = MODE_LABEL.get(item["mode"], (item["mode"], 0x5865F2))
+    label, colour = mode_label(item)
     kind = {"initial": "", "redo": " · redo", "feedback": " · after your feedback",
             "preset": " · preset"}.get(rnd["kind"], "")
     head = [f"**{label}** · `{item['id']}` · round {rnd['n']}{kind}"]
@@ -80,7 +89,9 @@ def round_payload(item: dict, rnd: dict, extra: str = "") -> dict:
     if item.get("expires"):
         head.append(f"Expires {ts(item['expires'], 'R')} if not approved.")
     if any(v.get("silent") for v in rnd["variants"]):
-        head.append("Silent edits: add the official sound in each app when posting.")
+        head.append("Silent edits: add the trending sound in each app when posting (the link and start point"
+                    " are on each card)." if src.get("kind") == "trend"
+                    else "Silent edits: add the official sound in each app when posting.")
     if extra:
         head.append(extra)
     embeds = []
@@ -121,7 +132,7 @@ def picker(action: str, item: dict, rnd: dict) -> list[list[dict]]:
 
 def manual_payload(item: dict, v: dict, platforms: list[str], link: str | None = None,
                    path_note: str | None = None) -> dict:
-    label, colour = MODE_LABEL.get(item["mode"], (item["mode"], 0x5865F2))
+    label, colour = mode_label(item)
     names = [review.NAMES[p] for p in platforms]
     lines = [f"📱 **{label}** `{item['id']}` approved ({v['label']}) · post on **{', '.join(names)}**"]
     if v.get("silent"):
@@ -887,6 +898,28 @@ class ReviewBot:
             else:
                 await message.reply(f"⚠️ Couldn't read that song: {res.get('error')}", mention_author=False)
 
+    async def run_trend(self, inter, song: str | None, per_song: int) -> None:
+        """`python -m spikebot.tokyo_girl trend` in a subprocess; the scan loop posts the rounds."""
+        cmd = [sys.executable, "-m", "spikebot.tokyo_girl", "--config", self.config_path, "trend",
+               "-n", str(per_song)] + (["--song", song] if song else [])
+        try:
+            p = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE,
+                                                     stderr=asyncio.subprocess.STDOUT)
+            out, _ = await asyncio.wait_for(p.communicate(), 3 * 3600)
+            text = out.decode(errors="replace")
+            log.info("trend edits: %s", text[-500:].strip())
+            self.wake.set()
+            if p.returncode != 0:
+                lines = [ln for ln in text.splitlines() if "FAILED" in ln or "Error" in ln or "error" in ln]
+                await inter.followup.send(("⚠️ Some trending-sound edits failed:\n"
+                                           + ("\n".join(lines[-5:]) or text[-300:]))[:1990])
+        except Exception as e:  # noqa: BLE001 - never crash the bot on a command
+            log.warning("/trend failed: %s", e)
+            try:
+                await inter.followup.send(f"⚠️ Trending-sound edits failed: {e}"[:1990])
+            except Exception:  # noqa: BLE001
+                pass
+
     async def analyse(self, name: str, copy: list[str], url: str | None = None, file: Path | None = None,
                       note: str = "") -> dict:
         out = self.data_dir / "inspiration" / f"result_{uuid.uuid4().hex}.json"
@@ -989,6 +1022,17 @@ class ReviewBot:
                            " something funny*.")
             msg.append("`/rules` lists everything I'm applying; `/rules remove:<n>` undoes one.")
             await inter.followup.send("\n".join(msg)[:1990])
+
+        @tree.command(name="trend", description="Make trailer edits cut to your trending sounds (#ready-to-post)")
+        @app_commands.describe(song="Only this sound (default: every trending sound)", per_song="Edits per sound (1-3)")
+        async def trend_cmd(inter: discord.Interaction, song: str | None = None, per_song: int = 1):
+            if not await guard(inter):
+                return
+            per_song = max(1, min(3, per_song))
+            await inter.response.send_message(
+                f"🎬 Making trending-sound edits ({per_song} per sound{', ' + song if song else ''}). Each one"
+                " appears here in #ready-to-post with 3 versions when it's rendered (a few minutes each).")
+            asyncio.create_task(bot.run_trend(inter, song, per_song))
 
         @tree.command(name="rules", description="What the editor has learned from /feedback (and undo one)")
         @app_commands.describe(remove="Number of a rule to undo")

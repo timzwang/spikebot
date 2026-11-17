@@ -150,8 +150,9 @@ class Library:
         row = idx.get(key)
         if row and row.get("size") == st_.st_size and row.get("mtime") == int(st_.st_mtime):
             return row
+        keep = {k: row[k] for k in ("url",) if row and row.get(k)}
         row = analyse(path) | {"name": path.stem, "file": path.name, "size": st_.st_size,
-                               "mtime": int(st_.st_mtime)}
+                               "mtime": int(st_.st_mtime)} | keep
         idx[key] = row
         self.root.mkdir(parents=True, exist_ok=True)
         tmp = self.index.with_suffix(".tmp")
@@ -171,6 +172,27 @@ class Library:
                 raise MusicError(f"no song called {name!r} in {self.root}")
             return self.get(pick[0])
         return self.get(max(files, key=lambda p: p.stat().st_mtime))
+
+    def set_meta(self, file: str, **meta) -> None:
+        """Extra fields on a song's row (e.g. the sound link it came from)."""
+        idx = self._load()
+        if file in idx:
+            idx[file].update({k: v for k, v in meta.items() if v})
+            tmp = self.index.with_suffix(".tmp")
+            tmp.write_text(json.dumps(idx), encoding="utf-8")
+            tmp.replace(self.index)
+
+    def trending(self, tokyo_song: str = TOKYO_GIRL_SONG) -> list[dict]:
+        """Every song except the Tokyo Girl one, newest first (unreadable files skipped)."""
+        out = []
+        for p in sorted(self.files(), key=lambda p: p.stat().st_mtime, reverse=True):
+            if clean_name(p.stem) == clean_name(tokyo_song):
+                continue
+            try:
+                out.append(self.get(p))
+            except MusicError as e:
+                log.warning("skipping %s: %s", p.name, e)
+        return out
 
     def add(self, src: Path, name: str | None = None, replace: bool = False) -> dict:
         """Copy a song in. A different song with the same name gets -2, -3... instead of
@@ -355,6 +377,18 @@ def grid(song: dict, start_s: float, need_s: float) -> list[float]:
     return out
 
 
+def window(song: dict, min_s: float, max_s: float) -> tuple[float, float]:
+    """(start in the song, longest the edit can be) so the edit never runs past the end of
+    the sound. Starts a bar before the drop when there's room; otherwise early enough to fit
+    at least `min_s` (or the whole sound if it's shorter than that)."""
+    dur = float(song["duration"])
+    start = start_for(song)
+    if dur - start < min_s:
+        fits = [b for b in song["beats"] if b <= dur - min_s]
+        start = fits[-1] if fits else song["beats"][0]
+    return start, max(1.0, min(max_s, dur - start))
+
+
 def mmss(t: float) -> str:
     t = max(0.0, t)
     return f"{int(t // 60)}:{t % 60:04.1f}"
@@ -362,8 +396,11 @@ def mmss(t: float) -> str:
 
 def note(song: dict, start_s: float) -> str:
     """The line on the review card / caption file telling Tim how to line up the sound."""
+    drop = song["drop_s"] - start_s
+    where = f"drop lands at {mmss(drop)} in the edit" if drop >= 0 else "after the drop"
+    link = f" · <{song['url']}>" if song.get("url") else ""
     return (f"🎵 Sound: **{song['name']}** — start it at **{mmss(start_s)}** "
-            f"(drop lands at {mmss(song['drop_s'] - start_s)} in the edit, {song['bpm']:.0f} BPM)")
+            f"({where}, {song['bpm']:.0f} BPM){link}")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -393,6 +430,7 @@ def main(argv: list[str] | None = None) -> int:
                     path, title = fetch(args.url, Path(tmp))
                     name = args.name or title
                     row = lib.add(path, name, replace=clean_name(name) == clean_name(tg_song))
+                lib.set_meta(row["file"], url=args.url)
             else:
                 name = args.name or Path(args.file).stem
                 row = lib.add(Path(args.file), name, replace=clean_name(name) == clean_name(tg_song))
@@ -408,7 +446,9 @@ def main(argv: list[str] | None = None) -> int:
     for p in sorted(lib.files(), key=lambda p: p.stat().st_mtime, reverse=True):
         try:
             r = lib.get(p)
-            print(f"{r['name']}: {r['bpm']:.0f} BPM, drop at {mmss(r['drop_s'])}, {r['duration']:.0f}s")
+            print(f"{r['name']}: {r['bpm']:.0f} BPM, drop at {mmss(r['drop_s'])}, {r['duration']:.0f}s"
+                  + (" (Tokyo Girl song)" if clean_name(r["name"]) == TOKYO_GIRL_SONG else " (trending sound)")
+                  + (f" {r['url']}" if r.get("url") else ""))
         except MusicError as e:
             print(f"{p.name}: {e}")
     return 0

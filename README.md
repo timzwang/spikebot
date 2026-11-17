@@ -408,6 +408,15 @@ official Tokyo Girl sound in each app). To auto-post them anyway set
 counts, recurring feedback and presets ranked by approvals. Pin a setting with
 `/style setting:font value:montserrat` (all variants then use it); `value:auto` unpins.
 
+**`/trend [song] [per_song]`**: trailer edits cut to your **trending sounds** (every sound
+saved from #inspiration except the Tokyo Girl song; `song:` picks one, `per_song` 1-3). Same
+official Rockstar footage, styles and 3 versions as the Tokyo Girl edits, but labelled
+"Trending sound", with plain GTA captions and no Tokyo Girl credit. Silent: each card says
+which sound to add in the app, where to start it, and links the sound. Each edit is
+cut to fit inside the sound (a short sound gives a shorter edit, keeping the hook and the
+question). On the server: `python -m spikebot.tokyo_girl trend [--song NAME] [-n N]`.
+Approved ones are also copied to `exports/trend/`.
+
 **`/feedback text:<anything> [mode]`**: tell the editor what you think in plain words, e.g.
 *"the captions are AI slop, only caption when he says something that matters"* or *"open the
 trailer edits on the GTA 6 logo, add film grain, cut harder on the beat"*. It becomes a rule

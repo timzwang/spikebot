@@ -136,3 +136,34 @@ def test_tokyo_girl_review_items_are_silent_and_different(tmp_path):
     TG.ReviewAdapter({}, tmp_path, s).finish(store.load(item["id"]), "done")
     out = list(Path(s["export_dir"]).glob("*.mp4"))
     assert len(out) == 1 and out[0].with_suffix(".txt").read_text().startswith("IG: ")
+
+
+@needs_ffmpeg
+def test_trending_sound_edits_use_each_sound_and_not_tokyo_girl(tmp_path):
+    from spikebot import discord_bot as DB
+    from spikebot import music as M
+    from tests.test_music import song
+    media = tmp_path / "data/rockstar_media"
+    media.mkdir(parents=True)
+    ff = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y"]
+    for i in range(3):
+        subprocess.run(ff + ["-f", "lavfi", "-i", f"gradients=s=1920x1080:seed={i}", "-frames:v", "1",
+                             str(media / f"vice_city_{i}.jpg")], check=True)
+    s = TG.settings({"tokyo_girl": {"min_s": 8, "max_s": 16}, "data_dir": "data"}, tmp_path)
+    lib = M.Library(s["music_dir"])
+    lib.add(song(tmp_path / "tg.wav", seconds=30), "Tokyo Girl", replace=True)
+    trend = lib.add(song(tmp_path / "t.wav", drop=8.0, seconds=12), "original sound - someone")
+    lib.set_meta(trend["file"], url="https://www.tiktok.com/music/original-sound-7300000000000000000")
+    now = datetime(2026, 11, 17, 18, 0, tzinfo=TG.UK).timestamp()
+    ids = TG.make_trend(s, now=now)
+    assert len(ids) == 1                                    # the Tokyo Girl song is never a trend
+    store = R.Store(tmp_path / "data")
+    item = store.load(ids[0])
+    assert item["status"] == "open" and item["source"]["song"] == trend["file"]
+    for v in item["rounds"][0]["variants"]:
+        assert v["music"]["song"] == trend["name"]
+        assert v["music"]["start_s"] + v["duration"] <= trend["duration"] + 0.5   # fits inside the sound
+        assert "Tokyo Girl" not in v["captions"]["tiktok"] and "tiktok.com/music" in v["music_note"]
+    assert DB.mode_label(item)[0] == "Trending sound"
+    assert "trending sound" in DB.round_payload(item, item["rounds"][0])["content"]
+    assert TG.items_on(TG.load_state(Path(s["state_file"])), "2026-11-17") == 0   # not Tokyo Girl's quota

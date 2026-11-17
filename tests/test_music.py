@@ -141,3 +141,12 @@ def test_same_name_never_overwrites_a_different_sound(tmp_path):
     tg = lib.add(song(tmp_path / "t.wav", seconds=25), "Tokyo Girl", replace=True)
     tg2 = lib.add(song(tmp_path / "t2.wav", seconds=22), "Tokyo Girl", replace=True)
     assert tg["name"] == tg2["name"] == "tokyo-girl" and tg2["duration"] < tg["duration"]
+
+
+def test_window_keeps_the_edit_inside_the_sound():
+    row = {"duration": 20.0, "drop_s": 16.0, "beats": [i * 0.5 for i in range(40)]}
+    start, room = M.window(row, 8, 30)
+    assert start + room <= 20.0 and room >= 8               # drop too late: start earlier
+    long = {"duration": 120.0, "drop_s": 30.0, "beats": [i * 0.5 for i in range(240)]}
+    assert M.window(long, 15, 30) == (M.start_for(long), 30)
+    assert "<https://x>" in M.note(dict(long, name="s", bpm=120, url="https://x"), 28.0)

@@ -172,6 +172,11 @@ it in sync when behaviour or config changes.
   on-screen text (last card is always a question; date windows relative to launch).
   Output `exports/tokyo_girl/*.mp4` + `.txt` (IG/TikTok captions from `caption_ig` /
   `caption_tiktok`). No channel logo/watermark; the optional `intro: logo` only fades in Rockstar's official GTA VI logo (`logo_file`, default `data/brand/gta6_logo.png`, skipped if missing). Text cards follow `text_level` (`cards_for_level`). State in `data/tokyo_girl/state.json`.
+  **Trending-sound edits** (`make_trend`, CLI `trend`, Discord `/trend` -> `ReviewBot.run_trend`):
+  same renderer/style (item mode `tokyo_girl`, `source.kind: "trend"`, `source.song` = file),
+  one item per sound in `music.Library.trending()` (never the Tokyo Girl song); `music.window`
+  keeps the edit inside the sound, cards trimmed to fit, `trend_captions` (no Tokyo Girl
+  credit), label via `discord_bot.mode_label`, exports to `exports/trend/`, not counted in per_day.
   With review on (default) `daily` makes `per_day` review items (`make_review`, 3 variants:
   own story/hook kind, `PACE_PATTERNS`, grade, text style, transition `flash`/`zoom`/`cut`);
   approved edits are copied to `exports/tokyo_girl/`. With review off the old `make` +
