@@ -462,6 +462,7 @@ class ReviewBot:
         self._archive_checked = 0.0
         self._trend_running = False
         self._progress_lock = asyncio.Lock()
+        self.bar_emojis: dict[str, str] = {}   # rounded progress bar pieces (the bot's own emojis)
         self.force_stopped: set[int] = set()   # pids /cancel had to kill (their parent shouldn't call it a crash)
         self.progress_msgs: dict[str, dict] = {}   # job id -> {msg, text, ended}
         self.stats_source = None   # main.Bot sets this: -> {live, watching, moments_today, started}
@@ -629,6 +630,7 @@ class ReviewBot:
                     await tree.sync()
             except Exception as e:  # noqa: BLE001
                 log.warning("slash command sync failed: %s", e)
+            asyncio.create_task(bot.ensure_bar_emojis())
             if not bot.started:
                 bot.started = True
                 bot.render_q = asyncio.Queue()
@@ -1278,7 +1280,23 @@ class ReviewBot:
             path.write_text(json.dumps(ids), encoding="utf-8")
 
     # ---- live progress bars (spikebot/progress.py) -----------------------------
-    async def progress_loop(self, every: float = 5) -> None:
+    async def ensure_bar_emojis(self) -> None:
+        """Upload the rounded progress bar pieces once as the bot's own (application) emojis.
+        They work in every server without Manage Emojis; on any problem the text bar is used."""
+        try:
+            have = {e.name: e for e in await self.client.fetch_application_emojis()}
+            for name, png in progress.bar_pieces().items():
+                if name not in have:
+                    have[name] = await self.client.create_application_emoji(name=name, image=png)
+            self.bar_emojis = {n: str(e) for n, e in have.items() if n.startswith(progress.EMOJI_PREFIX)}
+            log.info("rounded progress bar ready (%d pieces)", len(self.bar_emojis))
+        except Exception as e:  # noqa: BLE001 - cosmetic: the text bar still works
+            log.warning("rounded progress bar unavailable, using the text bar: %s", e)
+
+    def render_bar(self, frac: float) -> str | None:
+        return progress.emoji_bar(frac, self.bar_emojis)
+
+    async def progress_loop(self, every: float = 2) -> None:
         while True:
             try:
                 await self.progress_tick(time.time())
@@ -1301,10 +1319,19 @@ class ReviewBot:
             index = json.loads(self._progress_index().read_text(encoding="utf-8"))
         except (OSError, ValueError):
             index = {}
-        for path, d in progress.load_all(self.data_dir):
+        jobs = progress.load_all(self.data_dir)
+        # Discord allows about 5 message edits per 5 s in a channel: with several bars in one
+        # channel each is edited less often (2 s with one or two bars, 4 s with three or four...)
+        per_channel: dict = {}
+        for _, d in jobs:
+            if progress.state_of(d, now) == "running":
+                c = d.get("channel_id") or self.rcfg["channel_id"]
+                per_channel[c] = per_channel.get(c, 0) + 1
+        for path, d in jobs:
             jid, state = d.get("id") or path.stem, progress.state_of(d, now)
-            text = progress.text(d, now)
+            text = progress.text(d, now, self.render_bar)
             rec = self.progress_msgs.get(jid)
+            gap = 2.0 * max(1, -(-per_channel.get(d.get("channel_id") or self.rcfg["channel_id"], 1) // 2))
             if rec is None and jid in index:           # bot restarted mid-job: reuse the message
                 ch = await self.channel(index[jid][0])
                 try:
@@ -1322,9 +1349,10 @@ class ReviewBot:
                     continue
                 kw = {"view": self.view(cancel_buttons(jid))} if state == "running" else {}
                 rec = {"msg": await ch.send(text, allowed_mentions=_no_mentions(), **kw), "text": text,
-                       "button": state == "running"}
+                       "button": state == "running", "edited": now}
                 index[jid] = [cid, rec["msg"].id]
-            elif text != rec["text"]:
+            elif text != rec["text"] and (state != "running" or now - rec.get("edited", 0) >= gap - 0.05):
+                rec["edited"] = now
                 kw = {}
                 if state != "running" and rec.get("button", True):
                     kw["view"], rec["button"] = None, False     # finished: the Cancel button goes

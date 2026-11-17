@@ -310,7 +310,10 @@ it in sync when behaviour or config changes.
 - `spikebot/progress.py`: live progress for long jobs. `Job.create` writes data/progress/<id>.json;
   `current()` (contextvar, or `SPIKEBOT_PROGRESS` env from the bot for subprocesses), `update`,
   nested `span(lo, hi)`, `finish(ok, text, state)`; `review.render_round` makes one unless a
-  job is active (Lacy `render_job` has its own); `text()` / `bar()` for the message; each write stores the worker `pid`, and `state_of` shows a job whose process died as stopped at once. Never raises,
+  job is active (Lacy `render_job` has its own); `text(d, now, render_bar)` / `bar()` (text fallback, 1/8 cells) / `eta()` (time left) for the message;
+  rounded bar = `bar_pieces()` (9 PNG pieces, pure-Python encoder) uploaded once as application emojis
+  by `ReviewBot.ensure_bar_emojis` (`EMOJI_PREFIX`), drawn by `emoji_bar`; `progress_loop` every 2 s,
+  each bar edited at most every 2 s x ceil(bars in channel / 2); each write stores the worker `pid`, and `state_of` shows a job whose process died as stopped at once. Never raises,
   except `Cancelled` (a BaseException) for **/cancel**: run id = `short(id)` (shown on the bar);
   `request_cancel` writes `<id>.cancel` + SIGTERMs the worker (never the bot's own pid/pgid);
   worker CLIs call `arm_cancel()` so SIGTERM -> `Cancelled` (plain SIGTERM still exits), `update()`

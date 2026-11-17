@@ -427,8 +427,10 @@ every day (`review.trend.times`; `review.trend.enabled: false` turns it off), ro
 your sounds (least used first, newest wins ties). If the bot was down, only the latest
 missed slot runs. These never count towards the Tokyo Girl daily edits.
 
-**Live progress:** every long job shows a message with a progress bar that updates every
-few seconds: renders (Lacy clips, Tokyo Girl, trending sounds, redos) in #ready-to-post,
+**Live progress:** every long job shows a message with a rounded progress bar (the bot uploads
+its pieces once as its own emojis; a text bar if that fails), the time so far and about how long
+is left, updated every 2 s (less often when several bars share a channel, to stay inside Discord's
+edit limit): renders (Lacy clips, Tokyo Girl, trending sounds, redos) in #ready-to-post,
 #inspiration analysis in its thread, sound downloads under your message. It disappears when
 the job finishes (the review card or reply replaces it), stays with the reason if it fails,
 and shows for 2 minutes when a Lacy clip is skipped (BRB, not English...).

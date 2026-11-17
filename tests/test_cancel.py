@@ -280,3 +280,97 @@ def test_cancel_all_and_button(tmp_path):
         await asyncio.sleep(0.05)          # the cancel runs in the background after the reply
     asyncio.run(press())
     assert P.cancel_path(j3.path).exists() and "Cancelling 1 run" in b3.response.sent[-1][0]
+
+
+# ---- rounded progress bar, time left, 2 s refresh ------------------------------------------
+def test_rounded_bar_pieces_and_levels():
+    import struct
+    import zlib
+    pieces = P.bar_pieces()
+    assert len(pieces) == 9 and all(n.startswith(P.EMOJI_PREFIX) and len(n) <= 32 for n in pieces)
+    png = pieces[P.EMOJI_PREFIX + "l2"]
+    assert png[:8] == b"\x89PNG\r\n\x1a\n" and struct.unpack(">II", png[16:24]) == (64, 64)
+    raw = zlib.decompress(png[png.index(b"IDAT") + 4:-16])
+    assert len(raw) == 64 * (1 + 64 * 4)
+    em = {n: f"<{n}>" for n in pieces}
+    half = P.emoji_bar(0.5, em)
+    assert half.count("<") == P.SEGMENTS and half.startswith(f"<{P.EMOJI_PREFIX}l2>")
+    assert half.endswith(f"<{P.EMOJI_PREFIX}r0>") and P.emoji_bar(1.0, em).endswith(f"<{P.EMOJI_PREFIX}r2>")
+    assert f"<{P.EMOJI_PREFIX}m1>" in P.emoji_bar(0.46, em)            # half pieces: 24 steps
+    assert P.emoji_bar(0.5, {}) is None
+    assert P.bar(0.5, 16) == "`" + "█" * 8 + "░" * 8 + "`" and "▌" in P.bar(0.53, 16)
+
+
+def test_time_left_and_message_layout():
+    d = {"id": "1-abc123", "title": "Lacy clip", "state": "running", "frac": 0.25, "stage": "Rendering",
+         "started": 1000.0, "updated": 1060.0}
+    assert P.eta(d, 1060.0) == 180.0
+    assert P.eta(dict(d, frac=0.02), 1060.0) is None and P.eta(d, 1004.0) is None
+    t = P.text(d, 1060.0, lambda f: "[BAR]")
+    assert t.splitlines()[1] == "[BAR] **25%**" and "about 3:00 left" in t and "run `abc123`" in t
+    assert "estimating time left" in P.text(dict(d, frac=0.01), 1060.0)
+    assert P.text(d, 1060.0, lambda f: None).splitlines()[1].startswith("`")      # text bar fallback
+
+
+def test_bar_emojis_are_uploaded_once(tmp_path):
+    store = R.Store(tmp_path / "data")
+    b, _ = bot_for(tmp_path, store)
+
+    class E:
+        def __init__(self, name):
+            self.name = name
+
+        def __str__(self):
+            return f"<:{self.name}:1>"
+
+    class Client:
+        made = []
+
+        async def fetch_application_emojis(self):
+            return [E(P.EMOJI_PREFIX + "l0"), E("other")]
+
+        async def create_application_emoji(self, name, image):
+            Client.made.append(name)
+            return E(name)
+    b.client = Client()
+    asyncio.run(b.ensure_bar_emojis())
+    assert len(Client.made) == 8 and P.EMOJI_PREFIX + "l0" not in Client.made
+    assert len(b.bar_emojis) == 9 and b.render_bar(0.5).count("<:") == P.SEGMENTS
+
+    class Broken:
+        async def fetch_application_emojis(self):
+            raise RuntimeError("no access")
+    b2, _ = bot_for(tmp_path, store)
+    b2.client = Broken()
+    asyncio.run(b2.ensure_bar_emojis())                             # never raises: text bar instead
+    assert b2.render_bar(0.5) is None
+
+
+def test_bars_refresh_every_2s_and_slow_down_when_crowded(tmp_path):
+    store = R.Store(tmp_path / "data")
+    b, reg = bot_for(tmp_path, store)
+    job = P.Job.create(store.data_dir, "Trend edit", now=1000.0)
+    job.data["started"] = 1000.0
+
+    async def go():
+        job.update(0.2)
+        job.write(force=True)
+        await b.progress_tick(1010.0)
+        msg = reg[100].sent[-1]
+        job.update(0.3)
+        job.write(force=True)
+        await b.progress_tick(1011.0)                               # 1 s later: not yet
+        assert not msg.edits
+        await b.progress_tick(1012.0)                               # 2 s: edited
+        assert len(msg.edits) == 1
+        others = [P.Job.create(store.data_dir, f"other {i}", now=1000.0) for i in range(3)]
+        for o in others:
+            o.data["started"] = 1000.0
+            o.write(force=True)
+        job.update(0.4)
+        job.write(force=True)
+        await b.progress_tick(1014.0)                               # 4 bars in the channel: every 4 s
+        assert len(msg.edits) == 1
+        await b.progress_tick(1016.0)
+        assert len(msg.edits) == 2
+    asyncio.run(go())

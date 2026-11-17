@@ -360,10 +360,92 @@ def prune(data_dir: Path | str, now: float, keep_s: float = 86400) -> None:
             pass
 
 
-def bar(frac: float, width: int = 18) -> str:
+EIGHTHS = " ▏▎▍▌▋▊▉"
+
+
+def bar(frac: float, width: int = 16) -> str:
+    """Text bar (used when the rounded emoji bar isn't available), smooth to 1/8 of a cell."""
     frac = max(0.0, min(1.0, float(frac or 0)))
-    full = int(round(frac * width))
-    return "█" * full + "░" * (width - full)
+    eighths = int(round(frac * width * 8))
+    full, part = divmod(eighths, 8)
+    cells = "█" * full + (EIGHTHS[part] if part and full < width else "")
+    return "`" + cells + "░" * (width - len(cells)) + "`"
+
+
+# ---- the rounded bar: small pill-shaped pieces uploaded once as the bot's own emojis -----
+SEGMENTS = 12          # pieces in a bar; each is empty, half or full (24 steps)
+EMOJI_PREFIX = "spkbar1_"
+FILL, TRACK = (88, 101, 242), (78, 80, 88)   # Discord blurple on grey
+
+
+def _png(w: int, h: int, rgba: list[bytes]) -> bytes:
+    import struct
+    import zlib
+
+    def chunk(kind: bytes, data: bytes) -> bytes:
+        return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data) & 0xFFFFFFFF)
+    raw = b"".join(b"\x00" + row for row in rgba)
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 6, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress(raw, 9)) + chunk(b"IEND", b""))
+
+
+def _piece(kind: str, level: int, size: int = 64) -> bytes:
+    """One piece: kind l (rounded left end), m (middle) or r (rounded right end); level 0
+    empty, 1 left half filled, 2 full. Edges anti-aliased by 4x4 supersampling."""
+    top, bottom = size * 0.30, size * 0.70
+    r = (bottom - top) / 2
+    cy = (top + bottom) / 2
+    split = {0: 0, 1: size / 2, 2: size}[level]
+    rows = []
+    for y in range(size):
+        row = bytearray()
+        for x in range(size):
+            hit = 0
+            for sy in range(4):
+                for sx in range(4):
+                    px, py = x + (sx + 0.5) / 4, y + (sy + 0.5) / 4
+                    if not top <= py <= bottom:
+                        continue
+                    if kind == "l" and px < r + 1:
+                        hit += (px - (r + 1)) ** 2 + (py - cy) ** 2 <= r * r
+                    elif kind == "r" and px > size - r - 1:
+                        hit += (px - (size - r - 1)) ** 2 + (py - cy) ** 2 <= r * r
+                    else:
+                        hit += 1
+            colour = FILL if x + 0.5 <= split else TRACK
+            row += bytes(colour) + bytes([round(255 * hit / 16)])
+        rows.append(bytes(row))
+    return _png(size, size, rows)
+
+
+def bar_pieces() -> dict[str, bytes]:
+    """{emoji name: PNG} for the 9 pieces of the rounded bar."""
+    return {f"{EMOJI_PREFIX}{k}{lvl}": _piece(k, lvl) for k in "lmr" for lvl in (0, 1, 2)}
+
+
+def emoji_bar(frac: float, emojis: dict[str, str]) -> str | None:
+    """The rounded bar as emoji markup (None if the pieces aren't uploaded)."""
+    if not emojis:
+        return None
+    units = int(round(max(0.0, min(1.0, float(frac or 0))) * SEGMENTS * 2))
+    out = []
+    for i in range(SEGMENTS):
+        kind = "l" if i == 0 else ("r" if i == SEGMENTS - 1 else "m")
+        name = f"{EMOJI_PREFIX}{kind}{max(0, min(2, units - 2 * i))}"
+        if name not in emojis:
+            return None
+        out.append(emojis[name])
+    return "".join(out)
+
+
+def eta(d: dict, now: float) -> float | None:
+    """Seconds left, from the pace so far (None until there's enough to go on)."""
+    frac = float(d.get("frac") or 0)
+    spent = now - float(d.get("started", now))
+    if frac < 0.04 or spent < 8 or frac >= 1:
+        return None
+    left = spent * (1 - frac) / frac
+    return left if left < 4 * 3600 else None
 
 
 def clock(seconds: float) -> str:
@@ -396,8 +478,9 @@ def state_of(d: dict, now: float) -> str:
     return d.get("state", "running")
 
 
-def text(d: dict, now: float) -> str:
-    """The Discord message for one job."""
+def text(d: dict, now: float, render_bar=None) -> str:
+    """The Discord message for one job. `render_bar(frac)` draws the bar (the rounded emoji
+    bar in Discord); None or a None result = the text bar."""
     state = state_of(d, now)
     took = clock((d.get("updated") if state != "running" else now) - d.get("started", now))
     head = f"{d.get('icon', '🎬')} **{d.get('title', 'Working')}**"
@@ -421,4 +504,8 @@ def text(d: dict, now: float) -> str:
     if d.get("cancel"):
         stage, detail = "cancelling", ""
     run = f" · run `{short(d['id'])}`" if d.get("id") else ""
-    return f"{head}\n`{bar(d.get('frac', 0))}` **{pct}%** · {stage}{detail} · ⏱ {took}{run}"[:1900]
+    left = eta(d, now) if not d.get("cancel") else None
+    left_txt = f" · about {clock(left)} left" if left is not None else (" · estimating time left" if not
+                                                                       d.get("cancel") else "")
+    drawn = (render_bar(d.get("frac", 0)) if render_bar else None) or bar(d.get("frac", 0))
+    return f"{head}\n{drawn} **{pct}%**\n{stage}{detail} · ⏱ {took}{left_txt}{run}"[:1900]
