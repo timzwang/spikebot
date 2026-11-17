@@ -1,0 +1,10 @@
+{
+  "extraKnownMarketplaces": {
+    "local-mods": {
+      "source": { "source": "github", "repo": "timzwang/prompt-master" }
+    }
+  },
+  "enabledPlugins": {
+    "prompt-master@local-mods": true
+  }
+}
