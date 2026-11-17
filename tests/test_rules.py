@@ -20,8 +20,8 @@ class Inter(FakeInteraction):
         self.sent, self.edited = [], None
 
         class F:
-            async def send(self_, text, **kw):
-                self.sent.append((text, kw))
+            async def send(self_, content=None, **kw):
+                self.sent.append((content, kw))
         self.followup = F()
 
     async def edit_original_response(self, **kw):
@@ -179,3 +179,48 @@ def test_rules_reply_works_with_real_discord_objects(tmp_path):
     text, kw = inter.sent[-1]
     assert isinstance(kw["view"], discord.ui.View) and all(isinstance(e, discord.Embed) for e in kw["embeds"])
     assert len(kw["view"].to_components()) == 1
+
+
+def test_rules_falls_back_when_discord_answers_500(tmp_path):
+    import discord
+    store = R.Store(tmp_path / "data")
+    b, _ = bot_for(tmp_path, store)
+    profile_with_rules(store)
+
+    class Resp:
+        status, reason = 500, "Internal Server Error"
+
+    def refuse(n):
+        calls = []
+
+        async def send(content=None, **kw):
+            text = content
+            calls.append(kw)
+            if len(calls) <= n:
+                raise discord.DiscordServerError(Resp(), "500: Internal Server Error")
+            inter.sent.append((text, kw))
+        return send, calls
+
+    async def go(n):
+        global inter
+        inter = Inter()
+        send, calls = refuse(n)
+        inter.followup.send = send
+        orig = asyncio.sleep
+        asyncio.sleep = lambda s: orig(0)
+        try:
+            await b.rules_command(inter)
+        finally:
+            asyncio.sleep = orig
+        return inter, calls
+    global inter
+    i, calls = asyncio.run(go(1))                    # a blip: the retry gets the full list through
+    assert len(calls) == 2 and "view" in i.sent[-1][1]
+    i, calls = asyncio.run(go(2))                    # menus refused: list without them
+    assert "view" not in i.sent[-1][1] and "Menus unavailable" in i.sent[-1][0]
+    i, calls = asyncio.run(go(3))                    # embeds refused too: a text file
+    f = i.sent[-1][1]["file"]
+    assert f.filename == "rules.txt"
+    body = f.fp.read().decode()
+    assert "#3 ON  pace = fast (Lacy)" in body and "#5 ON  Licensed music" in body
+    assert DB.plain_category({"kind": "setting", "setting": "pace"}) == "Pace & cuts"

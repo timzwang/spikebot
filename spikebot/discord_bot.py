@@ -170,6 +170,24 @@ def replaced_by(entries: list[dict]) -> dict[int, int]:
 RULES_BUDGET = 5600   # Discord: 6000 characters across a message's embeds
 
 
+def plain_category(e: dict) -> str:
+    """Category name without its emoji (menu option descriptions: plain text is safest)."""
+    name = st.CATEGORY_NAME[st.category_of(e)]
+    return name.split(" ", 1)[1][:100] if " " in name else name[:100]
+
+
+def rules_text(entries: list[dict]) -> str:
+    """The whole list as plain text (the fallback attachment)."""
+    lines = []
+    for key, name, _ in st.CATEGORIES:
+        es = [e for e in entries if st.category_of(e) == key]
+        if es:
+            lines.append(name)
+            lines += [f"  #{e['n']} {'ON ' if e.get('on', True) else 'OFF'} {st.entry_text(e)}" for e in es]
+            lines.append("")
+    return "\n".join(lines) or "No rules yet."
+
+
 def rules_payload(entries: list[dict], notice: str = "") -> dict:
     """/rules: one embed per category, every entry numbered, plus menus to switch them."""
     on = [e for e in entries if e.get("on", True)]
@@ -219,7 +237,7 @@ def rules_payload(entries: list[dict], notice: str = "") -> dict:
                           if len(es) > 25 else f"{verb}…",
                           "max": len(part),
                           "options": [{"label": f"#{e['n']} {st.entry_text(e)}"[:100], "value": str(e["n"]),
-                                       "description": st.CATEGORY_NAME[st.category_of(e)][:100]} for e in part]}])
+                                       "description": plain_category(e)} for e in part]}])
     chunks(on, "rules_off", "Turn off")
     del rows[3:]
     chunks([e for e in entries if not e.get("on", True)], "rules_on", "Turn back on")
@@ -1600,8 +1618,15 @@ class ReviewBot:
         on = data["action"] == "rules_on"
         changed, missing, entries = await asyncio.to_thread(self.toggle_entries, values, on)
         payload = rules_payload(entries, self.toggle_notice(changed, missing, on))
-        await inter.edit_original_response(content=payload["content"], embeds=self.embeds(payload["embeds"]),
-                                           view=self.view(payload["rows"]))
+        import discord
+        try:
+            await inter.edit_original_response(content=payload["content"], embeds=self.embeds(payload["embeds"]),
+                                               view=self.view(payload["rows"]))
+        except discord.HTTPException as e:   # the change is saved either way: say so, then show the list
+            log.warning("rules menu edit refused by Discord (%s %s)", e.status, e.text[:200])
+            await inter.followup.send(f"{self.toggle_notice(changed, missing, on)} (saved). Discord wouldn't"
+                                      " refresh the list; here it is again:", ephemeral=True)
+            await self.send_rules(inter, payload, entries)
 
     async def rules_command(self, inter, disable: str | None = None, enable: str | None = None) -> None:
         await inter.response.defer(thinking=True)   # answer within Discord's 3 s
@@ -1614,10 +1639,46 @@ class ReviewBot:
                     continue
                 changed, missing, _ = await asyncio.to_thread(self.toggle_entries, nums, on)
                 notice.append(self.toggle_notice(changed, missing, on))
-        entries = (await asyncio.to_thread(self.store.profile)).entries()
-        payload = rules_payload(list(entries), " · ".join(notice))
-        await inter.followup.send(payload["content"], embeds=self.embeds(payload["embeds"]),
-                                  view=self.view(payload["rows"]))
+        entries = list((await asyncio.to_thread(self.store.profile)).entries())
+        payload = rules_payload(entries, " · ".join(notice))
+        await self.send_rules(inter, payload, entries)
+
+    async def send_rules(self, inter, payload: dict, entries: list[dict]) -> None:
+        """Send the list; when Discord refuses it (it has answered 500 here), retry, then fall
+        back to simpler messages so Tim always gets the list."""
+        import io
+
+        import discord
+
+        def full():
+            return dict(content=payload["content"], embeds=self.embeds(payload["embeds"]),
+                        view=self.view(payload["rows"]))
+
+        def no_menus():
+            return dict(content=(payload["content"] + "\n_(Menus unavailable right now: use"
+                                 " `/rules disable:3, 5-7` or `enable:`.)_")[:1990],
+                        embeds=self.embeds(payload["embeds"]))
+
+        def as_file():
+            return dict(content=(payload["content"].split("\n")[0] + "\nThe full list is attached."
+                                 " Turn entries off with `/rules disable:3, 5-7`.")[:1990],
+                        file=discord.File(io.BytesIO(rules_text(entries).encode()), filename="rules.txt"))
+        last = None
+        for attempt, build in enumerate((full, full, no_menus, as_file)):
+            try:
+                await inter.followup.send(**build())
+                if attempt:
+                    log.info("/rules sent on attempt %d", attempt + 1)
+                return
+            except discord.HTTPException as e:
+                last = e
+                log.warning("/rules attempt %d refused by Discord (%s %s); payload: %d embeds, %d chars, %d menus,"
+                            " %d entries", attempt + 1, e.status, e.text[:200], len(payload["embeds"]),
+                            sum(len(x.get("description", "")) for x in payload["embeds"]), len(payload["rows"]),
+                            len(entries))
+                if attempt == 0:
+                    await asyncio.sleep(1.5)
+        raise last
 
     # ---- slash commands -------------------------------------------------------------
     def register_commands(self, tree) -> None:
