@@ -150,7 +150,9 @@ it in sync when behaviour or config changes.
   `build_ass(style=)` (word captions, font/size/position/colours, hook length, end card;
   `caption_margin` keeps clear of the hook box and the bottom 320 px), `keep_segments` /
   `remap_words` (window around the peak at the payoff point + jump cuts, peak always kept),
-  `render_variant` (trim/concat, zoom punch or white flash per cut, grade, captions),
+  `render_variant` (trim/concat, zoom punch or white flash per cut, grade, captions, SFX mix),
+  layout = facecam exactly the top third (`CAM_SHARE`), gameplay two thirds; captions only when
+  `worth_captioning` (>= 3 meaningful words, `FILLER`), filler-only caption groups cut,
   `preview` (size-budgeted), `render`, `review_copy`, `pick_thumbnail` (dHash vs.
   `data/lacy/thumbnails.json`), `transcribe` (faster-whisper, lazy import).
 - `spikebot/youtube.py`: YouTube Data API upload (resumable), `set_thumbnail`, and the
@@ -174,6 +176,20 @@ it in sync when behaviour or config changes.
   own story/hook kind, `PACE_PATTERNS`, grade, text style, transition `flash`/`zoom`/`cut`);
   approved edits are copied to `exports/tokyo_girl/`. With review off the old `make` +
   `deliver` (webhook) path runs.
+- `spikebot/music.py`: song beat maps (librosa, lazy): `analyse` (bpm, beats filled back to 0,
+  drop = biggest loudness rise), `Library` (`data/music/`, cache `library.json`, newest = current),
+  `start_for` (one bar before the drop), `grid` (beat times from the start), `note` (where to
+  start the sound). Audio uploaded in #inspiration -> `python -m spikebot.music add`. Tokyo Girl
+  `plan_clip(beats=)` cuts on it; edits stay silent.
+- `spikebot/sfx.py`: whoosh/riser/hit from `data/sfx/<kind>/` for Lacy (`cues`, `mix_graph`,
+  amix normalize=0 under the voice); custom `sfx` volume (0 = off). Tokyo Girl never gets SFX.
+- `spikebot/remotion.py` + `remotion/` (React, remotion 4.0.529 pinned): Tokyo Girl renderer
+  (`TrailerEdit`: eased Ken Burns, spring punch + blur, flashes, kinetic word text, logo reveal,
+  grain/vignette/letterbox). `props_for` builds the props; media hard-linked into a temp public dir
+  under data/.remotion; `--muted`. `tokyo_girl.engine` auto|remotion|ffmpeg; any failure falls back
+  to ffmpeg `render_plan`. `REMOTION_BROWSER` / `remotion_browser` = a local Chrome. Deployed by
+  `deploy/setup_remotion.sh` (Node 22 in /opt/spikebot/node if needed, npm ci on lockfile change,
+  `remotion browser ensure`). Tests force ffmpeg unless marked `remotion` (tests/conftest.py).
 - `spikebot/delivery.py`: #ready-to-post for every mode (`MODES` labels/colours). Never
   re-encodes: files <= `videos.discord_max_mb` are attached; bigger ones (or a Discord 413)
   go to the private bucket `VIDEOS_GCS_BUCKET` via `GCSUploader` (google-cloud-storage, lazy

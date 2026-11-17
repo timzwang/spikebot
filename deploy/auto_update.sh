@@ -90,6 +90,11 @@ rm -rf "$APP/.spikebot.old"
 chown -R spikebot:spikebot "$APP/spikebot" "$APP/requirements.txt"
 [ -d "$APP/venv" ] && chown -R spikebot:spikebot "$APP/venv"
 
+# Remotion renderer (Node + npm ci only when its lockfile changes). Never fatal.
+if [ -x "$REPO/deploy/setup_remotion.sh" ] || [ -f "$REPO/deploy/setup_remotion.sh" ]; then
+    bash "$REPO/deploy/setup_remotion.sh" "$REPO" "$APP" 2>&1 | while read -r line; do log "$line"; done || true
+fi
+
 # Install/refresh the Tokyo Girl daily timer (added after the first install.sh run).
 # Never fatal: a problem here must not block the bot's own deploy.
 if [ -f "$REPO/deploy/spikebot-tokyo-girl.timer" ]; then

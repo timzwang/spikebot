@@ -134,9 +134,16 @@ Rewards). Off by default. It only ever touches `twitch.tv/lacy`.
    (max 59s) from his Twitch VOD. It does not download the whole VOD.
 3. Skips the clip if it shows a BRB/away screen (screen or facecam frozen), his camera is
    off (facecam black), the speech isn't English, or there's almost no speech.
-4. Renders 1080x1920: **his facecam full-width on top for the whole clip**, gameplay
-   below, the title as on-screen text and word-by-word captions. **No watermark, logo or
-   "6" overlay** in Lacy mode.
+4. Renders 1080x1920: **his facecam full-width in the top third for the whole clip**
+   (trimmed to shape, never squashed), **gameplay in the bottom two thirds**, the title as
+   on-screen text and captions. Captions only appear when they add something: lines that
+   are just reactions ("bro", "no way", laughing) are cut, and if nothing meaningful is
+   said there are no captions at all. No end card unless you ask for one. **No watermark,
+   logo or "6" overlay** in Lacy mode.
+   **Sound effects**: a whoosh into visible cuts, a riser into the payoff and a hit on it,
+   quietly under his voice. Put royalty-free files (e.g. Pixabay sound effects) in
+   `/opt/spikebot/data/sfx/whoosh/`, `.../hit/` and `.../riser/`; no files = no effects.
+   Volume via `/feedback` ("quieter sound effects", or `sfx` 0-1; 0 turns them off).
 5. Title always contains "Lacy" and is neutral or funny (it never uses negative,
    mocking or drama words; see `TITLES` / `BANNED` in `spikebot/lacy.py`). Description
    includes `#Lacy #Shorts`.
@@ -271,8 +278,20 @@ hand. On by default, 2 a day (`TOKYO_GIRL_PER_DAY` in `.env`, or `tokyo_girl.per
 **What each edit is**
 
 - 1080x1920, 15-30 s, **no audio track at all**. Add the official "Tokyo Girl" sound in
-  TikTok/IG. Cuts sit on a 120 BPM grid (every 0.5 s) and the length is whole bars, so if
-  you start the sound on a beat the cuts land on the music.
+  TikTok/IG. **Cuts follow the real song**: upload the audio file of the sound you'll use
+  in #inspiration (or put it in `/opt/spikebot/data/music/`). The bot finds its beats and
+  the drop (librosa), starts the edit one bar before the drop (the logo intro fades away
+  exactly on it) and every card says **where to start the sound** in the app, e.g. "start
+  it at 0:42". The newest song is used (`tokyo_girl.song` picks one by name). No song =
+  an even 120 BPM grid as before. The song itself is only measured, never put in the file.
+- **Rendered with Remotion** (motion design) when it's installed: eased push-ins and
+  drifts, spring punch-ins with motion blur, eased flashes, words popping in one by one,
+  the logo resolving from blur and scaling away into the edit, film grain, vignette,
+  cinema bars. Installed automatically on deploy (`deploy/setup_remotion.sh`: Node 22,
+  `npm ci` in `remotion/`, Remotion's headless Chrome; about 500 MB disk). About 2 minutes
+  per 15 s edit on the VM. If Remotion isn't there or a render fails, the ffmpeg renderer
+  is used, so an edit is never lost. Force one with `tokyo_girl.engine`: `auto` (default),
+  `remotion` or `ffmpeg`. Remotion is free for individuals and teams of up to 3.
 - Footage: only official Rockstar GTA VI trailers and screenshots. No stream clips, no
   voices or dialogue. Vice City views, cars, Jason & Lucia.
 - Big on-screen text telling a short story (news, theory, meme or Jason & Lucia joke),

@@ -65,6 +65,8 @@ DEFAULTS = {
     # songs to sync cuts to (only measured; edits stay silent). Newest is used unless
     # "song" names one (file stem). Empty folder = the fixed `bpm` grid.
     "music_dir": "data/music",
+    # renderer: "auto" = Remotion (motion design) when installed, else ffmpeg; "ffmpeg"; "remotion"
+    "engine": "auto",
     "song": "",
     "export_dir": "exports/tokyo_girl",
     "state_file": "data/tokyo_girl/state.json",
@@ -939,9 +941,7 @@ class ReviewAdapter:
                 else:
                     log.warning("logo intro asked for but %s is missing: rendering without it", logo)
             shown = cards_for_level(plan.cards, r["text_level"], intro_s)
-            render_plan(plan, self.lcfg, mp4, st.grade_filter(r["grade"]), r, cards=shown,
-                        logo=logo if intro_s else None, intro_s=intro_s,
-                        look=st.look_filter(r["look"], "tokyo_girl", W, H))
+            engine = self.render_edit(plan, mp4, r, shown, logo if intro_s else None, intro_s)
             prev = editor.preview(mp4, folder / f"{stem}_preview.mp4", preview_bytes, plan.duration)
             uses = state.setdefault("uses", {})
             for sl in plan.slots:
@@ -959,12 +959,28 @@ class ReviewAdapter:
                         "tags": ["GTA 6", "GTA VI", "Shorts", "Vice City"], "hook": title,
                         "captions": caps, "file": mp4.name, "preview": prev.name,
                         "duration": round(plan.duration, 1), "cuts": len(plan.slots) - 1, "silent": True,
-                        "text_cards": len(shown), "intro": "logo" if intro_s else "none",
+                        "text_cards": len(shown), "intro": "logo" if intro_s else "none", "engine": engine,
                         "music": ({"song": song["name"], "start_s": song_start, "bpm": song["bpm"]}
                                   if song else None),
                         "music_note": music.note(song, song_start) if song else None})
         save_state(state_path, state)
         return out
+
+    def render_edit(self, plan: Plan, mp4: Path, r: dict, shown, logo: Path | None, intro_s: float) -> str:
+        """Remotion when available (or forced), ffmpeg otherwise or if Remotion fails.
+        Returns the engine that made the file."""
+        from . import remotion
+        from . import style as st
+        engine = self.lcfg.get("engine", "auto")
+        if engine == "remotion" or (engine == "auto" and remotion.available()):
+            try:
+                remotion.render(plan, self.lcfg, mp4, r, shown, logo, intro_s)
+                return "remotion"
+            except (remotion.RemotionError, subprocess.SubprocessError, OSError) as e:
+                log.warning("Remotion render failed, using ffmpeg instead: %s", e)
+        render_plan(plan, self.lcfg, mp4, st.grade_filter(r["grade"]), r, cards=shown, logo=logo,
+                    intro_s=intro_s, look=st.look_filter(r["look"], "tokyo_girl", W, H))
+        return "ffmpeg"
 
     def validate(self, item: dict, v: dict) -> None:
         if not (3 <= len(v["title"]) <= 100):

@@ -45,6 +45,9 @@ echo "==> Python environment"
 "$APP/venv/bin/pip" install --quiet -r "$APP/requirements.txt"
 chown -R spikebot:spikebot "$APP"
 
+echo "==> Remotion renderer (motion design for Tokyo Girl edits; optional)"
+bash "$REPO/deploy/setup_remotion.sh" "$REPO" "$APP" || echo "Remotion setup skipped (ffmpeg renderer is used)"
+
 echo "==> Installing systemd units"
 sed "s#@APP@#$APP#g" "$REPO/deploy/spikebot.service" > "$UNITS/spikebot.service"
 sed "s#@REPO@#$REPO#g" "$REPO/deploy/spikebot-update.service" > "$UNITS/spikebot-update.service"
