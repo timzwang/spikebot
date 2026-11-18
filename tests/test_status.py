@@ -231,3 +231,26 @@ def test_bot_status_wiring(tmp_path, monkeypatch):
     assert all(isinstance(t, dict) and "embeds" in t for u, t in posts)
     assert len(summary) == 1 and "adinross: 1" in summary[0] and "7.5" in summary[0]
     assert (tmp_path / "status_state.json").exists()
+
+
+def test_cpu_samples_and_daily_summary_line():
+    from spikebot import status as st
+    from spikebot import messages as M
+    data: dict = {}
+    t0 = 1_800_000_000.0
+    for i in range(288):                                   # a day of 5-minute samples
+        st.add_cpu_sample(data, t0 + i * 300, 1.2 if 100 <= i < 130 else 0.3)
+    assert len(data["cpu"]) == 288
+    st.add_cpu_sample(data, t0 + 30 * 3600, 0.5)            # older than 26 h are dropped
+    assert data["cpu"][0][0] >= t0 + 4 * 3600
+    rows = [[t0 + i * 300, 1.2 if 100 <= i < 130 else 0.3] for i in range(288)]
+    cpu = st.cpu_summary(rows, t0 + 287 * 300)
+    assert cpu["busy_s"] == 30 * 300 and cpu["upgrade"] and cpu["peak"] == 1.2
+    line = M.cpu_line(cpu, 4)
+    assert "(4 cores)" in line and "maxed out for 2h 30m" in line and "bigger VM" in line
+    calm = st.cpu_summary([[t0, 0.2], [t0 + 300, 0.4]], t0 + 300)
+    assert not calm["upgrade"] and "no upgrade needed" in M.cpu_line(calm)
+    assert st.cpu_summary([], t0) is None
+    payload = M.summary([], [("kick", "x")], t0 + 287 * 300, cpu=cpu, cores=4)
+    assert "Server CPU" in payload["embeds"][0]["description"]
+    assert "Server CPU" not in M.summary([], [("kick", "x")], t0)["embeds"][0]["description"]

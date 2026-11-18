@@ -70,7 +70,7 @@ It posts to four Discord webhooks, which must stay separate:
 |---|---|---|
 | `discord_webhook_url` | #moments | Clip moments only (`candidate` spikes) |
 | `status_webhook_url` | #status | Bot health: start/restart, streamer live/offline (with category), chat down >5 min and reconnected, Kick 4001 key error, disk <20% free |
-| `summary_webhook_url` | #daily-summary | 22:00 UK daily summary: moments per streamer + top 3 by score (last 24h) |
+| `summary_webhook_url` | #daily-summary | 22:00 UK daily summary: moments per streamer + top 3 by score (last 24h) + server CPU (average, peak, time maxed out, upgrade verdict) |
 | `videos_webhook_url` | #ready-to-post | Legacy only (review off / `lacy deliver`): finished file attached, or a GCS link. Old name `tokyo_girl_webhook_url` still read |
 
 An empty field disables that channel; the message is still logged.
@@ -114,7 +114,9 @@ it in sync when behaviour or config changes.
   if it never connected) and alerts after 5 min, then again on reconnect.
   `LiveWatch` turns polls into live/offline events (offline at startup is silent).
   `next_summary_time` handles GMT/BST; a summary missed while the bot was down is
-  sent on start if it's still before midnight UK.
+  sent on start if it's still before midnight UK. CPU: `status_loop` adds a load-per-core sample every 5 min
+  (`add_cpu_sample`, `status_state.cpu`, 26 h kept); `cpu_summary` -> `messages.cpu_line` in the summary
+  (maxed out = >= `CPU_BUSY` 0.9; >= 2 h = `upgrade` verdict).
 - `spikebot/main.py`: `Bot` wires it together. `ticker()` drives the detectors,
   `poll_state()` refreshes live/category/start time every 120s, `handle()` sets the
   status (`candidate` / `low_score` / `filtered_category`) and saves *every* spike

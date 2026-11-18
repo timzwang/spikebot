@@ -644,6 +644,10 @@ class Bot:
                         f" {st_.duration(now - since)} (since {msg_.ts(since)}).")
                 if now - last_disk >= 300:
                     last_disk = now
+                    try:
+                        st_.add_cpu_sample(self.status_state.data, now, st_.cpu_load_share())
+                    except OSError:   # no load average on this OS
+                        pass
                     free = st_.disk_free_share(self.data_dir)
                     if free < st_.DISK_MIN_FREE:
                         await self.notifier.send(
@@ -662,7 +666,8 @@ class Bot:
 
     def summary_message(self, now: float) -> dict:
         return msg_.summary(self.store.candidates_since(now - 86400),
-                            list(self.detectors), now, self.names)
+                            list(self.detectors), now, self.names,
+                            cpu=st_.cpu_summary(self.status_state.data.get("cpu"), now), cores=os.cpu_count())
 
     async def summary_loop(self) -> None:
         if st_.summary_due_on_start(time.time(), self.status_state.data.get("last_summary_date")):

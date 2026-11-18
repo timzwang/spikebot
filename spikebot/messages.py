@@ -191,7 +191,8 @@ def status(kind: str, text: str) -> dict:
 # #daily-summary
 # --------------------------------------------------------------------------
 def summary(rows: list[dict], channels: list[tuple[str, str]], now: float,
-            names: dict | None = None, window_s: float = 86400) -> dict:
+            names: dict | None = None, window_s: float = 86400, cpu: dict | None = None,
+            cores: int | None = None) -> dict:
     """rows: candidate moments in the window (platform, channel, score, onset and,
     when known, peak_rate, baseline, vod_url). channels: every tracked (platform, name)."""
     names = names or {}
@@ -221,4 +222,19 @@ def summary(rows: list[dict], channels: list[tuple[str, str]], now: float,
         elif r.get("stream_offset_start"):
             bits.append(f"stream time {r['stream_offset_start']}")
         lines.append(f"{i}. " + " · ".join(bits))
+    if cpu:
+        lines += ["", cpu_line(cpu, cores)]
     return embed("\n".join(lines), BLURPLE, title="📊 Daily summary")
+
+
+def cpu_line(cpu: dict, cores: int | None = None) -> str:
+    """The server's CPU over the day and whether a bigger VM looks worth it."""
+    from .status import duration
+    busy = cpu["busy_s"]
+    head = (f"**Server CPU**{f' ({cores} cores)' if cores else ''}: average {min(cpu['avg'], 9.99):.0%},"
+            f" peak {min(cpu['peak'], 9.99):.0%} at {ts(cpu['peak_at'], 't')}, maxed out for "
+            + (duration(busy) if busy else "no time at all"))
+    if cpu["upgrade"]:
+        return head + ("\n⚠️ Maxed out for a long time today. If stream clips reached #ready-to-post late,"
+                       " a bigger VM (paid from trial credit, scaled back before 14 Feb) would help.")
+    return head + "\n✅ Plenty of headroom: no upgrade needed."

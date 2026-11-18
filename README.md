@@ -92,7 +92,9 @@ sudo bash ~/spikebot/deploy/auto_update.sh --force   # redeploy even with no new
   and when it reconnects, Kick error 4001 (chat key rotated), disk under 20% free. The same alert
   is never repeated within 30 minutes. Twitch live/offline needs the Twitch keys (`.env`).
 - `summary_webhook_url`: a third webhook (#daily-summary). At 22:00 UK time every day: moments
-  per streamer and the top 3 by score for the last 24 hours.
+  per streamer and the top 3 by score for the last 24 hours, plus the server's CPU (average, peak
+  and how long it was maxed out, sampled every 5 minutes). Maxed out for 2 hours or more in a day
+  shows a ⚠️ "a bigger VM would help" line; otherwise "no upgrade needed".
 - `detector`: tuning. `ratio` and `z` control sensitivity (higher = fewer, bigger moments);
   `pre_roll_s` / `post_roll_s` control how much footage either side of the reaction.
 

@@ -159,6 +159,39 @@ def disk_free_share(path: Path) -> float:
 
 
 # --------------------------------------------------------------------------
+# CPU load for #daily-summary (Tim, 18 Nov: see whether the VM is short of CPU before paying
+# for a bigger one)
+# --------------------------------------------------------------------------
+CPU_EVERY_S = 300      # one sample every 5 minutes
+CPU_KEEP_S = 26 * 3600
+CPU_BUSY = 0.9         # load per core at or above this = maxed out
+CPU_UPGRADE_BUSY_S = 2 * 3600   # maxed out this long in a day = worth considering an upgrade
+
+
+def cpu_load_share() -> float:
+    """1-minute load average per CPU core (1.0 = every core busy; above 1 = work waiting)."""
+    return os.getloadavg()[0] / max(1, os.cpu_count() or 1)
+
+
+def add_cpu_sample(data: dict, now: float, share: float) -> None:
+    """Keep [time, load per core] samples for the last 26 h in the status state."""
+    rows = [r for r in data.get("cpu") or [] if now - r[0] <= CPU_KEEP_S]
+    rows.append([round(now), round(share, 3)])
+    data["cpu"] = rows
+
+
+def cpu_summary(rows: list, now: float, window_s: float = 86400, every_s: float = CPU_EVERY_S) -> dict | None:
+    """{avg, peak, peak_at, busy_s, upgrade} over the window, None without samples. Pure."""
+    rows = [r for r in rows or [] if now - window_s <= r[0] <= now]
+    if not rows:
+        return None
+    peak = max(rows, key=lambda r: r[1])
+    busy_s = sum(every_s for r in rows if r[1] >= CPU_BUSY)
+    return {"avg": sum(r[1] for r in rows) / len(rows), "peak": peak[1], "peak_at": peak[0],
+            "busy_s": busy_s, "samples": len(rows), "upgrade": busy_s >= CPU_UPGRADE_BUSY_S}
+
+
+# --------------------------------------------------------------------------
 # Daily summary timing (the layout is messages.summary)
 # --------------------------------------------------------------------------
 def next_summary_time(now: float, hour: int = SUMMARY_HOUR_UK) -> float:
