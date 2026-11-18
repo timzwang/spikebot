@@ -151,7 +151,7 @@ it in sync when behaviour or config changes.
   `caption_margin` keeps clear of the hook box and the bottom 320 px), `keep_segments` /
   `remap_words` (window around the peak at the payoff point + jump cuts, peak always kept),
   `render_variant` (trim/concat, zoom punch or white flash per cut, grade, captions, SFX mix),
-  layout = facecam exactly the top third (`CAM_SHARE`), gameplay two thirds; captions only when
+  layout = facecam exactly the top third (`CAM_SHARE`), gameplay two thirds; output `out_fps` = source rate capped at 60 (#39, unknown = 30), final encodes `CRF` 18 (also Tokyo Girl/Remotion); captions only when
   `worth_captioning` (>= 3 meaningful words, `FILLER`), filler-only caption groups cut,
   `preview` (size-budgeted), `render`, `review_copy`, `pick_thumbnail` (dHash vs.
   `data/lacy/thumbnails.json`), `transcribe` (faster-whisper, lazy import).
@@ -163,7 +163,7 @@ it in sync when behaviour or config changes.
 - `spikebot/tokyo_girl.py`: **Tokyo Girl mode** (on by default; `TOKYO_GIRL_MODE`,
   `TOKYO_GIRL_PER_DAY`, `tokyo_girl` config block). Standalone CLI, not part of `Bot`: run daily
   by `spikebot-tokyo-girl.timer` (06:47 UK, `daily` tops up to `per_day`). Makes silent
-  (`-an`, no audio stream) 1080x1920 15-30 s edits from official Rockstar GTA VI trailers and
+  (`-an`, no audio stream) 1080x1920 60 fps 15-30 s edits from official Rockstar GTA VI trailers and
   screenshots only (`fetch`: `ALLOWED_HOSTS`, yt-dlp limited to uploader Rockstar; plus a drop
   folder `data/rockstar_media/`). `Library` caches per-file analysis (scene cuts, YAVG,
   letterbox crop) in `library.json`; `build_shots` trims trailer head/tail, dark shots and
@@ -204,7 +204,7 @@ it in sync when behaviour or config changes.
   (`TrailerEdit`: eased Ken Burns, spring punch + blur, flashes, kinetic word text, logo reveal,
   grain/vignette/letterbox). `props_for` builds the props; media hard-linked into a temp public dir
   under data/.remotion; `--muted`. `tokyo_girl.engine` auto|remotion|ffmpeg; any failure falls back
-  to ffmpeg `render_plan`. `REMOTION_BROWSER` / `remotion_browser` = a local Chrome. Watchdog kills a render after 5 min with no output or 20 min total (then ffmpeg); `remotion_concurrency` (default half the CPUs, max 4), `remotion_cache_mb` (offthread video cache), `remotion_tmp` (work dir, e.g. a RAM disk). Parallel renders register in `<work>/active/` (`render_slot`) and split concurrency and cache evenly. Deployed by
+  to ffmpeg `render_plan`. `REMOTION_BROWSER` / `remotion_browser` = a local Chrome. Watchdog kills a render after 5 min with no output or 40 min total (then ffmpeg); `remotion_concurrency` (default half the CPUs, max 4), `remotion_cache_mb` (offthread video cache), `remotion_tmp` (work dir, e.g. a RAM disk). Parallel renders register in `<work>/active/` (`render_slot`) and split concurrency and cache evenly. Deployed by
   `deploy/setup_remotion.sh` (Node 22 in /opt/spikebot/node if needed, npm ci on lockfile change,
   `remotion browser ensure`). Tests force ffmpeg unless marked `remotion` (tests/conftest.py).
 - `spikebot/delivery.py`: #ready-to-post for every mode (`MODES` labels/colours). Never
@@ -293,7 +293,8 @@ it in sync when behaviour or config changes.
   entries not yet `checked` against `capabilities_version()` = hash of `ai.settings_menu()` + `style.BUILT_IN`)
   -> `apply` under `profile_lock` on a fresh profile: verdict settings (new entries, limited to the note's
   kinds, note off "now #N"), built_in (off), needs_code (stays on, `status`/`needs`, `data/rules/needs_code.json`,
-  GitHub issue label `rule-request` when `GITHUB_TOKEN` is in .env, retried hourly), not_editor. #status
+  GitHub issue label `rule-request` when `GITHUB_TOKEN` is in .env, retried hourly; the issue starts
+  `.github/workflows/rule-request.yml` = Claude Code builds, tests and pushes to main), not_editor. #status
   gets `compile_notice`. **When you build a new editor capability, expose it in `settings_menu` (or add a
   `BUILT_IN` line) so saved notes upgrade themselves.**
 - `spikebot/deploy_requests.json`: one-off actions run once by `ReviewBot.run_deploy_requests` after the

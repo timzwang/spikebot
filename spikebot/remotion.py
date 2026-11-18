@@ -28,6 +28,8 @@ from pathlib import Path
 
 log = logging.getLogger("remotion")
 ROOT = Path(__file__).resolve().parent.parent / "remotion"
+FPS = 60    # same as tokyo_girl.FPS (#39)
+CRF = 18    # same as editor.CRF (#39)
 TEXT_Y = {"high": 0.27, "middle": 0.44, "low": 0.6}
 
 
@@ -76,7 +78,7 @@ def props_for(plan, lcfg: dict, r: dict, cards: list[tuple[float, float, str]], 
             "sizePx": int(r.get("text_px") or lcfg.get("font_size", 104) * scale * 0.92),
             "colour": r.get("text_colour") or "#FFFFFF", "highlight": r.get("highlight") or "#FFE500",
             "y": float(y) if y is not None else TEXT_Y.get(r.get("position") or "high", 0.27)}
-    props = {"fps": 30, "width": 1080, "height": 1920, "duration": round(plan.duration, 4),
+    props = {"fps": FPS, "width": 1080, "height": 1920, "duration": round(plan.duration, 4),
              "shots": shots,
              "cards": [{"from": a, "to": b, "text": t, "ask": i == len(cards) - 1 and t.replace("*", "").rstrip().endswith("?")}
                        for i, (a, b, t) in enumerate(cards)],
@@ -193,7 +195,7 @@ def render_slot(work: Path):
 
 
 def render(plan, lcfg: dict, out: Path, r: dict, cards, logo: Path | None = None, intro_s: float = 0.0,
-           root: Path = ROOT, timeout: float = 1200) -> Path:
+           root: Path = ROOT, timeout: float = 2400) -> Path:
     """Render one edit with Remotion. Raises RemotionError (the caller falls back to ffmpeg)."""
     if not available(root):
         raise RemotionError("Remotion isn't installed (node + remotion/node_modules)")
@@ -214,7 +216,7 @@ def render(plan, lcfg: dict, out: Path, r: dict, cards, logo: Path | None = None
         pj.write_text(json.dumps(props), encoding="utf-8")
         part = Path(tmp) / "edit.mp4"
         cmd = [str(root / "node_modules" / ".bin" / "remotion"), "render", "src/index.ts", "TrailerEdit",
-               str(part), f"--props={pj}", f"--public-dir={pub}", "--muted", "--codec=h264", "--crf=19",
+               str(part), f"--props={pj}", f"--public-dir={pub}", "--muted", "--codec=h264", f"--crf={CRF}",
                "--log=info", f"--concurrency={max(1, concurrency(lcfg) // sharing)}"]
         if lcfg.get("remotion_cache_mb"):   # decoded-frame cache, split between parallel renders
             mb = max(256, int(lcfg["remotion_cache_mb"]) // sharing)

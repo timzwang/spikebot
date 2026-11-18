@@ -424,3 +424,16 @@ def test_worker_routes_results(tmp_path, monkeypatch, outcome, expect):
     asyncio.run(lm._process(job["id"], None, status))
     assert [k for k, _ in got] == ([expect] if expect else [])
     assert ran == ["render"]
+
+
+def test_lacy_output_is_60_fps_or_the_sources_own_rate():
+    """#39: 60 fps output; a 30 fps VOD stays 30, 59.94 stays 59.94, unknown = 30."""
+    assert editor.out_fps(60) == 60 and editor.out_fps(120) == 60 and editor.out_fps(30) == 30
+    assert editor.out_fps(None) == 30 and editor.out_fps(0) == 30
+    assert editor.frame_rate("60000/1001") == 59.94 and editor.frame_rate("0/0") is None
+    assert editor.fps_arg(59.94) == "60000/1001" and editor.fps_arg(60) == "60" and editor.fps_arg(30) == "30"
+    box = {"x": 0.0, "y": 0.0, "w": 0.25, "h": 0.30}
+    assert editor.layout(1920, 1080, box, src_fps=60).filter().endswith("fps=60")
+    assert editor.layout(1920, 1080, box, src_fps=59.94).filter().endswith("fps=60000/1001")
+    assert editor.layout(1920, 1080, box).filter().endswith("fps=30")
+    assert editor.CRF == 18

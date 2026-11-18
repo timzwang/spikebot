@@ -296,8 +296,9 @@ hand. On by default, 2 a day (`TOKYO_GIRL_PER_DAY` in `.env`, or `tokyo_girl.per
   `npm ci` in `remotion/`, Remotion's headless Chrome; about 500 MB disk). About 2 minutes
   per 15 s edit on the VM. If Remotion isn't there or a render fails, the ffmpeg renderer
   is used, so an edit is never lost. Force one with `tokyo_girl.engine`: `auto` (default),
-  `remotion` or `ffmpeg`. A Remotion render that prints nothing for 5 min, or runs over
-  20 min, is killed and falls back to ffmpeg. `tokyo_girl.remotion_concurrency` sets frames
+  `remotion` or `ffmpeg`. Edits render at 60 fps, CRF 18 (Lacy clips too: 60 fps, or the VOD's
+  own rate when it's lower). A Remotion render that prints nothing for 5 min, or runs over
+  40 min, is killed and falls back to ffmpeg. `tokyo_girl.remotion_concurrency` sets frames
   rendered in parallel (default: half the CPUs, max 4).
   `remotion_cache_mb` sets Remotion's decoded-frame cache; `remotion_tmp` (e.g. `/dev/shm/spikebot-remotion`)
   renders in a RAM disk (media is copied there per render). Several renders at once (e.g.
@@ -483,7 +484,12 @@ one against what the editor can do now. If settings achieve it they are added as
 note is switched off ("now #N"); if the editor already does it, "built in now"; if it needs new code
 it stays on, marked _needs new editor code_, goes into `data/rules/needs_code.json` and, with
 `GITHUB_TOKEN` in `.env` (a fine-grained token with Issues read/write on this repo), is filed as a
-GitHub issue labelled `rule-request`, which a daily Claude Code job builds and deploys. Each verdict
+GitHub issue labelled `rule-request`. Filing it starts the **Build rule request** GitHub Action
+(`.github/workflows/rule-request.yml`) at once: Claude Code builds the rule as a real setting, runs
+the tests and pushes to `main`, which deploys in 1-2 minutes, and the bot then switches the rule on by
+itself. The Action needs one repository secret: `CLAUDE_CODE_OAUTH_TOKEN` (run `claude setup-token`,
+uses your Claude plan) or `ANTHROPIC_API_KEY` (pay per use). It only runs for issues your own account
+opened. Re-run one by hand: Actions > Build rule request > Run workflow > issue number. Each verdict
 is stamped with a hash of the settings menu (`ai.settings_menu()`) and `style.BUILT_IN`, so when new
 code adds a setting every open note is read again and switches itself on. #status gets one line per
 rule handled.

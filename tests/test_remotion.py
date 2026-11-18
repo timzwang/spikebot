@@ -87,3 +87,9 @@ def test_real_remotion_render(tmp_path, monkeypatch):
     assert [s["codec_type"] for s in j["streams"]] == ["video"]                  # silent
     assert (j["streams"][0]["width"], j["streams"][0]["height"]) == (1080, 1920)
     assert float(j["format"]["duration"]) == pytest.approx(4.0, abs=0.1)
+
+
+def test_edits_render_at_60_fps_crf_18():
+    """#39: Tokyo Girl / trend edits at 60 fps and CRF 18 in both renderers."""
+    from spikebot import editor, remotion, tokyo_girl
+    assert tokyo_girl.FPS == remotion.FPS == 60 and remotion.CRF == editor.CRF == 18

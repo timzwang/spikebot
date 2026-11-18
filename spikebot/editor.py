@@ -68,13 +68,45 @@ def fetch_segment(vod_url: str, start_s: float, duration_s: float, out: Path) ->
 def probe(path: Path) -> dict:
     """Width, height and duration of a video."""
     p = run(["ffprobe", "-v", "error", "-show_entries",
-             "stream=codec_type,width,height:format=duration", "-of", "json", str(path)], timeout=60)
+             "stream=codec_type,width,height,avg_frame_rate,r_frame_rate:format=duration", "-of", "json",
+             str(path)], timeout=60)
     j = json.loads(p.stdout)
     streams = j.get("streams") or []
     s = next((x for x in streams if x.get("codec_type") == "video"), {})
     return {"width": int(s.get("width", 0)), "height": int(s.get("height", 0)),
+            "fps": frame_rate(s.get("avg_frame_rate")) or frame_rate(s.get("r_frame_rate")),
             "duration": float((j.get("format") or {}).get("duration") or 0),
             "audio": any(x.get("codec_type") == "audio" for x in streams)}
+
+
+def frame_rate(text) -> float | None:
+    """"60000/1001" -> 59.94; "0/0", "" or junk -> None."""
+    try:
+        a, _, b = str(text or "").partition("/")
+        v = float(a) / float(b or 1)
+    except (ValueError, ZeroDivisionError):
+        return None
+    return round(v, 3) if v > 0 else None
+
+
+MAX_FPS = 60        # Lacy output: 60 fps, or the VOD's own rate when it is lower (#39)
+DEFAULT_FPS = 30    # source rate unknown: never invent frames
+CRF = 18            # final encodes (Tim, 18 Nov: CRF 18, #39)
+
+
+def out_fps(src_fps: float | None) -> float:
+    """Output frame rate for a source: its own rate up to 60 (59.94 stays 59.94)."""
+    if not src_fps or src_fps <= 0:
+        return DEFAULT_FPS
+    return min(float(src_fps), MAX_FPS)
+
+
+def fps_arg(fps: float) -> str:
+    """ffmpeg rate text: 59.94 -> 60000/1001, 29.97 -> 30000/1001, else the number."""
+    for whole in (24, 30, 60):
+        if abs(fps - whole * 1000 / 1001) < 0.01:
+            return f"{whole * 1000}/1001"
+    return f"{fps:g}"
 
 
 # --------------------------------------------------------------------------
@@ -86,6 +118,7 @@ class Layout:
     cam_h: int                        # facecam height in the output
     game: tuple[int, int, int, int]   # gameplay crop w, h, x, y in the source
     game_h: int                       # gameplay height in the output
+    fps: float = DEFAULT_FPS          # output frame rate (out_fps of the source)
 
     def filter(self, src: str = "[0:v]") -> str:
         cw, ch, cx, cy = self.cam
@@ -93,13 +126,14 @@ class Layout:
         return (f"{src}split=2[a][b];"
                 f"[a]crop={cw}:{ch}:{cx}:{cy},scale={OUT_W}:{self.cam_h},setsar=1[cam];"
                 f"[b]crop={gw}:{gh}:{gx}:{gy},scale={OUT_W}:{self.game_h},setsar=1[game];"
-                f"[cam][game]vstack=inputs=2,fps=30")
+                f"[cam][game]vstack=inputs=2,fps={fps_arg(self.fps)}")
 
 
 CAM_SHARE = 1 / 3   # facecam = top third, gameplay = bottom two thirds (Tim's rule)
 
 
-def layout(src_w: int, src_h: int, facecam: dict, cam_share: float = CAM_SHARE) -> Layout:
+def layout(src_w: int, src_h: int, facecam: dict, cam_share: float = CAM_SHARE,
+           src_fps: float | None = None) -> Layout:
     """Facecam box (fractions of the source frame: x, y, w, h) on top, filling exactly
     `cam_share` of the height (default 1/3); gameplay centre-cropped to fill the rest
     (2/3). The facecam box is trimmed around its centre to the right shape, so the
@@ -126,7 +160,7 @@ def layout(src_w: int, src_h: int, facecam: dict, cam_share: float = CAM_SHARE) 
         gh = gw * game_h / OUT_W
     cam = (even(cw), even(ch), even_pos(min(cx, src_w - even(cw))), even_pos(min(cy, src_h - even(ch))))
     game = (even(gw), even(gh), even_pos((src_w - even(gw)) / 2), even_pos((src_h - even(gh)) / 2))
-    return Layout(cam=cam, cam_h=cam_h, game=game, game_h=game_h)
+    return Layout(cam=cam, cam_h=cam_h, game=game, game_h=game_h, fps=out_fps(src_fps))
 
 
 # --------------------------------------------------------------------------
@@ -403,7 +437,7 @@ def render(src: Path, out: Path, lay: Layout, ass_file: Path | None) -> Path:
     vf += "[v]"
     run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-i", str(src.resolve()),
          "-filter_complex", vf, "-map", "[v]", "-map", "0:a?",
-         "-c:v", "libx264", "-preset", "veryfast", "-crf", "21", "-pix_fmt", "yuv420p",
+         "-c:v", "libx264", "-preset", "veryfast", "-crf", str(CRF), "-pix_fmt", "yuv420p",
          "-c:a", "aac", "-b:a", "160k", "-ar", "48000", "-movflags", "+faststart",
          str(out.resolve())], timeout=1800, cwd=(ass_file or out).parent)
     return out
@@ -445,7 +479,7 @@ def render_variant(src: Path, out: Path, lay: Layout, ass_file: Path | None, src
         amap = "[am]"
     run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-i", str(src.resolve()), *extra_inputs,
          "-filter_complex", graph, "-map", "[v]", *(["-map", amap] if audio else []),
-         "-c:v", "libx264", "-preset", "veryfast", "-crf", "21", "-pix_fmt", "yuv420p",
+         "-c:v", "libx264", "-preset", "veryfast", "-crf", str(CRF), "-pix_fmt", "yuv420p",
          *(["-c:a", "aac", "-b:a", "160k", "-ar", "48000"] if audio else []),
          "-movflags", "+faststart", str(out.resolve())], timeout=1800, cwd=(ass_file or out).parent)
     return out

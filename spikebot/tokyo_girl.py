@@ -6,7 +6,7 @@ Sources are only Rockstar's own GTA VI trailers and screenshots
 clips, never voices or dialogue: every export has NO audio track at all.
 
 Each edit:
-  - 1080x1920, 30 fps, 15-30 s (whole bars, so it ends on the beat)
+  - 1080x1920, 60 fps, 15-30 s (whole bars, so it ends on the beat)
   - cuts land on a 120 BPM grid (0.5 s per beat): mixes of 1/2/4-beat shots,
     a white flash on every new text card, slow pans so stills don't sit dead
   - Vice City views, cars, Jason & Lucia (tags from file names / tags.json)
@@ -52,7 +52,7 @@ from . import delivery, editor
 log = logging.getLogger("tokyo_girl")
 UK = ZoneInfo("Europe/London")
 LAUNCH = date(2026, 11, 19)  # GTA 6 release day
-W, H, FPS = 1080, 1920, 30
+W, H, FPS = 1080, 1920, 60   # 60 fps (#39): smoother pans, zooms and transitions
 
 DEFAULTS = {
     "enabled": True,
@@ -978,7 +978,7 @@ def render_plan(plan: Plan, lcfg: dict, out: Path, grade: str = "", text_style: 
         editor.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", *inputs,
                     "-filter_complex", graph, "-map", "[v]", "-an", "-r", str(FPS),
                     "-t", f"{plan.duration:.3f}", "-c:v", "libx264", "-preset", "medium",
-                    "-crf", "19", "-maxrate", "9M", "-bufsize", "18M", "-pix_fmt", "yuv420p", "-profile:v", "high",
+                    "-crf", str(editor.CRF), "-maxrate", "14M", "-bufsize", "28M", "-pix_fmt", "yuv420p", "-profile:v", "high",
                     "-movflags", "+faststart", part.name], timeout=600, cwd=tmpd)   # a 30 s edit joins in about a minute
         shutil.move(str(part), out)
     return out

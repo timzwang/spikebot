@@ -414,7 +414,7 @@ def _render_job_body(job, lcfg, jobs, used_titles, fetch, transcribe, now, revie
         track.update(0.2, "Checking the facecam (BRB / away)")
         info = editor.probe(seg)
         duration = info["duration"] or duration
-        lay = editor.layout(info["width"], info["height"], lcfg["facecam"])
+        lay = editor.layout(info["width"], info["height"], lcfg["facecam"], src_fps=info.get("fps"))
         away = editor.away_reason(seg, lay, duration)
         if away:
             return finish("skipped", f"BRB/away: {away}")
@@ -428,7 +428,7 @@ def _render_job_body(job, lcfg, jobs, used_titles, fetch, transcribe, now, revie
             return _render_single(job, lcfg, jobs, used_titles, seg, lay, words, lang, duration, day, finish)
         (d / "words.json").write_text(json.dumps([[w.start, w.end, w.text] for w in words]), encoding="utf-8")
         job.update(duration=round(duration, 1), language=lang, rendered_day=day, words=len(words),
-                   src_w=info["width"], src_h=info["height"], audio=info.get("audio", True))
+                   src_w=info["width"], src_h=info["height"], src_fps=info.get("fps"), audio=info.get("audio", True))
         jobs.save(job)
         from . import review
         item = review_store.create("lacy", {"job_id": job["id"], "vod_link": job.get("vod_link"),
@@ -499,7 +499,8 @@ class ReviewAdapter:
             raise editor.EditError("the source segment is gone (clip closed or disk cleaned)")
         words = [editor.Word(a, b, t) for a, b, t in json.loads((d / "words.json").read_text(encoding="utf-8"))]
         w, h = int(job["src_w"]), int(job["src_h"])
-        lay = editor.layout(w, h, self.lcfg["facecam"])
+        fps = job.get("src_fps") or editor.probe(seg).get("fps")   # jobs from before #39 lack it
+        lay = editor.layout(w, h, self.lcfg["facecam"], src_fps=fps)
         duration = float(job["duration"])
         peak = (job["peak_time"] - job["clip_start"]) if job.get("peak_time") else None
         used = self._used() | {v["title"] for r in item["rounds"] for v in r["variants"]}
@@ -852,7 +853,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "layout":
         src = Path(args.video)
         info = editor.probe(src)
-        lay_ = editor.layout(info["width"], info["height"], lcfg["facecam"])
+        lay_ = editor.layout(info["width"], info["height"], lcfg["facecam"], src_fps=info.get("fps"))
         tmp = Path(args.out).with_suffix(".tmp.mp4")
         editor.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-ss", str(args.at),
                     "-i", str(src), "-t", "1", "-filter_complex", lay_.filter() + "[v]",
