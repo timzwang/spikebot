@@ -116,3 +116,24 @@ def test_comparison_item_renders_three_versions(tmp_path, monkeypatch):
         assert [x["codec_type"] for x in info] == ["video"] and (info[0]["width"], info[0]["height"]) == (1080, 1920)
     from spikebot import discord_bot as DB
     assert DB.mode_label(item)[0] == "GTA 5 vs GTA 6"
+
+
+def test_daily_never_queues_a_failed_comparison(tmp_path):
+    s = TG.settings({"data_dir": "data"}, tmp_path)
+    assert "GTA 5 footage" in C.not_ready(s)
+    with pytest.raises(Exception):
+        C.make(s, 1)
+    assert TG.daily_compare(s, "2026-11-19", 0.0) == []
+    assert not (Path(s["data_dir"]) / "review" / "items").exists()
+
+
+def test_a_new_source_is_fetched_straight_away(tmp_path, monkeypatch):
+    s = TG.settings({"data_dir": "data", "tokyo_girl": {"compare_per_day": 0, "per_day": 0}}, tmp_path)
+    calls = []
+    monkeypatch.setattr(TG, "fetch", lambda lcfg: calls.append(lcfg["media_dir"]))
+    now = datetime(2026, 11, 18, 22, 0, tzinfo=TG.UK).timestamp()
+    TG.save_state(Path(s["state_file"]), {"last_fetch": now, "fetched": list(s["sources"])})   # before searches
+    TG.daily(s, now)
+    assert calls == [s["media_dir"], str(Path(s["media_dir"]) / ".gta5")]
+    TG.daily(s, now + 60)
+    assert len(calls) == 2                                    # once only

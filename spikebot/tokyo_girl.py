@@ -2139,6 +2139,8 @@ def main(argv: list[str] | None = None) -> None:
         except progress.Cancelled:
             print("comparison edits cancelled")
             return
+        except editor.EditError as e:
+            sys.exit(f"FAILED: {e}")
         from . import review
         store = review.Store(Path(lcfg["data_dir"]))
         failed = 0

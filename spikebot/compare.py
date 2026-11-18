@@ -315,10 +315,28 @@ def render_variants(adapter, item: dict, specs: list[dict], n: int, folder: Path
     return out
 
 
+def not_ready(lcfg: dict) -> str | None:
+    """Why a comparison can't be made yet (None = it can). Checked before any review item is
+    created, so the queue never gets a failed one."""
+    from . import ai
+    if not TG.Library(gta5_cfg(lcfg)).shots():
+        return "no GTA 5 footage yet: Rockstar's GTA V trailers download with the next daily fetch"
+    if not any(s.kind == "video" for s in TG.Library(lcfg).shots()):
+        return "no GTA 6 trailer footage yet"
+    labels = Path(lcfg["data_dir"]) / "compare" / "labels.json"
+    if not ai.available(lcfg.get("_base")) and not load_labels(labels):
+        return "matching GTA 5 and GTA 6 shots needs ANTHROPIC_API_KEY in .env"
+    return None
+
+
 def make(lcfg: dict, n: int = 1, now: float | None = None) -> list[str]:
-    """n comparison review items (3 versions each). Returns their ids."""
+    """n comparison review items (3 versions each). Returns their ids. Raises EditError when
+    it can't be made yet (`not_ready`), before creating anything."""
     from datetime import datetime
     from . import progress, review
+    why = not_ready(lcfg)
+    if why:
+        raise editor.EditError(why)
     now = now or time.time()
     dt = datetime.fromtimestamp(now, TG.UK)
     store = review.Store(Path(lcfg["data_dir"]))
