@@ -13,6 +13,7 @@ Runs inside the main bot process (Bot.run) and never takes it down:
   /rules          every instruction from /feedback, Feedback and /style as one numbered
                   list by category; turn entries off/on (menus, buttons, or disable:3,5-7).
   /preset         apply | list | show | rename | edit | delete | combine.
+  /help           every command and button by category (category:, search:).
   /cancel         stop a running job by its run id (renders, trend edits, Lacy clips,
                   #inspiration analysis, sound downloads, queued re-renders); every
                   progress bar also has a Cancel button.
@@ -36,6 +37,7 @@ from pathlib import Path
 
 from . import ai
 from . import feedback as fb
+from . import help as help_
 from . import presets as presets_
 from . import progress, review
 from . import style as st
@@ -84,39 +86,60 @@ def ts(t: float, style: str = "f") -> str:
     return f"<t:{int(t)}:{style}>"
 
 
+def vod_time(link: str | None) -> str | None:
+    """"1:02:03" from a VOD link's ?t= (Twitch 1h02m03s / Kick seconds)."""
+    m = re.search(r"[?&]t=(?:(\d+)h)?(?:(\d+)m)?(\d+)s?\b", link or "")
+    if not m:
+        return None
+    sec = int(m.group(1) or 0) * 3600 + int(m.group(2) or 0) * 60 + int(m.group(3) or 0)
+    h, rest = divmod(sec, 3600)
+    return f"{h}:{rest // 60:02d}:{rest % 60:02d}" if h else f"{rest // 60}:{rest % 60:02d}"
+
+
+def song_line(v: dict) -> str | None:
+    """"🎵 Tokyo Girl · start 0:42" (+ the sound's link) for a silent edit."""
+    m = v.get("music") or {}
+    if not m.get("song"):
+        return None
+    start = float(m.get("start_s") or 0)
+    link = re.search(r"<(https?://[^>]+)>", v.get("music_note") or "")
+    return (f"🎵 **{m['song']}** · start **{int(start // 60)}:{int(start % 60):02d}**"
+            + (f" · [sound]({link.group(1)})" if link else ""))
+
+
 def round_payload(item: dict, rnd: dict, extra: str = "", entry_on: dict | None = None) -> dict:
-    """Message for one review round: header + one embed per variant + button rows."""
+    """Message for one review round, kept short so several can be reviewed at once: who / which
+    song and where to start it, length, and the buttons. Nothing about styles or settings."""
     label, colour = mode_label(item)
-    kind = {"initial": "", "redo": " · redo", "feedback": " · after your feedback",
-            "preset": " · preset"}.get(rnd["kind"], "")
-    head = [f"**{label}** · `{item['id']}` · round {rnd['n']}{kind}"]
     src = item.get("source") or {}
+    kind = {"redo": " · redo", "feedback": " · after feedback", "preset": " · preset"}.get(rnd["kind"], "")
+    bits = [f"**{label}**" + (f" · {src['category'].replace('Grand Theft Auto ', 'GTA ')}"
+                              if src.get("category") else "")]
     if src.get("vod_link"):
-        head.append(f"Source: <{src['vod_link']}>")
-    if rnd.get("comment"):
-        head.append(rnd["comment"])
-    if item.get("expires"):
-        head.append(f"Expires {ts(item['expires'], 'R')} if not approved.")
-    if any(v.get("silent") for v in rnd["variants"]):
-        head.append("Silent edits: add the trending sound in each app when posting (the link and start point"
-                    " are on each card)." if src.get("kind") == "trend"
-                    else "Silent edits: add the official sound in each app when posting.")
+        t = vod_time(src["vod_link"])
+        bits.append(f"[VOD{' at ' + t if t else ''}](<{src['vod_link']}>)")
+    head = [" · ".join(bits) + kind + f" · `{item['id']}`"]
+    if rnd.get("comment") and rnd["kind"] != "initial":
+        head.append(rnd["comment"][:300])
+    elif rnd.get("comment") and "🔞" in rnd["comment"]:
+        head.append(rnd["comment"][rnd["comment"].index("🔞"):][:300])
+    if any(v.get("safety") == "unchecked" for v in rnd["variants"]):
+        head.append("⚠️ Nudity check couldn't run: look before approving (it re-checks before posting).")
     if extra:
         head.append(extra)
     embeds = []
     for v in rnd["variants"]:
-        name = f"{v['label']}" + (" · 🧪 experimental" if v.get("experimental") else "") + \
-               (f" · preset {v['preset']}" if v.get("preset") else "") + (" · ✏️ edited" if v.get("edited") else "")
-        caps = v.get("captions") or {}
-        embeds.append({
-            "title": name[:250], "color": VARIANT_COLOUR.get(v["label"][0], 0x99AAB5),
-            "description": (f"{v.get('duration', '?')}s · {v.get('cuts', 0)} cuts\n{st.describe(v['style'])}"
-                            + (f"\n{v['music_note']}" if v.get("music_note") else "")
-                            + (f"\n🎞️ {v['footage_note']}" if v.get("footage_note") else ""))[:1500],
-            "fields": [{"name": "YouTube title", "value": code(v.get("title", ""), 120), "inline": False},
-                       {"name": "Instagram caption", "value": code(caps.get("instagram", "")), "inline": False},
-                       {"name": "TikTok caption", "value": code(caps.get("tiktok", "")), "inline": False}],
-        })
+        lines = [f"{v.get('duration', '?')}s" + (" · ✏️ edited" if v.get("edited") else "")]
+        song = song_line(v)
+        if song:
+            lines.append(song)
+        elif v.get("silent"):
+            lines.append("🎵 add the official sound in the app")
+        if item["mode"] == "lacy" and v.get("title"):
+            lines.append(f"“{v['title'][:100]}”")
+        embeds.append({"title": v["label"] + (" · 🧪" if v.get("experimental") else ""),
+                       "color": VARIANT_COLOUR.get(v["label"][0], 0x99AAB5),
+                       "description": "\n".join(lines)[:600]})
     return {"content": "\n".join(head)[:1900], "embeds": embeds[:9],
             "rows": buttons(item, rnd),
             "allowed_mentions": {"parse": []}}
@@ -665,6 +688,50 @@ class ReviewBot:
                 return None
         return ch
 
+    async def announcements(self):
+        """#announcements: the configured id, else the server's text channel with "announcement"
+        in its name. None if there isn't one (callers fall back to #status)."""
+        cid_ = self.rcfg.get("announcements_channel_id")
+        if cid_:
+            return await self.channel(cid_)
+        if getattr(self, "_announce_id", None):
+            return await self.channel(self._announce_id)
+        guilds = ([self.client.get_guild(self.rcfg["guild_id"])] if self.rcfg.get("guild_id")
+                  else list(getattr(self.client, "guilds", []) or []))
+        for g in guilds:
+            for ch in getattr(g, "text_channels", []) or []:
+                if "announcement" in (ch.name or "").lower():
+                    self._announce_id = ch.id
+                    return ch
+        return None
+
+    async def announce(self, key: str, text: str) -> None:
+        """Key news for Tim (new rules, what the rule compiler built, videos going live, blocked
+        videos, what a deploy changed) goes to #announcements; #status keeps bot health.
+        Never raises."""
+        import discord
+        try:
+            ch = await self.announcements()
+            if ch is not None:
+                await ch.send(text[:1990], allowed_mentions=discord.AllowedMentions.none())
+                return
+        except Exception as e:  # noqa: BLE001
+            log.warning("#announcements post failed: %s", e)
+        if self.notifier:
+            await self.notifier.send(key, text[:1900], kind="start")
+
+    async def announce_new_rules(self, seen: int) -> int:
+        """Post rules added since entry `seen` (/feedback, or Feedback said "always") to
+        #announcements. Returns the newest entry number."""
+        new = [e for e in self.store.profile().entries() if e["n"] > seen]
+        if new:
+            lines = [f"**#{e['n']}** {st.entry_text(e, where=False)} → {st.modes_label(st.entry_modes(e))}"
+                     for e in new[:15]]
+            await self.announce(f"newrules:{new[-1]['n']}", "📝 **New rule" + ("s" if len(new) > 1 else "")
+                                + "** (turn off with /rules):\n" + "\n".join(lines))
+            seen = max(e["n"] for e in new)
+        return seen
+
     async def say(self, item: dict, text: str, file=None) -> None:
         """Message in the clip's thread (or #ready-to-post if it has none)."""
         ch = await self.channel(item.get("thread_id") or self.rcfg["channel_id"])
@@ -879,7 +946,12 @@ class ReviewBot:
             if req.get("status") == "queued" and item["id"] not in self.queued and st_ == "open":
                 self.queued.add(item["id"])
                 self.render_q.put_nowait(item["id"])
-            if st_ == "failed" and not item.get("told"):
+            if st_ == "failed" and not item.get("told") and "🔞" in (item.get("error") or ""):
+                await self.announce(f"blocked:{item['id']}", f"🔞 `{item['id']}` ({mode_label(item)[0]}) was blocked"
+                                    f" and deleted before review: {item.get('error')}")
+                with self.store.edit(item["id"]) as it:
+                    it["told"] = True
+            elif st_ == "failed" and not item.get("told"):
                 if self.notifier:
                     await self.notifier.send(f"review_failed:{item['id']}",
                                              f"🎬 `{item['id']}` could not be rendered: {item.get('error')}", kind="lacy")
@@ -957,6 +1029,8 @@ class ReviewBot:
             if row["status"] == "done":
                 extra = f" ({row['note']})" if row.get("note") else ""
                 await self.say(item, f"✅ **{name}** is live: {row.get('url')}{extra}")
+                await self.announce(f"live:{item_id}:{platform}",
+                                    f"✅ {mode_label(item)[0]} `{item_id}` is live on **{name}**: {row.get('url')}")
             elif row["status"] == "failed":
                 await self.say(item, f"❌ **{name}** failed {row.get('attempts')}×, giving up: {row.get('error')}")
                 if self.notifier:
@@ -1636,7 +1710,7 @@ class ReviewBot:
         except OSError:
             pass
 
-    def progress_job(self, title: str, channel_id: int, icon: str) -> "progress.Job":
+    def progress_job(self, title: str, channel_id: int | None, icon: str) -> "progress.Job":
         return progress.Job.create(self.data_dir, title, channel="custom", channel_id=channel_id, icon=icon)
 
     # ---- /cancel and the progress bar's Cancel button -------------------------------
@@ -1816,9 +1890,17 @@ class ReviewBot:
         """`python -m spikebot.tokyo_girl trend` in a subprocess; the scan loop posts the rounds."""
         cmd = [sys.executable, "-m", "spikebot.tokyo_girl", "--config", self.config_path, "trend",
                "-n", str(per_song)] + (["--song", song] if song else [])
+        # One bar from the start (library check, sounds, every edit): the renders alone only
+        # showed one after the library's nudity check, which can take many minutes.
+        where = getattr(inter, "channel_id", None) if inter is not None else None
+        pj = self.progress_job("Trending-sound edits" + (f" · {song}" if song and song != "auto" else ""),
+                               where, "🎵")
+        ok, why, state = False, "", None
         try:
             p = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE,
-                                                     stderr=asyncio.subprocess.STDOUT, start_new_session=True)
+                                                     stderr=asyncio.subprocess.STDOUT, env=progress_env(pj),
+                                                     start_new_session=True)
+            pj.adopt(p.pid)
             try:
                 out, _ = await asyncio.wait_for(p.communicate(), 3 * 3600)
             except asyncio.TimeoutError:
@@ -1828,6 +1910,11 @@ class ReviewBot:
             text = out.decode(errors="replace")
             log.info("trend edits: %s", text[-500:].strip())
             self.wake.set()
+            ok = p.returncode == 0
+            bad = [ln for ln in text.splitlines() if "FAILED" in ln or "Error" in ln or "error" in ln]
+            why = (bad or text.strip().splitlines() or ["?"])[-1][:300]
+            if "no trending sounds" in text:
+                state = "skipped"
             if p.pid in self.force_stopped:
                 log.info("trend edits stopped by /cancel")
             elif p.returncode != 0 and inter is None:
@@ -1840,12 +1927,14 @@ class ReviewBot:
                                            + ("\n".join(lines[-5:]) or text[-300:]))[:1990])
         except Exception as e:  # noqa: BLE001 - never crash the bot on a command
             log.warning("/trend failed: %s", e)
+            why = str(e)[:300]
             try:
                 if inter is not None:
                     await inter.followup.send(f"⚠️ Trending-sound edits failed: {e}"[:1990])
             except Exception:  # noqa: BLE001
                 pass
         finally:
+            pj.finish(ok, "" if ok else why, state)
             if song == "auto":
                 self._trend_running = False
 
@@ -1941,15 +2030,19 @@ class ReviewBot:
         every few minutes (Feedback-button notes, newly deployed editor settings)."""
         from . import rules as rules_
         backoff = every
+        seen = max((e["n"] for e in self.store.profile().entries()), default=0)   # announce only new ones
         while True:
+            try:
+                seen = await self.announce_new_rules(seen)
+            except Exception as e:  # noqa: BLE001
+                log.warning("announcing new rules failed: %s", e)
             try:
                 changes = await asyncio.to_thread(self.compile_rules)
                 backoff = every
                 text = self.compile_notice(changes, bool(rules_.github_token(self.base)))
                 if text:
                     log.info("rules compiled:\n%s", text)
-                    if self.notifier:
-                        await self.notifier.send(f"rules:{time.time():.0f}", text[:1900], kind="start")
+                    await self.announce(f"rules:{time.time():.0f}", text)
             except ai.AIError as e:
                 backoff = min(backoff * 2, 3600)
                 log.warning("rule compiler: %s (next try in %.0f s)", e, backoff)
@@ -1982,7 +2075,7 @@ class ReviewBot:
         ran = []
         for r in reqs if isinstance(reqs, list) else []:
             rid = str(r.get("id") or "")
-            if not rid or rid in done or r.get("action") not in ("trend", "feedback", "repost", "daily"):
+            if not rid or rid in done or r.get("action") not in ("trend", "feedback", "repost", "daily", "announce"):
                 continue
             done.add(rid)   # once, even if it is stale or fails
             until = r.get("until")
@@ -1993,6 +2086,8 @@ class ReviewBot:
             ran.append(rid)
             if r["action"] == "trend":
                 asyncio.create_task(self.run_trend(None, r.get("song"), int(r.get("per_song") or 1)))
+            elif r["action"] == "announce":   # what a deploy changed, for Tim
+                await self.announce(f"deploy:{rid}", str(r.get("text") or ""))
             elif r["action"] == "daily":   # top today's Tokyo Girl edits up to per_day now
                 asyncio.create_task(self.run_daily(int(r.get("per_day") or 0)))
             elif r["action"] == "repost":
@@ -2288,6 +2383,16 @@ class ReviewBot:
             if not await guard(inter):
                 return
             await bot.rules_command(inter, disable, enable, search)
+
+        @tree.command(name="help", description="Every command and button, what it does and how to use it")
+        @app_commands.describe(category="Only one group of commands", search="Words to find, e.g. caption, stop, preset")
+        @app_commands.choices(category=[app_commands.Choice(name=label, value=key)
+                                        for key, _, label in help_.CATEGORIES])
+        async def help_cmd(inter: discord.Interaction, category: str | None = None, search: str | None = None):
+            parts = help_.chunks(help_.help_text(category, search))
+            await inter.response.send_message(parts[0], ephemeral=True)
+            for p in parts[1:]:
+                await inter.followup.send(p, ephemeral=True)
 
         group = app_commands.Group(name="preset", description="Style presets from #inspiration")
 

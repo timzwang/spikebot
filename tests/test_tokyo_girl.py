@@ -44,9 +44,21 @@ def test_settings_defaults_env_and_paths(tmp_path):
 def test_caption_templates_are_exact():
     s = TG.settings({})
     story = next(x for x in TG.STORIES if x.id == "leonida")
+    line = TG.edit_line(story, TODAY)
     assert TG.caption_file(story, TODAY, s) == (
-        "IG: Leonida looks insane. Which spot are you visiting first? Song: Tokyo Girl by @PassiveBand #GTA6\n"
-        "TikTok: Leonida looks insane. Which spot are you visiting first? Song: Tokyo Girl by @Passive #GTA6\n")
+        f"IG: {line} 🎵 Tokyo Girl by @PassiveBand #gta6 #gtavi #vicecity\n"
+        f"TikTok: {line} 🎵 Tokyo Girl by @Passive #gta6 #gtavi #vicecity\n")
+
+
+def test_edit_captions_are_short_and_natural():
+    from datetime import timedelta
+    for day in (TODAY, TG.LAUNCH, TG.LAUNCH + timedelta(days=3), TG.LAUNCH - timedelta(days=20)):
+        lines = {TG.edit_line(st, day) for st in TG.STORIES}
+        assert len(lines) >= 3
+        for ln in lines:
+            assert len(ln) <= 45 and "?" not in ln and "theory" not in ln.lower() and ln == ln.lower()
+            assert "{" not in ln
+    assert TG.edit_line(TG.STORIES[0], TG.LAUNCH) in TG.EDIT_LINES["launch"]
 
 
 # ---- stories ------------------------------------------------------------------
@@ -219,8 +231,8 @@ def test_daily_tops_up_to_per_day(tmp_path, monkeypatch):
     assert len(names) == 4 and all(n.startswith("2026-11-16_0650-") for n in names)
     txt = Path(s["export_dir"]) / first[0].name.replace(".mp4", ".txt")
     lines = txt.read_text().splitlines()
-    assert lines[0].startswith("IG: ") and lines[0].endswith("Song: Tokyo Girl by @PassiveBand #GTA6")
-    assert lines[1].startswith("TikTok: ") and lines[1].endswith("Song: Tokyo Girl by @Passive #GTA6")
+    assert lines[0].startswith("IG: ") and lines[0].endswith("🎵 Tokyo Girl by @PassiveBand #gta6 #gtavi #vicecity")
+    assert lines[1].startswith("TikTok: ") and lines[1].endswith("🎵 Tokyo Girl by @Passive #gta6 #gtavi #vicecity")
     stories = json.loads(Path(s["state_file"]).read_text())["recent"]
     assert len(set(stories)) == 2
     assert len(TG.daily(s, now + 86400)) == 2                        # next UK day
@@ -247,7 +259,7 @@ def test_render_is_silent_vertical_and_on_length(tmp_path):
     assert [st["codec_type"] for st in j["streams"]] == ["video"]     # no audio track at all
     assert (j["streams"][0]["width"], j["streams"][0]["height"]) == (1080, 1920)
     assert float(j["format"]["duration"]) == pytest.approx(16.0, abs=0.05)
-    assert out.with_suffix(".txt").read_text().startswith("IG: Jason & Lucia: partners in crime")
+    assert out.with_suffix(".txt").read_text().startswith("IG: ") and "Tokyo Girl" in out.with_suffix(".txt").read_text()
 
 
 # ---- delivery to Discord ------------------------------------------------------------
@@ -300,8 +312,9 @@ def test_small_edit_is_attached_untouched(tmp_path):
     content = call["payload"]["content"]
     assert content.startswith("**Tokyo Girl**") and call["filename"] == mp4.name
     assert "18s" in content and "partners" in content and "2.0 MB" in content
-    assert "```Jason & Lucia: partners in crime, literally. Couple goals or red flag? Song: Tokyo Girl by @PassiveBand #GTA6```" in content
-    assert "```Jason & Lucia: partners in crime, literally. Couple goals or red flag? Song: Tokyo Girl by @Passive #GTA6```" in content
+    story = next(x for x in TG.STORIES if x.id == "partners")
+    caps = TG.tg_captions(story, TODAY, TG.settings({}))
+    assert f"```{caps['instagram']}```" in content and f"```{caps['tiktok']}```" in content
     assert call["payload"]["allowed_mentions"] == {"parse": []}
 
 

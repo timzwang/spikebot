@@ -103,3 +103,13 @@ def test_helpers():
     line = "@badge-info=;color=#FF0000 :bob!bob@bob.tmi.twitch.tv PRIVMSG #kaicenat :NO WAY :)"
     assert _parse_privmsg(line) == ("bob", "NO WAY :)")
     assert _parse_privmsg(":tmi.twitch.tv 001 justinfan1 :Welcome") is None
+
+
+def test_kick_key_found_in_kicks_javascript():
+    from spikebot import sources as S
+    js = 'x=1;const p=new Pusher("32cbd69e4b950bf97679",{cluster:"us2"});q=new Pusher("abcdef0123456789abcd", {wsHost:"ws", cluster:"us2", forceTLS:!0})'
+    assert S.pusher_from_js(js) == ("abcdef0123456789abcd", "us2")   # the retired key is skipped
+    assert S.pusher_from_js('new Pusher("abcdef0123456789abcd", {wsHost:"ws", cluster:"us2"})') == ("abcdef0123456789abcd", "us2")
+    assert S.pusher_from_js('NEXT_PUBLIC_PUSHER_APP_KEY:"0123456789abcdef0123",NEXT_PUBLIC_PUSHER_APP_CLUSTER:"eu1"') == \
+        ("0123456789abcdef0123", "eu1")
+    assert S.pusher_from_js("<html>nothing here</html>") is None

@@ -99,20 +99,81 @@ def _find_pusher_creds(obj) -> tuple[str, str] | None:
     return None
 
 
-async def kick_pusher_credentials() -> tuple[str, str]:
-    """Ask Kick for its current chat key, the same way kick.com's own page does.
-    Offer only the Pusher provider, otherwise Kick answers with Centrifugo."""
-    try:
-        async with AsyncSession(impersonate="chrome") as s:
-            r = await s.post("https://web.kick.com/api/v1/realtime/connection",
-                             json={"accepted_providers": ["pusher"]}, timeout=15)
-            r.raise_for_status()
-            found = _find_pusher_creds(r.json())
+# The key as kick.com's own JavaScript has it: new Pusher("<key>", {cluster: "us2", ...}) or a
+# PUSHER_APP_KEY / PUSHER_APP_CLUSTER pair in the bundled env.
+_JS_PUSHER = re.compile(r"""Pusher\(\s*["']([a-z0-9]{16,32})["']\s*,\s*\{[^}]{0,200}?cluster\s*:\s*["']([a-z0-9-]{2,20})["']""")
+_JS_KEY = re.compile(r"""PUSHER_APP_KEY["']?\s*[:=]\s*["']([a-z0-9]{16,32})["']""")
+_JS_CLUSTER = re.compile(r"""PUSHER_APP_CLUSTER["']?\s*[:=]\s*["']([a-z0-9-]{2,20})["']""")
+_SCRIPT = re.compile(r"""<script[^>]+src=["']([^"']+\.js[^"']*)["']""")
+_key_cache: dict = {}
+KEY_CACHE_S = 6 * 3600
+
+
+def pusher_from_js(text: str) -> tuple[str, str] | None:
+    """Pull a Pusher key + cluster out of Kick's page or a JS bundle (pure, tested)."""
+    for m in _JS_PUSHER.finditer(text):
+        if m.group(1) not in RETIRED_KICK_KEYS:
+            return m.group(1), m.group(2)
+    c = _JS_CLUSTER.search(text)
+    for k in _JS_KEY.finditer(text):
+        if k.group(1) not in RETIRED_KICK_KEYS:
+            return k.group(1), (c.group(1) if c else FALLBACK_KICK_PUSHER[1])
+    return None
+
+
+async def _pusher_from_site(s) -> tuple[str, str] | None:
+    """kick.com's HTML and its script bundles (the key is compiled into one of them)."""
+    r = await s.get("https://kick.com/", timeout=20)
+    r.raise_for_status()
+    found = pusher_from_js(r.text)
+    if found:
+        return found
+    srcs = [u if u.startswith("http") else "https://kick.com" + (u if u.startswith("/") else "/" + u)
+            for u in _SCRIPT.findall(r.text)]
+    for u in srcs[:60]:
+        try:
+            js = await s.get(u, timeout=20)
+        except Exception:  # noqa: BLE001
+            continue
+        if js.status_code == 200:
+            found = pusher_from_js(js.text)
             if found:
                 return found
-            log.warning("kick realtime descriptor had no pusher key; using fallback")
+    return None
+
+
+async def kick_pusher_credentials() -> tuple[str, str]:
+    """Kick's current chat key: (1) the realtime descriptor kick.com's page asks for,
+    (2) the key compiled into kick.com's JavaScript, (3) the fallback in this file / config.
+    A key found is reused for 6 h so reconnects don't hammer Kick."""
+    hit = _key_cache.get("creds")
+    if hit and time.time() - hit[1] < KEY_CACHE_S:
+        return hit[0]
+    if time.time() - _key_cache.get("failed", 0) < 1800:   # looked recently and found nothing
+        return FALLBACK_KICK_PUSHER
+    headers = {"Origin": "https://kick.com", "Referer": "https://kick.com/", "Accept": "application/json"}
+    try:
+        async with AsyncSession(impersonate="chrome") as s:
+            for body in ({"accepted_providers": ["pusher"]}, {"accepted_providers": ["pusher", "centrifugo"]}):
+                try:
+                    r = await s.post("https://web.kick.com/api/v1/realtime/connection", json=body,
+                                     headers=headers, timeout=15)
+                    if r.status_code == 200:
+                        found = _find_pusher_creds(r.json())
+                        if found and found[0] not in RETIRED_KICK_KEYS:
+                            _key_cache["creds"] = (found, time.time())
+                            return found
+                except Exception as e:  # noqa: BLE001
+                    log.debug("kick realtime descriptor: %s", e)
+            found = await _pusher_from_site(s)
+            if found:
+                log.info("kick chat key found in kick.com's scripts")
+                _key_cache["creds"] = (found, time.time())
+                return found
+            log.warning("kick key lookup found nothing; using fallback")
     except Exception as e:  # noqa: BLE001
         log.warning("kick key lookup failed (%s); using fallback", e)
+    _key_cache["failed"] = time.time()
     return FALLBACK_KICK_PUSHER
 
 

@@ -1,0 +1,12 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>TikTok connected</title><link rel="stylesheet" href="../style.css"></head><body>
+<h1>Almost done</h1>
+<p>Copy the <b>whole address</b> of this page (the browser bar) and paste it into the terminal where
+<code>python -m spikebot.tiktok auth</code> is waiting.</p>
+<p id="err" class="small"></p>
+<script>
+const q = new URLSearchParams(location.search);
+if (q.get("error")) document.getElementById("err").textContent = "TikTok said: " + (q.get("error_description") || q.get("error"));
+else if (!q.get("code")) document.getElementById("err").textContent = "No code in this address: start again from the link in the terminal.";
+</script>
+</body></html>

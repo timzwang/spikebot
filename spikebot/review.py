@@ -50,6 +50,7 @@ DEFAULTS = {
     "channel_id": "",              # #ready-to-post
     "tiktok_channel_id": "",       # #tiktok-queue
     "inspiration_channel_id": "",  # #inspiration
+    "announcements_channel_id": "",  # #announcements (empty = the server's channel named "announcements")
     "guild_id": "",                # makes slash commands appear at once
     "approver_ids": [],            # Discord user ids allowed to press buttons; empty = server managers
     "expire_hours": 48,
@@ -67,13 +68,14 @@ DEFAULTS = {
     "privacy": "public",           # YouTube privacy for non-Lacy modes (Lacy uses lacy.privacy)
     "youtube_max_per_day": 6,      # all modes together; Lacy also obeys lacy.max_uploads_per_day
     "max_attempts": 3,
-    "windows": {"youtube": ["07:00-23:00"], "instagram": ["08:00-22:30"]},  # UK time
+    "windows": {"youtube": ["07:00-23:00"], "instagram": ["08:00-22:30"], "tiktok": ["07:00-23:30"]},  # UK
     "modes": {
-        "lacy": {"auto": ["youtube", "instagram"]},
-        # Tokyo Girl edits are silent: the official sound is added in each app by hand,
-        # so by default every platform is manual (#tiktok-queue).
-        "tokyo_girl": {"auto": []},
-        "default": {"auto": ["youtube", "instagram"]},
+        # stream clips: straight to all three (TikTok direct once audited, else as an inbox draft)
+        "lacy": {"auto": ["youtube", "instagram", "tiktok"]},
+        # Tokyo Girl / trend edits are silent: the sound must be added in the app, so TikTok gets
+        # an inbox draft (open TikTok, add the sound, post); YouTube/Instagram stay manual.
+        "tokyo_girl": {"auto": ["tiktok"]},
+        "default": {"auto": ["youtube", "instagram", "tiktok"]},
     },
 }
 PLATFORMS = ("youtube", "instagram", "tiktok")
@@ -86,7 +88,7 @@ def settings(cfg: dict) -> dict:
     out = json.loads(json.dumps(DEFAULTS))
     for k, v in (cfg.get("review") or {}).items():
         out[k] = (out[k] | v) if isinstance(out.get(k), dict) and isinstance(v, dict) else v
-    for env_key in ("channel_id", "tiktok_channel_id", "inspiration_channel_id", "guild_id"):
+    for env_key in ("channel_id", "tiktok_channel_id", "inspiration_channel_id", "announcements_channel_id", "guild_id"):
         if cfg.get(f"discord_{env_key}") not in (None, ""):
             out[env_key] = cfg[f"discord_{env_key}"]
     if cfg.get("discord_approver_ids") not in (None, ""):
@@ -94,7 +96,7 @@ def settings(cfg: dict) -> dict:
     if isinstance(out["approver_ids"], str):
         out["approver_ids"] = [x for x in re.split(r"[,\s]+", out["approver_ids"]) if x]
     out["approver_ids"] = [int(x) for x in out["approver_ids"]]
-    for k in ("channel_id", "tiktok_channel_id", "inspiration_channel_id", "guild_id"):
+    for k in ("channel_id", "tiktok_channel_id", "inspiration_channel_id", "announcements_channel_id", "guild_id"):
         out[k] = int(out[k]) if str(out[k]).strip().isdigit() else 0
     if cfg.get("review_enabled") not in (None, ""):
         out["enabled"] = str(cfg["review_enabled"]).strip().lower() in TRUE
@@ -104,7 +106,14 @@ def settings(cfg: dict) -> dict:
 
 def auto_platforms(rcfg: dict, mode: str) -> list[str]:
     m = rcfg["modes"].get(mode) or rcfg["modes"].get("default") or {}
-    return [p for p in m.get("auto", []) if p in ("youtube", "instagram")]
+    out = [p for p in m.get("auto", []) if p in PLATFORMS]
+    # TikTok is automatic everywhere (Tim, 18 Nov 2026: "automate posts"), even with an older
+    # config.json that lists only YouTube/Instagram; "tiktok": false in a mode switches it off.
+    if m.get("tiktok", True) is False:
+        return [p for p in out if p != "tiktok"]
+    if "tiktok" not in out:
+        out.append("tiktok")
+    return out
 
 
 def uk_day(ts: float) -> str:
@@ -470,6 +479,15 @@ def _render_round(store, item_id, item, cfg, base, req, rcfg, now, adapter, seed
         variants = adapter.render(item, specs, n, store.dir(item_id), budget)
         if not variants:
             raise RuntimeError("nothing could be rendered")
+        # Nudity check on every version before anyone sees it (spikebot/safety.py)
+        from . import safety, progress as _p
+        _p.current().update(0.97, "Checking for nudity")
+        variants, blocked = safety.screen_variants(variants, store.dir(item_id))
+        if blocked:
+            comment = (comment + " " if comment else "") + "🔞 Blocked: " + "; ".join(
+                f"{b['label']} ({b['reason']})" for b in blocked)
+        if not variants:
+            raise RuntimeError("🔞 blocked: " + "; ".join(b["reason"] for b in blocked))
     except Exception as e:  # noqa: BLE001 - reported to Tim in Discord
         log.warning("review %s: render failed: %s", item_id, e)
         with store.edit(item_id) as item:
@@ -536,6 +554,7 @@ class Publisher:
         self.lcfg = lacy.settings(cfg)
         self.youtube_factory = youtube_factory or self._youtube
         self.ig = ig if ig is not None else instagram.crossposter(cfg, base)
+        self.tiktok_factory = None   # tests swap in a fake
 
     def clip_profile(self, item: dict) -> dict:
         """Streamer settings of a stream-clip item (Lacy's for old items)."""
@@ -557,7 +576,21 @@ class Publisher:
             out.add("youtube")
         if instagram.active(self.ig.icfg, self.ig.token):
             out.add("instagram")
+        from . import tiktok
+        if tiktok.configured(self.tiktok_cfg()):
+            out.add("tiktok")
         return out
+
+    def tiktok_cfg(self) -> dict:
+        """TikTok settings with .env read fresh (its refresh token rotates and is saved there)."""
+        from . import tiktok
+        from .main import load_dotenv
+        return tiktok.settings(self.cfg, load_dotenv(Path(self.base) / ".env"))
+
+    def tiktok_today(self, day: str) -> int:
+        return sum(1 for it in self.store.all()
+                   if (it.get("publish") or {}).get("tiktok", {}).get("day") == day
+                   and it["publish"]["tiktok"].get("status") == "done")
 
     # ---- caps -------------------------------------------------------------------
     def youtube_today(self, day: str) -> int:
@@ -580,6 +613,10 @@ class Publisher:
                 done = Submissions(Path(prof["submissions_csv"])).uploads_on(day)
                 if done >= prof["max_uploads_per_day"]:
                     return f"{prof.get('name', 'Lacy')} daily cap {prof['max_uploads_per_day']} reached"
+        if platform == "tiktok":
+            cap = int(self.tiktok_cfg()["max_per_day"])
+            if self.tiktok_today(day) >= cap:
+                return f"TikTok daily cap {cap} reached"
         if platform == "instagram":
             if self.ig.posts.published_on(day) >= int(self.ig.icfg["max_per_day"]):
                 return f"Instagram daily cap {self.ig.icfg['max_per_day']} reached"
@@ -590,7 +627,7 @@ class Publisher:
         for it in self.store.all():
             if it["status"] != "approved":
                 continue
-            for p in ("youtube", "instagram"):
+            for p in ("youtube", "instagram", "tiktok"):
                 row = (it.get("publish") or {}).get(p)
                 if row and row.get("status") in ("queued", "waiting", "retry"):
                     out.append((it["id"], p))
@@ -610,10 +647,16 @@ class Publisher:
         a = item["approved"]
         v = variant_of(item, a["round"], a["label"])
         path = make_final(self.store, item)
+        unsafe = self.safety_check(v, path)
+        if unsafe:
+            row.update(status="failed" if unsafe.startswith("🔞") else "waiting", reason=unsafe)
+            return self._store_row(item_id, platform, row)
         row["attempts"] = int(row.get("attempts") or 0) + 1
         try:
             if platform == "youtube":
                 row.update(self._youtube_upload(item, v, path, now))
+            elif platform == "tiktok":
+                row.update(self._tiktok_post(item, v, path, now))
             else:
                 row.update(self._instagram_post(item, v, path, now))
             row.update(status="done", day=uk_day(now), ts=now, reason=None)
@@ -625,6 +668,20 @@ class Publisher:
             row.update(status="failed" if final else "retry", error=err)
             log.warning("review %s: %s failed (try %s): %s", item_id, platform, row["attempts"], err)
         return self._store_row(item_id, platform, row)
+
+    def safety_check(self, v: dict, path: Path) -> str | None:
+        """Last gate before a platform: a version never scanned (or scanned while the check was
+        unavailable) is scanned now. Nudity = never posted; no checker = wait (fail closed)."""
+        if v.get("safety") == "ok":
+            return None
+        from . import safety
+        try:
+            res = safety.scan(path)
+        except safety.Unavailable as e:
+            return f"not posted: {e}"
+        except Exception as e:  # noqa: BLE001
+            return f"not posted: nudity check failed ({e})"
+        return None if res["ok"] else f"🔞 blocked: {res['reason']}"
 
     def _store_row(self, item_id: str, platform: str, row: dict) -> dict:
         with self.store.edit(item_id) as item:
@@ -673,6 +730,20 @@ class Publisher:
                 jobs.save(job)
             except (FileNotFoundError, ValueError):
                 pass
+
+    def _tiktok_post(self, item: dict, v: dict, path: Path, now: float) -> dict:
+        from . import tiktok
+        tt = (self.tiktok_factory or (lambda: tiktok.TikTok(self.tiktok_cfg(), Path(self.base) / ".env")))()
+        caption = (v.get("captions") or {}).get("tiktok") or v.get("title") or ""
+        res = tt.post(path, caption, inbox=bool(v.get("silent")))   # silent edits: add the sound in the app
+        out = {"url": res["url"], "how": res["how"], "publish_id": res["publish_id"]}
+        if res["how"] == "inbox":
+            out["note"] = "draft in your TikTok inbox: add the sound and post"
+        if item["mode"] == "lacy" and res["url"].startswith("https://"):
+            from . import lacy
+            job_id = item["source"].get("job_id") or item["id"]
+            lacy.Submissions(Path(self.clip_profile(item)["submissions_csv"])).set_links(job_id, {"tiktok": res["url"]})
+        return out
 
     def _instagram_post(self, item: dict, v: dict, path: Path, now: float) -> dict:
         from . import instagram

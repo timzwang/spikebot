@@ -60,7 +60,9 @@ def test_settings_from_env_and_defaults():
     assert r["token"] == "x" and r["channel_id"] == 123 and r["approver_ids"] == [1, 2]
     assert r["windows"]["youtube"] == ["10:00-12:00"] and r["windows"]["instagram"] == ["08:00-22:30"]
     assert r["expire_hours"] == 48 and r["tiktok_channel_id"] == 0
-    assert R.auto_platforms(r, "lacy") == ["youtube", "instagram"] and R.auto_platforms(r, "tokyo_girl") == []
+    assert R.auto_platforms(r, "lacy") == ["youtube", "instagram", "tiktok"] and R.auto_platforms(r, "tokyo_girl") == ["tiktok"]
+    r["modes"]["tokyo_girl"]["tiktok"] = False
+    assert R.auto_platforms(r, "tokyo_girl") == []
     assert R.settings({"review_enabled": "false"})["enabled"] is False
 
 
@@ -315,10 +317,12 @@ def test_lacy_title_rules_still_apply_at_upload(tmp_path):
 def test_round_payload_and_buttons(tmp_path):
     store, item = new_item(tmp_path)
     p = DB.round_payload(item, item["rounds"][0])
-    assert "`" + item["id"] + "`" in p["content"] and "Expires <t:" in p["content"]
+    assert "`" + item["id"] + "`" in p["content"] and "Expires" not in p["content"]
     assert [e["title"].split(" ")[0] for e in p["embeds"]] == ["A", "B", "C"]
-    assert "experimental" in p["embeds"][2]["title"]
-    assert [f["name"] for f in p["embeds"][0]["fields"]] == ["YouTube title", "Instagram caption", "TikTok caption"]
+    assert "🧪" in p["embeds"][2]["title"]
+    # kept short: length + title, no style details or caption walls
+    assert all("fields" not in e and len(e["description"]) < 200 for e in p["embeds"])
+    assert "grade" not in str(p["embeds"]) and "cuts" not in str(p["embeds"])
     labels = [b["label"] for row in p["rows"] for b in row]
     assert labels == ["Approve A", "Approve B", "Approve C", "Redo (3 new)", "Reject", "Feedback", "Edit caption"]
     for row in p["rows"]:
@@ -913,3 +917,58 @@ def test_reopen_refused_after_auto_publish(tmp_path):
     with pytest.raises(ValueError, match="not approved"):
         with store2.edit(open_item["id"]) as it:
             R.reopen(it)
+
+
+def test_clip_card_shows_streamer_and_vod_time_only():
+    item = {"id": "adinross-20261119-060000", "mode": "lacy",
+            "source": {"streamer": "Adin Ross", "platform": "kick", "category": "Grand Theft Auto VI",
+                       "vod_link": "https://kick.com/adinross/videos/u1?t=3723"}}
+    rnd = {"n": 1, "kind": "initial", "comment": "", "variants": [
+        {"label": "A", "duration": 31.2, "title": "Adin Ross did NOT expect this in GTA 6", "style": {"grade": "moody"}}]}
+    p = DB.round_payload(item, rnd)
+    assert p["content"].startswith("**Adin Ross** · GTA VI · [VOD at 1:02:03]")
+    assert p["embeds"][0]["description"] == "31.2s\n“Adin Ross did NOT expect this in GTA 6”"
+    tg = {"id": "tg1", "mode": "tokyo_girl", "source": {}}
+    v = {"label": "B", "duration": 18.0, "silent": True, "music": {"song": "Tokyo Girl", "start_s": 42.4},
+         "music_note": "🎵 Sound: **Tokyo Girl** — start it at **0:42** · <https://www.tiktok.com/music/x-1>"}
+    e = DB.round_payload(tg, {"n": 1, "kind": "initial", "variants": [v]})["embeds"][0]
+    assert "🎵 **Tokyo Girl** · start **0:42** · [sound](https://www.tiktok.com/music/x-1)" in e["description"]
+
+
+def test_trend_command_shows_one_bar_from_the_start(tmp_path, monkeypatch):
+    """/trend makes its bar before the subprocess starts (the library's nudity check runs
+    first and can take minutes), hands it over via the env, and finishes it afterwards."""
+    from spikebot import progress
+    store = R.Store(tmp_path / "data")
+    b, _ = bot_for(tmp_path, store)
+    seen = {}
+
+    class Proc:
+        pid, returncode = 4242, 0
+
+        async def communicate(self):
+            path = Path(seen["env"][progress.ENV])
+            d = json.loads(path.read_text())
+            seen["job"] = (d["title"], d["channel_id"], d["pid"])
+            return b"review item x (impulsive.mp3): ready for #ready-to-post\n", None
+
+    async def fake_exec(*cmd, env=None, **kw):
+        seen["env"] = env
+        return Proc()
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+
+    class Inter:
+        channel_id = 555
+    asyncio.run(b.run_trend(Inter(), "impulsive", 1))
+    assert seen["job"] == ("Trending-sound edits · impulsive", 555, 4242)
+    [(_, d)] = progress.load_all(b.data_dir)
+    assert d["state"] == "done"
+
+    Proc.returncode = 1                                    # scheduled run, nothing to cut to: skipped, not failed
+
+    async def no_sounds(self):
+        return b"EditError: no trending sounds saved: post a TikTok sound link\n", None
+    monkeypatch.setattr(Proc, "communicate", no_sounds)
+    asyncio.run(b.run_trend(None, "auto", 1))
+    states = sorted(d["state"] for _, d in progress.load_all(b.data_dir))
+    assert states == ["done", "skipped"]

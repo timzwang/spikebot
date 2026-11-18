@@ -13,3 +13,5 @@ scenedetect[opencv-headless]>=0.6.4,<0.7
 anthropic>=1.17,<2
 # Tokyo Girl: beat map of the song the edit is cut to (render subprocess only; ~200 MB with numba)
 librosa>=0.10,<0.12
+# Nudity check on every rendered video (spikebot/safety.py); onnxruntime + OpenCV are already here
+nudenet>=3.4,<4

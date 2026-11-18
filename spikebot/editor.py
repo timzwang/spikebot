@@ -230,12 +230,18 @@ def ass_time(t: float) -> str:
     return f"{cs // 360000}:{cs // 6000 % 60:02d}:{cs // 100 % 60:02d}.{cs % 100:02d}"
 
 
-def group_words(words: list[Word], max_words: int = 3, max_gap: float = 0.6) -> list[list[Word]]:
-    """Short caption groups: break after 3 words, a pause, or sentence punctuation."""
+CAP_MAX_CHARS = 18   # one caption = one line at 84 px on a 1080 px frame (no wrapping = no jumping)
+
+
+def group_words(words: list[Word], max_words: int = 3, max_gap: float = 0.6,
+                max_chars: int = CAP_MAX_CHARS) -> list[list[Word]]:
+    """Short caption groups: break after 3 words, a pause, sentence punctuation, or when the
+    line would get too long to stay on one line."""
     groups: list[list[Word]] = []
     cur: list[Word] = []
     for w in words:
-        if cur and (len(cur) >= max_words or w.start - cur[-1].end > max_gap
+        width = len(" ".join(x.text.strip() for x in cur + [w]))
+        if cur and (len(cur) >= max_words or w.start - cur[-1].end > max_gap or width > max_chars
                     or cur[-1].text.rstrip().endswith((".", "!", "?"))):
             groups.append(cur)
             cur = []
@@ -362,6 +368,12 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
     if not worth_captioning(words):
         groups = []
     groups = [g for g in groups if any(meaningful(w.text) for w in g)]
+    # Every caption sits at exactly the same spot: a fixed \\pos (libass never shifts positioned
+    # lines), one line only (groups are short and wrapping is off), and no two captions on screen
+    # at once (each ends when the next starts). Overlapping lines used to stack, so captions
+    # jumped up and down.
+    pos = f"{{\\an2\\pos({OUT_W // 2},{OUT_H - margin})\\q2}}"
+    caps: list[list] = []
     for g in groups:
         texts = [ass_escape(w.text.strip().upper()) for w in g]
         for i, w in enumerate(g):
@@ -370,8 +382,14 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             stop = g[i + 1].start if i + 1 < len(g) else max(w.end, w.start + 0.3)
             shown = " ".join(f"{{\\c&H{hi}&}}{t}{{\\c&H{main[4:]}&}}" if j == i else t
                              for j, t in enumerate(texts))
-            lines.append(f"Dialogue: 0,{ass_time(w.start)},{ass_time(min(stop, end_at))},"
-                         f"Cap,,0,0,0,,{shown}")
+            caps.append([w.start, min(stop, end_at), shown])
+    caps.sort(key=lambda c: c[0])
+    for k, (a, b, shown) in enumerate(caps):
+        if k + 1 < len(caps):
+            b = min(b, caps[k + 1][0])
+        if b - a < 0.02:
+            continue
+        lines.append(f"Dialogue: 0,{ass_time(a)},{ass_time(b)},Cap,,0,0,0,,{pos}{shown}")
     return head + "\n".join(lines) + "\n"
 
 
@@ -393,6 +411,7 @@ def keep_segments(words: list[Word], duration: float, window_s: float, peak: flo
         peak = duration * 0.55
     start = min(max(0.0, peak - window_s * payoff), max(0.0, duration - window_s))
     end = min(duration, start + window_s)
+    start, end = snap_window(words, start, end, duration, pad)
     if not max_gap_s:
         return [(round(start, 3), round(end, 3))]
     spans = [(max(start, w.start - pad), min(end, w.end + pad)) for w in words
@@ -409,6 +428,36 @@ def keep_segments(words: list[Word], duration: float, window_s: float, peak: flo
             merged.append([a, b])
     out = [(round(a, 3), round(b, 3)) for a, b in merged if b - a >= 0.4]
     return out or [(round(start, 3), round(end, 3))]
+
+
+def snap_window(words: list[Word], start: float, end: float, duration: float, pad: float = 0.25,
+                phrase_gap: float = 0.45, max_extend: float = 4.0) -> tuple[float, float]:
+    """Move the window's edges so nobody is cut off mid-word or mid-sentence: the start goes
+    back to where the phrase it falls in began, the end runs on until the phrase it falls in
+    is finished (a phrase = words less than `phrase_gap` apart), each by at most `max_extend` s."""
+    ws = sorted(words, key=lambda w: w.start)
+    lo, hi = max(0.0, start - max_extend), min(duration, end + max_extend)
+    # start: step back over words that touch it or run into it without a pause
+    s0 = start
+    for w in reversed(ws):
+        if w.start >= s0 or w.end < lo:
+            continue
+        if w.end + phrase_gap >= s0:
+            s0 = max(lo, w.start - pad)
+        else:
+            break
+    # end: run on over words that straddle it or follow it without a pause
+    e0 = end
+    for w in ws:
+        if w.end <= e0 - 0.0 and w.end <= end:
+            continue
+        if w.start > hi:
+            break
+        if w.start - phrase_gap <= e0:
+            e0 = min(hi, w.end + pad)
+        else:
+            break
+    return round(max(0.0, s0), 3), round(min(duration, e0), 3)
 
 
 def remap_words(words: list[Word], segments: list[tuple[float, float]]) -> list[Word]:

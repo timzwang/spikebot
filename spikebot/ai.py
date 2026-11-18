@@ -304,3 +304,39 @@ def study_reference(frames: list[tuple[float, bytes]], measured: dict, note: str
         content.append({"type": "text", "text": "The creator's note about why they sent it: " + note.strip()[:800]})
     return ask_json(ART_SYSTEM.format(menu=settings_menu()), content, ART_SCHEMA, base=base,
                     max_tokens=6000, client=client, effort="high")
+
+
+# --------------------------------------------------------------------------
+# Stream clips: YouTube title + post caption written from what was said
+# --------------------------------------------------------------------------
+CLIP_COPY_SYSTEM = """You write the YouTube Shorts title and the TikTok/Instagram caption for a short clip of a
+streamer playing GTA. You get the streamer's name, the game, chat's reaction words and the transcript of
+what was said in the clip. Write like a real clipper account that people actually follow, not like a bot:
+- Describe what actually happens or is said in THIS clip, specifically. Use the transcript; never invent
+  events that aren't in it. If the transcript is vague, keep it simple ("{name} loses it at this GTA 6 moment").
+- title: 25-70 characters, must contain the streamer's name exactly as given, plain English, sentence case,
+  no hashtags, no emojis, no ALL CAPS words except GTA, no quotes around the whole thing.
+- caption: 15-80 characters, casual and lowercase is fine, must contain the streamer's name, at most one emoji,
+  no hashtags (they are added later), must not repeat the title word for word.
+- Never: insults, mocking, drama, negativity about the streamer, "you won't believe", "insane", "crazy",
+  "wait for it", "watch till the end", "POV", "theory", questions to farm comments, story spoilers.
+Give exactly the number of options asked for, each clearly different in angle."""
+
+CLIP_COPY_SCHEMA = {
+    "type": "object", "additionalProperties": False,
+    "properties": {"options": {"type": "array", "items": {
+        "type": "object", "additionalProperties": False,
+        "properties": {"title": {"type": "string"}, "caption": {"type": "string"}},
+        "required": ["title", "caption"]}}},
+    "required": ["options"],
+}
+
+
+def write_clip_copy(name: str, game: str, transcript: str, vibe: list[str] | None = None, n: int = 3,
+                    base: Path | None = None, client=None) -> list[dict]:
+    """[{title, caption}] x n for one clip. Raises AIError (callers fall back to templates)."""
+    content = (f"Streamer: {name}\nGame: {game}\nChat reaction: {', '.join((vibe or [])[:8]) or 'none'}\n"
+               f"Options wanted: {n}\nTranscript:\n{transcript.strip()[:3000] or '(no clear speech)'}")
+    out = ask_json(CLIP_COPY_SYSTEM.replace("{name}", name), content, CLIP_COPY_SCHEMA, base,
+                   max_tokens=1500, client=client, effort="low", task="feedback")
+    return [o for o in out.get("options") or [] if o.get("title") and o.get("caption")]

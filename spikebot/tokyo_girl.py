@@ -30,6 +30,7 @@ CLI (run from /opt/spikebot):
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import logging
 import math
@@ -85,8 +86,8 @@ DEFAULTS = {
     "scene_threshold": 0.3,
     "font": "DejaVu Sans",
     "font_size": 104,
-    "caption_ig": "{hook} Song: Tokyo Girl by @PassiveBand #GTA6",
-    "caption_tiktok": "{hook} Song: Tokyo Girl by @Passive #GTA6",
+    "caption_ig": "{hook} 🎵 Tokyo Girl by @PassiveBand #gta6 #gtavi #vicecity",
+    "caption_tiktok": "{hook} 🎵 Tokyo Girl by @Passive #gta6 #gtavi #vicecity",
 }
 
 TRUE = {"1", "true", "yes", "on"}
@@ -250,6 +251,32 @@ STORIES = [
 KINDS = ("news", "theory", "meme", "couple")
 
 
+# Post captions for the edits (Tim, 18 Nov 2026: the old ones "sound terrible"). Short,
+# lowercase, how people actually caption GTA edits: no "Theory:", no forced question, at most
+# one emoji. Picked by how far we are from launch; {days_text} = "2 days".
+EDIT_LINES = {
+    "pre": ["vice city in {days_text} 🌴", "{days_text} left and i'm not ready", "13 years for this",
+            "the wait is almost over", "{days_text}. clear your schedule", "leonida is calling",
+            "counting down the hours at this point", "this trailer still gives me chills"],
+    "launch": ["it's finally here", "vice city is open", "13 years. it's here", "see you in leonida",
+               "gta 6 day one 🌴", "the wait is over"],
+    "post": ["vice city hits different at night", "leonida never gets old", "this game is unreal",
+             "can't stop playing this", "one more mission they said", "nothing feels like vice city"],
+    "any": ["vice city at night", "leonida looks unreal", "the detail in this game", "jason and lucia",
+            "this city 🌴", "rockstar really did that", "golden hour in vice city"],
+}
+
+
+def edit_line(story: "Story", today: date, salt: str = "") -> str:
+    """The caption line for an edit: natural and short, chosen per story/day so the three
+    versions and the next days differ."""
+    d = days_to_launch(today)
+    phase = "pre" if d > 0 else "launch" if d == 0 else "post"
+    pool = EDIT_LINES[phase] + (EDIT_LINES["any"] if phase != "launch" else [])
+    i = int(hashlib.sha1(f"{story.id}|{today.isoformat()}|{salt}".encode()).hexdigest(), 16) % len(pool)
+    return fill(pool[i], today)
+
+
 def days_to_launch(today: date) -> int:
     return (LAUNCH - today).days
 
@@ -294,14 +321,13 @@ def pick_story(today: date, recent: list[str], rng: random.Random,
 
 
 def captions(story: Story, today: date, lcfg: dict) -> str:
-    hook = plain(fill(story.caption, today)).strip()
-    return (lcfg["caption_ig"].format(hook=hook).strip() + "\n"
-            + lcfg["caption_tiktok"].format(hook=hook).strip() + "\n")
+    c = tg_captions(story, today, lcfg)
+    return c["instagram"] + "\n" + c["tiktok"] + "\n"
 
 
 def caption_file(story: Story, today: date, lcfg: dict) -> str:
-    ig, tt = captions(story, today, lcfg).splitlines()
-    return f"IG: {ig}\nTikTok: {tt}\n"
+    c = tg_captions(story, today, lcfg)
+    return f"IG: {c['instagram']}\nTikTok: {c['tiktok']}\n"
 
 
 # --------------------------------------------------------------------------
@@ -420,7 +446,10 @@ def build_shots(rel: str, entry: dict, override: dict, lcfg: dict) -> list[Shot]
     if override.get("skip"):
         return []
     tags = sorted(set(override.get("tags") or []) | set(tags_for(rel)))
+    bad = [t for t, _ in entry.get("nsfw") or []]
     if entry["kind"] == "image":
+        if bad:   # nudity / sexual content: never used
+            return []
         return [Shot(rel, "image", 0.0, math.inf, tags, None, entry["w"], entry["h"])]
     dur = entry["duration"]
     lo, hi = lcfg["trailer_head_s"], dur - lcfg["trailer_tail_s"]
@@ -439,6 +468,8 @@ def build_shots(rel: str, entry: dict, override: dict, lcfg: dict) -> list[Shot]
             continue
         if any(s < b and e > a for a, b in excl):
             continue
+        if any(s - 1.0 <= t <= e + 1.0 for t in bad):   # nudity / sexual content nearby
+            continue
         ys = [y for t, y in entry["yavg"] if s <= t < e]
         if not ys and entry["yavg"]:
             ys = [min(entry["yavg"], key=lambda p: abs(p[0] - (s + e) / 2))[1]]
@@ -453,6 +484,23 @@ def build_shots(rel: str, entry: dict, override: dict, lcfg: dict) -> list[Shot]
         out.append(Shot(rel, "video", round(s, 3), round(e, 3), sorted(stags), entry.get("crop"),
                         entry["w"], entry["h"], round(statistics.mean(mv), 2) if mv else None))
     return out
+
+
+def nudity_scan(path: Path, entry: dict, rel: str) -> None:
+    """Once per file: the times showing nudity / sexual framing (spikebot/safety.py), stored as
+    entry["nsfw"]; build_shots never uses a shot that contains one. Without NudeNet nothing is
+    stored, so it runs again next time."""
+    from . import safety
+    try:
+        log.info("nudity check of %s (once)", rel)
+        entry["nsfw"] = safety.flag_times(path, fps=1.0)
+        if entry["nsfw"]:
+            log.warning("%s: %d frame(s) with nudity/sexual content, those shots are never used",
+                        rel, len(entry["nsfw"]))
+    except safety.Unavailable as e:
+        log.error("%s: %s", rel, e)
+    except Exception as e:  # noqa: BLE001 - try again next scan
+        log.warning("nudity check of %s failed: %s", rel, e)
 
 
 class Library:
@@ -472,18 +520,26 @@ class Library:
                       if p.is_file() and p.suffix.lower() in VIDEO_EXT | IMAGE_EXT
                       and not any(part.startswith(".") for part in p.relative_to(self.root).parts))
 
-    def scan(self) -> dict:
+    def scan(self, on_file=None) -> dict:
+        """`on_file(i, n, rel)` is called before each file that needs work (a progress bar)."""
         try:
             cache = json.loads(self.cache_file.read_text(encoding="utf-8"))
         except (FileNotFoundError, ValueError):
             cache = {}
         out = {}
-        for p in self.files():
+        files = self.files()
+        for i, p in enumerate(files):
             rel = p.relative_to(self.root).as_posix()
             st = p.stat()
             sig = [st.st_size, int(st.st_mtime)]
-            if rel in cache and cache[rel].get("sig") == sig:
+            cached = rel in cache and cache[rel].get("sig") == sig
+            if on_file and (not cached or "nsfw" not in cache[rel]
+                            or (cache[rel].get("kind") == "video" and "motion" not in cache[rel])):
+                on_file(i, len(files), rel)
+            if cached:
                 out[rel] = cache[rel]
+                if "nsfw" not in cache[rel]:
+                    nudity_scan(p, out[rel], rel)
                 if cache[rel].get("kind") == "video" and "motion" not in cache[rel]:
                     try:   # files analysed before the motion measure: add it once
                         log.info("measuring motion in %s (once)", rel)
@@ -507,6 +563,7 @@ class Library:
                 log.warning("skipping %s: too small (%sx%s)", rel, entry["w"], entry["h"])
                 continue
             entry["sig"] = sig
+            nudity_scan(p, entry, rel)
             out[rel] = entry
         self.root.mkdir(parents=True, exist_ok=True)
         self.cache_file.write_text(json.dumps(out, indent=1), encoding="utf-8")
@@ -521,8 +578,8 @@ class Library:
             log.warning("tags.json is not valid JSON, ignoring it: %s", e)
             return {}
 
-    def shots(self, entries: dict | None = None) -> list[Shot]:
-        entries = self.scan() if entries is None else entries
+    def shots(self, entries: dict | None = None, on_file=None) -> list[Shot]:
+        entries = self.scan(on_file) if entries is None else entries
         ov = self.overrides()
         out: list[Shot] = []
         for rel, entry in entries.items():
@@ -1178,7 +1235,7 @@ def make(lcfg: dict, n: int = 1, story_id: str | None = None, now: float | None 
 # Review variants (spikebot/review.py): 3 versions per edit, Tim approves one
 # --------------------------------------------------------------------------
 def tg_captions(story: Story, today: date, lcfg: dict, hook: str | None = None) -> dict[str, str]:
-    h = hook or plain(fill(story.caption, today)).strip()
+    h = hook or edit_line(story, today).strip()
     return {"instagram": lcfg["caption_ig"].format(hook=h).strip(),
             "tiktok": lcfg["caption_tiktok"].format(hook=h).strip()}
 
@@ -1335,7 +1392,7 @@ class ReviewAdapter:
             caps = dict(base_v["captions"]) if base_v and not hook and same_song else \
                 (tg_captions if (is_tg_song and not trend) else trend_captions)(story, today, self.lcfg, hook)
             title = (base_v["title"] if base_v and not hook
-                     else (hook or plain(fill(story.caption, today)))[:95])
+                     else (hook or edit_line(story, today))[:95])
             out.append({"label": spec["label"], "style": spec["style"], "preset": spec.get("preset"),
                         "experimental": spec.get("experimental", False), "story": story.id, "seed": seed,
                         "cards": cards, "title": title,
@@ -1428,7 +1485,7 @@ class ReviewAdapter:
 def trend_captions(story: Story, today: date, lcfg: dict, hook: str | None = None) -> dict[str, str]:
     """Trending-sound edits: the hook + GTA tags. No Tokyo Girl credit; the sound itself is
     added in the app (that's what puts the edit on the sound's page)."""
-    h = hook or plain(fill(story.caption, today)).strip()
+    h = hook or edit_line(story, today).strip()
     return {"instagram": f"{h} #GTA6 #GTAVI #ViceCity #Rockstar".strip(),
             "tiktok": f"{h} #GTA6 #GTAVI #ViceCity #fyp".strip()}
 
@@ -1447,9 +1504,11 @@ def make_trend(lcfg: dict, songs: list[str] | None = None, per_song: int = 1, no
     """Review items cut to trending sounds (every one in the library except the Tokyo Girl
     song, or just `songs`). Same official trailer footage and style as Tokyo Girl, silent.
     Not counted in Tokyo Girl's per_day. Returns the item ids."""
-    from . import music, review
+    from . import music, progress, review
     now = now or time.time()
     dt = datetime.fromtimestamp(now, UK)
+    job = progress.current()   # the bot's /trend bar (render_round then adds none of its own)
+    job.update(stage="Reading the trending sounds")
     lib = music.Library(lcfg["music_dir"])
     rows = lib.trending(lcfg.get("song") or music.TOKYO_GIRL_SONG)
     used_path = trend_used_path(lcfg)
@@ -1464,14 +1523,18 @@ def make_trend(lcfg: dict, songs: list[str] | None = None, per_song: int = 1, no
     store = review.Store(Path(lcfg["data_dir"]))
     cfg, base = lcfg.get("_cfg") or {}, lcfg.get("_base") or Path(".")
     adapter = ReviewAdapter(cfg, base, lcfg, shots)
-    ids, k = [], 0
+    ids, k, total = [], 0, len(rows) * per_song
     for row in rows:
         for i in range(per_song):
+            title = f"Trending sound edit · {row['name']}" + (f" #{i + 1}" if per_song > 1 else "")
             item = store.create("tokyo_girl", {"day": dt.date().isoformat(), "kind": "trend",
-                                               "song": row["file"]}, now + k,
-                                title=f"Trending sound edit · {row['name']}" + (f" #{i + 1}" if per_song > 1 else ""))
-            item = review.render_round(store, item["id"], cfg, base, {"kind": "initial"}, now=now + k,
-                                       adapter=adapter)
+                                               "song": row["file"]}, now + k, title=title)
+            if progress.active():
+                job.data["title"] = title + (f" ({k + 1}/{total})" if total > 1 else "")
+                job.data.setdefault("meta", {})["item"] = item["id"]   # a forced stop cleans this one up
+            with job.span(k / total, (k + 1) / total):
+                item = review.render_round(store, item["id"], cfg, base, {"kind": "initial"}, now=now + k,
+                                           adapter=adapter)
             log.info("trending-sound review item %s (%s): %s", item["id"], row["name"], item["status"])
             used[row["file"]] = used.get(row["file"], 0) + 1
             save_state(used_path, used)
@@ -1509,16 +1572,17 @@ def items_on(state: dict, day: str) -> int:
                and m.get("status") != "failed")
 
 
-def ensure_media(lcfg: dict) -> list[Shot]:
+def ensure_media(lcfg: dict, on_file=None) -> list[Shot]:
     """Usable shots on disk; runs `fetch` once first if there are none."""
-    shots = Library(lcfg).shots()
+    kw = {"on_file": on_file} if on_file else {}   # the /trend bar; daily runs call it plainly
+    shots = Library(lcfg).shots(**kw)
     if not shots:
         log.info("no usable media in %s yet, fetching official Rockstar media", lcfg["media_dir"])
         try:
             fetch(lcfg)
         except Exception as e:
             log.warning("fetch failed: %s", e)
-        shots = Library(lcfg).shots()
+        shots = Library(lcfg).shots(**kw)
     return shots
 
 
@@ -1769,13 +1833,26 @@ def main(argv: list[str] | None = None) -> None:
         else:
             print("delivered:", ", ".join(deliver_pending(lcfg)) or "nothing pending")
     elif args.cmd == "trend":
-        shots = ensure_media(lcfg)
-        if not shots:
-            sys.exit(f"no usable media in {lcfg['media_dir']}")
+        job = progress.current()   # the bot's bar for this /trend (a no-op when run by hand)
+        job.update(0.0, "Checking the trailer library")
+
+        def checking(i, n, rel):
+            job.update(i / max(1, n), "Checking the trailer library (new files: nudity check, motion)",
+                       f"{i + 1}/{n} · {Path(rel).name}")
+        try:
+            with job.span(0.0, 0.1):
+                shots = ensure_media(lcfg, on_file=checking)
+            if not shots:
+                sys.exit(f"no usable media in {lcfg['media_dir']}")
+            with job.span(0.1, 1.0):
+                ids = make_trend(lcfg, args.song, args.n, shots=shots)
+        except progress.Cancelled:
+            print("trend edits cancelled")
+            return
         from . import review
         store = review.Store(Path(lcfg["data_dir"]))
         failed = 0
-        for item_id in make_trend(lcfg, args.song, args.n, shots=shots):
+        for item_id in ids:
             item = store.load(item_id)
             ok = item.get("status") != "failed"
             failed += not ok

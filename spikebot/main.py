@@ -23,6 +23,7 @@ from zoneinfo import ZoneInfo
 from curl_cffi.requests import AsyncSession
 
 from . import instagram as ig_
+from . import highlights as hl_
 from . import lacy as lacy_
 from . import messages as msg_
 from . import review as rv_
@@ -462,6 +463,97 @@ class Bot:
         key = (rec["platform"], rec["channel"])
         await post_discord(url, msg_.moment(rec, self.names.get(key, rec["channel"])))
 
+    # ---- gameplay highlights from the stream audio (spikebot/highlights.py) ----------
+    async def highlights_loop(self) -> None:
+        hcfg = hl_.settings(self.cfg)
+        state = hl_.State(self.data_dir)
+        while True:
+            try:
+                await self.highlights_tick(hcfg, state, time.time())
+            except Exception as e:  # noqa: BLE001 - never take the bot down
+                log.warning("highlights: %s", e)
+            await asyncio.sleep(hcfg["every_s"])
+
+    async def highlights_tick(self, hcfg: dict, state: "hl_.State", now: float, read_audio=None) -> list[str]:
+        """Remember live GTA streams of the clip streamers, read their VOD audio a chunk at a time
+        and turn the loudest moments into clip jobs. Returns the job ids made."""
+        read_audio = read_audio or hl_.read_audio
+        d = state.load()
+        made: list[str] = []
+        for key, prof in self.lacy.profiles.items():
+            st = self.state.get(key) or {}
+            if st.get("live") and st.get("stream_id"):
+                sk = f"{key[0]}/{key[1]}/{st['stream_id']}"
+                e = d.setdefault(sk, {"platform": key[0], "channel": key[1], "stream_id": st["stream_id"],
+                                      "user_id": st.get("user_id"), "scanned": None, "first_seen": now,
+                                      "cats": []})
+                e["last_live"] = now
+                e["cats"] = (e["cats"] + [[now, bool(self.lacy.category_ok(st.get("category"), key)),
+                                          st.get("category") or ""]])[-400:]
+        for sk, e in list(d.items()):
+            key = (e["platform"], e["channel"])
+            prof = self.lacy.profiles.get(key)
+            if prof is None or now - e.get("last_live", 0) > 2 * 86400:
+                d.pop(sk, None)
+                continue
+            if not e.get("vod_url"):
+                try:
+                    vod = await self.lacy.find_vod({"platform": key[0], "channel": key[1],
+                                                    "stream_id": e["stream_id"], "user_id": e.get("user_id")},
+                                                   self.helix)
+                except Exception as ex:  # noqa: BLE001
+                    log.info("highlights %s: VOD lookup failed: %s", sk, ex)
+                    vod = None
+                if not vod:
+                    continue
+                e["vod_url"], e["vod_start"] = vod.get("url"), parse_time(vod.get("started_at"))
+            start = e.get("vod_start")
+            if not start:
+                continue
+            if e.get("scanned") is None:   # only audio from when we saw the stream (its category is known)
+                e["scanned"] = max(0.0, e.get("first_seen", now) - start - 900)
+            live = now - e["last_live"] < 600
+            available = (now if live else e["last_live"]) - start
+            nxt = hl_.plan_scan(e["scanned"], available, hcfg["chunk_s"], hcfg["lag_s"] if live else 0)
+            if nxt is None:
+                if not live:
+                    d.pop(sk, None)   # whole stream done
+                continue
+            a, dur = nxt
+            try:
+                samples = await asyncio.to_thread(read_audio, e["vod_url"], a, dur)
+            except Exception as ex:  # noqa: BLE001 - try this chunk again next time
+                log.info("highlights %s: audio read failed: %s", sk, ex)
+                continue
+            e["scanned"] = a + dur
+            env = hl_.envelope(samples)
+            found = hl_.peaks(env, z=hcfg["z"], min_len_s=hcfg["min_len_s"], min_gap_s=hcfg["min_gap_s"])
+            chat = [r["onset"] - start for r in self.store.candidates_since(start - 60)
+                    if (r["platform"], r["channel"]) == key]
+            for at, score in hl_.pick(found, a, chat, dur / 3600, hcfg["max_per_hour"], hcfg["min_gap_s"]):
+                t = start + at
+                cat = min(e["cats"], key=lambda c: abs(c[0] - t)) if e["cats"] else None
+                if not cat or abs(cat[0] - t) > 900 or not cat[1]:
+                    continue   # not GTA (or unknown) at that moment
+                rec = {"onset": t, "peak_time": t, "clip_start": t - 30, "clip_end": t + 15,
+                       "score": round(score, 2), "programme": prof["programme"], "vibe": ["🔊"], "sample": [],
+                       "platform": key[0], "channel": key[1]}
+                job = lacy_.new_job(rec, {"category": cat[2], "stream_id": e["stream_id"],
+                                          "user_id": e.get("user_id")}, prof)
+                job["id"] += "-a"
+                job.update(source="audio", vod_url=e["vod_url"],
+                           vod_started_at=datetime.fromtimestamp(start, timezone.utc).isoformat(),
+                           ready_at=now)
+                if (self.lacy.jobs.root / job["id"]).exists():
+                    continue
+                self.lacy.jobs.save(job)
+                if self.lacy.queue is not None:
+                    self.lacy.queue.put_nowait(job["id"])
+                made.append(job["id"])
+                log.info("highlight %s: %s at %s (loudness score %.1f)", job["id"], prof["name"], hms(at), score)
+        state.save(d)
+        return made
+
     # ---- Lacy mode ---------------------------------------------------------
     async def lacy_failed(self, job: dict) -> None:
         await self.notifier.send("lacy_failed", f"🎬 {lacy_.who(job)[0]} clip `{job['id']}` failed:"
@@ -666,6 +758,8 @@ class Bot:
             extra.append(self.review_bot.run_forever())
         if self.ig:
             extra.append(self.instagram_loop())
+        if self.lacy and hl_.settings(self.cfg)["enabled"]:
+            extra.append(self.highlights_loop())
         if self.disc["enabled"]:
             if self.helix:
                 extra.append(self.discovery_loop())
@@ -770,11 +864,20 @@ ENV_KEYS = {"TWITCH_CLIENT_ID": "twitch_client_id",
             "LACY_MODE": "lacy_mode",
             "LACY_MAX_UPLOADS_PER_DAY": "lacy_max_uploads_per_day",
             "LACY_AUTO_UPLOAD": "lacy_auto_upload",  # ignored now: every clip needs approval
-            "CLIPS_MODE": "clips_mode",   # stream clips for the other programme channels (default on)
+            "CLIPS_MODE": "clips_mode",
+            "HIGHLIGHTS_MODE": "highlights_mode",   # audio highlights without a chat spike (default on)   # stream clips for the other programme channels (default on)
             "DISCORD_BOT_TOKEN": "discord_bot_token",
             "DISCORD_REVIEW_CHANNEL_ID": "discord_channel_id",
             "DISCORD_TIKTOK_CHANNEL_ID": "discord_tiktok_channel_id",
             "DISCORD_INSPIRATION_CHANNEL_ID": "discord_inspiration_channel_id",
+            "DISCORD_ANNOUNCEMENTS_CHANNEL_ID": "discord_announcements_channel_id",
+            "TIKTOK_CLIENT_KEY": "tiktok_client_key",
+            "TIKTOK_CLIENT_SECRET": "tiktok_client_secret",
+            "TIKTOK_REFRESH_TOKEN": "tiktok_refresh_token",
+            "TIKTOK_REDIRECT_URI": "tiktok_redirect_uri",
+            "TIKTOK_MODE": "tiktok_mode",
+            "TIKTOK_PRIVACY": "tiktok_privacy",
+            "TIKTOK_MAX_PER_DAY": "tiktok_max_per_day",
             "DISCORD_GUILD_ID": "discord_guild_id",
             "DISCORD_APPROVER_IDS": "discord_approver_ids",
             "REVIEW_ENABLED": "review_enabled",

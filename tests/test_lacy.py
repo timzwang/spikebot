@@ -112,18 +112,41 @@ def test_freeze_and_black_parsers():
 
 
 def test_captions_have_lacy_hook_highlight_and_no_watermark():
-    words = [Word(0.0, 0.3, "he"), Word(0.35, 0.6, "stole"), Word(0.65, 1.0, "the plane."),
+    words = [Word(0.0, 0.3, "he"), Word(0.35, 0.6, "stole"), Word(0.65, 1.0, "the car."),
              Word(2.5, 2.8, "unbelievable")]
     ass = editor.build_ass(words, "Lacy can't believe this happened in GTA", 10.0, 600)
     assert "Hook,,0,0,0,,Lacy can't believe this happened in GTA" in ass
     assert "MarginV" in ass and ",636,1" in ass  # hook sits just under the 600px facecam
-    assert "{\\c&H00FFFF&}HE{\\c&HFFFFFF&} STOLE THE PLANE." in ass
+    assert "{\\c&H00FFFF&}HE{\\c&HFFFFFF&} STOLE THE CAR." in ass
     assert "UNBELIEVABLE" in ass and ass.count("Cap,,") == 4
     assert "Mark,," not in ass  # no watermark/logo line
     assert "Mark,,0,0,0,,GTA 6 Clipped" in editor.build_ass(words, "Lacy x", 10, 600,
                                                             watermark="GTA 6 Clipped")
     groups = editor.group_words(words)
     assert [len(g) for g in groups] == [3, 1]
+
+
+def test_captions_never_jump_and_never_overlap():
+    """Every caption at one fixed spot, one line, never two on screen at once (overlapping
+    lines used to stack, so captions jumped up and down)."""
+    import re
+    words = [Word(0.0, 0.5, "absolutely"), Word(0.4, 0.9, "unbelievable"), Word(0.95, 1.6, "driving"),
+             Word(1.5, 2.2, "skills"), Word(2.1, 3.0, "tonight")]
+    ass = editor.build_ass(words, "", 10.0, 600)
+    caps = [l for l in ass.splitlines() if ",Cap,," in l]
+    assert len({re.search(r"\\pos\(\d+,\d+\)", l).group(0) for l in caps}) == 1
+    times = [tuple(l.split(",")[1:3]) for l in caps]
+    assert all(b <= c for (_, b), (c, _) in zip(times, times[1:]))
+    assert all(len(" ".join(w.text for w in g)) <= editor.CAP_MAX_CHARS or len(g) == 1
+               for g in editor.group_words(words))
+
+
+def test_window_never_cuts_a_word_or_sentence():
+    ws = [Word(4.6, 5.3, "wait"), Word(5.4, 5.9, "what"), Word(20.8, 21.4, "no"), Word(21.5, 22.3, "way")]
+    s, e = editor.snap_window(ws, 5.0, 21.0, 60.0)
+    assert s <= 4.6 and e >= 22.3          # whole phrase at each end
+    segs = editor.keep_segments(ws, 60.0, 16.0, 13.8, 1.2)   # window 5.0-21.0, edges inside words
+    assert segs[0][0] <= 4.6 and segs[-1][1] >= 22.3
 
 
 def test_captions_that_add_nothing_are_cut():
@@ -357,7 +380,7 @@ def test_bot_checks_lacy_category_at_spike_time(tmp_path, monkeypatch, category,
     if queued:
         j = jobs[0]
         assert j["category"] == category and j["status"] == "queued"
-        assert j["clip_end"] - j["clip_start"] <= 59 and j["ready_at"] > j["clip_end"]
+        assert j["clip_end"] - j["clip_start"] <= 150 and j["ready_at"] > j["clip_end"]   # sample to pick from
 
 
 def test_bot_lacy_needs_polled_category_to_be_gta_too(tmp_path, monkeypatch):
