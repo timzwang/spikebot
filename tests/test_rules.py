@@ -61,7 +61,7 @@ def test_rules_page_has_a_button_beside_every_rule():
     texts = [b["content"] for b in p["blocks"] if b["type"] == "text"]
     assert "4 on · 1 off" in texts[0]
     assert texts[1:] == ["### 🎨 Colour & look", "### 🔤 Text & captions",
-                         "### 📝 Notes (the editor can't apply these yet)", "### 🚫 Asked for, not possible yet"]
+                         "### 📝 Notes (being turned into settings, or waiting for new editor code)", "### 🚫 Asked for, not possible yet"]
     rules = {b["n"]: b for b in p["blocks"] if b["type"] == "rule"}
     assert rules[1]["content"] == "**#1** grade = moody · _replaced by #5_"
     assert rules[2]["content"] == "**#2** text_level = none"
