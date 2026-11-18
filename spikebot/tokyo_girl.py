@@ -1170,7 +1170,7 @@ class ReviewAdapter:
                     if trend:   # a trending-sound edit without its sound makes no sense
                         raise editor.EditError(f"trending sound {own or default_song!r} is unavailable: {e}") from e
                     log.warning("song beat map unavailable, using the %s BPM grid: %s", self.lcfg["bpm"], e)
-            is_tg_song = bool(song) and music.clean_name(song["name"]) == music.clean_name(
+            is_tg_song = not song or music.clean_name(song["name"]) == music.clean_name(
                 self.lcfg.get("song") or music.TOKYO_GIRL_SONG)
             shots = self.shots()
             if r["media"] == "clips":   # trailer video only, never screenshots
