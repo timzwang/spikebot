@@ -203,8 +203,8 @@ Rules:
 - mode: which kind of edit a row is for: "all", "lacy", "tokyo_girl" or "trend". Use "all" only when the
   feedback is clearly about every kind; when it names one kind, use that one.
 - notes: short lasting instructions that are not a setting (e.g. "payoff in the first 3 seconds"),
-  written as instructions to an editor. The editor cannot apply notes yet, so prefer settings and
-  only use a note when no setting comes close.
+  written as instructions to an editor. Prefer settings; use a note only when no setting comes close
+  (notes are queued for new editor code and switch themselves into settings once it exists).
 - unsupported: things the editor cannot do yet, plainly worded, so the creator knows. Do not pretend.
 - hook_text: only if the creator wrote the exact new opening text they want, otherwise null.
 - summary: one plain sentence of what you will change."""

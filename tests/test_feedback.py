@@ -96,7 +96,7 @@ def test_feedback_with_claude_pins_settings_for_every_future_variant(tmp_path):
     text = fb.format_rule(rule)
     assert "**#1** text_level = none → applies to **all edits**" in text
     assert "**#2** intro = logo → applies to **Tokyo Girl**" in text
-    assert "licensed music" in text and "not possible yet" in text and "can't apply this yet" in text
+    assert "licensed music" in text and "not possible yet" in text and "turned into settings automatically" in text
     # the next request carries what was learned
     c2 = FakeClaude(answer())
     fb.learn("slower please", "lacy", prof, tmp_path, client=c2)

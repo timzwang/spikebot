@@ -1,0 +1,140 @@
+"""Rule compiler (spikebot/rules.py): saved notes become settings, built-in or new-code requests,
+re-read when the editor's capabilities change; one-off deploy requests (the /trend after a deploy)."""
+from __future__ import annotations
+
+import asyncio
+import io
+import json
+
+from spikebot import discord_bot as DB
+from spikebot import rules as RC
+from spikebot import style as S
+
+from .test_feedback import FakeClaude, row
+from .test_review import bot_for, new_item
+
+
+def res(n, verdict, settings=(), needs="", reason="ok"):
+    return {"n": n, "verdict": verdict, "settings": list(settings), "reason": reason, "needs": needs}
+
+
+def notes_profile(store):
+    prof = store.profile()
+    prof.add_rule("x", "", "tokyo_girl", [], ["Keep every shot completely still",
+                                               "Show the release date in the last second",
+                                               "Cut on the beat"], ["Licensed music inside the file"])
+    prof.add_rule("y", "", "lacy", [], ["Post at 7pm"], [])
+    prof.save()
+    return prof
+
+
+def test_pending_and_version():
+    es = [{"n": 1, "kind": "note", "on": True}, {"n": 2, "kind": "setting", "on": True},
+          {"n": 3, "kind": "unsupported", "on": True, "checked": "v1"}, {"n": 4, "kind": "note", "on": False}]
+    assert [e["n"] for e in RC.pending(es, "v1")] == [1]
+    assert [e["n"] for e in RC.pending(es, "v2")] == [1, 3]
+    assert len(RC.capabilities_version()) == 12
+
+
+def test_apply_turns_notes_into_settings_and_marks_the_rest(tmp_path):
+    store, _ = new_item(tmp_path)
+    prof = notes_profile(store)
+    ns = {e["text"]: e["n"] for e in prof.entries()}
+    still, date, beat, music, post = (ns["Keep every shot completely still"], ns["Show the release date in the last second"],
+                                      ns["Cut on the beat"], ns["Licensed music inside the file"], ns["Post at 7pm"])
+    changes = RC.apply(prof, "v1", [
+        res(still, "settings", [row("motion", "none", mode="all")]),
+        res(date, "needs_code", needs="end card with the release date, setting end_date=on"),
+        res(beat, "built_in"),
+        res(music, "settings", [row("grade", "rainbow")]),   # not a real option -> needs code
+        res(post, "not_editor"),
+    ], now=5)
+    by = {c["n"]: c for c in changes}
+    e = prof.entry(still)
+    assert not e["on"] and e["upgraded"].startswith("now #")
+    new = prof.entry(by[still]["added"][0])
+    # limited to the kinds the note applies to (asked for "all"), never Lacy
+    assert new["setting"] == "motion" and new["value"] == "none" and S.entry_modes(new) == ["tokyo_girl"]
+    assert prof.pinned("tokyo_girl")["motion"] == "none" and "motion" not in prof.pinned("lacy")
+    assert prof.entry(date)["on"] and prof.entry(date)["status"] == "needs_code"
+    assert not prof.entry(beat)["on"] and prof.entry(beat)["upgraded"] == "built in now"
+    assert prof.entry(music)["status"] == "needs_code" and by[music]["verdict"] == "needs_code"
+    assert prof.entry(post)["on"] and prof.entry(post)["status"] == "not_editor"
+    assert RC.pending(prof.entries(), "v1") == []
+    assert {e["n"] for e in RC.needs_code(prof.entries())} == {date, music}
+    out = json.loads(RC.export(prof.entries(), tmp_path / "data").read_text())
+    assert {r["n"] for r in out} == {date, music}
+
+
+def test_new_capabilities_recheck_open_notes(tmp_path, monkeypatch):
+    store, _ = new_item(tmp_path)
+    prof = notes_profile(store)
+    RC.apply(prof, RC.capabilities_version(), [res(e["n"], "needs_code", needs="x") for e in prof.entries()])
+    assert RC.pending(prof.entries(), RC.capabilities_version()) == []
+    monkeypatch.setattr(S, "BUILT_IN", S.BUILT_IN + ("Tokyo Girl: a new automatic behaviour",))
+    assert len(RC.pending(prof.entries(), RC.capabilities_version())) == 5
+
+
+def test_bot_compiles_saved_rules_and_files_issues(tmp_path, monkeypatch):
+    store, _ = new_item(tmp_path)
+    prof = notes_profile(store)
+    b, _ = bot_for(tmp_path, store)
+    (tmp_path / ".env").write_text("GITHUB_TOKEN=ghp_test\n")
+    sent = []
+
+    class Resp(io.BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    def fake_open(req, timeout=0):
+        sent.append(json.loads(req.data))
+        assert req.headers["Authorization"] == "Bearer ghp_test"
+        return Resp(json.dumps({"number": 77}).encode())
+    monkeypatch.setattr(RC.urllib.request, "urlopen", fake_open)
+    ns = [e["n"] for e in prof.entries() if e["kind"] in ("note", "unsupported")]
+    c = FakeClaude({"results": [res(ns[0], "settings", [row("motion", "none")]),
+                                res(ns[1], "needs_code", needs="release-date end card")]
+                    + [res(n, "not_editor") for n in ns[2:]]})
+    changes = b.compile_rules(client=c, now=10)
+    assert "Saved instructions" in c.requests[0]["messages"][0]["content"]
+    prof = store.profile()
+    assert not prof.entry(ns[0])["on"] and prof.entry(ns[1])["issue"] == 77
+    assert len(sent) == 1 and "rule-request" in sent[0]["labels"] and "release-date" in sent[0]["body"]
+    text = DB.ReviewBot.compile_notice(changes, True)
+    assert "is now applied" in text and "issue #77" in text
+    line = DB.rule_line(prof.entry(ns[1]), {})
+    assert "needs new editor code (issue #77)" in line
+    # nothing pending: no API call, no second issue
+    assert b.compile_rules(client=FakeClaude(), now=99999) == [] and len(sent) == 1
+
+
+def test_deploy_requests_run_once_and_expire(tmp_path):
+    store, _ = new_item(tmp_path)
+    b, _ = bot_for(tmp_path, store)
+    calls = []
+
+    async def fake_trend(inter, song, per_song):
+        calls.append((inter, song, per_song))
+    b.run_trend = fake_trend
+    reqs = tmp_path / "reqs.json"
+    reqs.write_text(json.dumps([
+        {"id": "a", "action": "trend", "until": "2030-01-01T00:00:00+00:00"},
+        {"id": "b", "action": "trend", "until": "2020-01-01T00:00:00+00:00"},
+        {"id": "c", "action": "rm -rf"}]))
+
+    async def go():
+        first = await b.run_deploy_requests(now=1_800_000_000, path=reqs)
+        await asyncio.sleep(0)
+        second = await b.run_deploy_requests(now=1_800_000_000, path=reqs)
+        return first, second
+    first, second = asyncio.run(go())
+    assert first == ["a"] and second == [] and calls == [(None, None, 1)]
+
+
+def test_shipped_deploy_requests_are_valid():
+    from pathlib import Path
+    reqs = json.loads((Path(DB.__file__).with_name("deploy_requests.json")).read_text())
+    assert all(r["action"] in ("trend",) and r["id"] for r in reqs)

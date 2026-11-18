@@ -112,6 +112,26 @@ CUSTOM_KEYS = {
     "max_s": (8, 60), "hold_beats": (1, 8), "logo_s": (1, 8), "logo_size": (0.2, 0.9), "fade_s": (0.1, 1.5),
 }
 TG_CUSTOM = ("max_s", "hold_beats", "logo_s", "logo_size", "fade_s")
+
+# What the editor does by itself, with no setting (the rule compiler, spikebot/rules.py, reads
+# saved notes against this and the settings menu). Add a line when new code makes a behaviour
+# automatic: the change re-checks every saved note.
+BUILT_IN = (
+    "Lacy: vertical 1080x1920, facecam exactly the top third, gameplay the bottom two thirds, for the whole clip",
+    "Lacy: the clip is a window around the chat peak with the payoff at the `payoff` point; the peak is never cut",
+    "Lacy: jump cuts remove silences longer than the pace allows; filler-only caption groups are cut",
+    "Lacy: captions only when there are at least 3 meaningful words; captions keep clear of the hook box and"
+    " the bottom 320 px",
+    "Lacy: BRB / away / camera-off moments and non-English clips are skipped; never a watermark or logo",
+    "Lacy: no end card unless asked for (ending setting)",
+    "Tokyo Girl / trend: silent files (no audio track); the sound is added in the app",
+    "Tokyo Girl / trend: cuts land on the song's beats; text cards sit on whole bars",
+    "Tokyo Girl / trend: trailer heads/tails, dark shots and excluded tags are never used; least-used footage first",
+    "Tokyo Girl / trend: the logo intro builds over one calm trailer shot and bursts outward exactly on the drop",
+    "Tokyo Girl: the edit starts one bar before the song's drop; trend edits never run past the end of their sound",
+    "Tokyo Girl: the last story card is a question (unless text_level plain/none); no channel watermark ever",
+    "Every variant (A/B/C) uses every enabled setting rule; only unpinned settings differ between them",
+)
 CUSTOM_STR = {"text_colour", "highlight", "hook_style"}
 
 
@@ -273,7 +293,7 @@ CATEGORIES = (
                                    "outline", "shadow", "words", "text_colour", "highlight")),
     ("hook", "🪝 Hook, intro & ending", ("hook", "hook_s", "hook_style", "intro", "ending")),
     ("sound", "🔊 Sound", ("sfx",)),
-    ("note", "📝 Notes (the editor can't apply these yet)", ()),
+    ("note", "📝 Notes (being turned into settings, or waiting for new editor code)", ()),
     ("unsupported", "🚫 Asked for, not possible yet", ()),
 )
 CATEGORY_NAME = {k: name for k, name, _ in CATEGORIES}

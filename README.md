@@ -477,8 +477,16 @@ hook/intro/ending, 🔊 sound, 📝 notes, 🚫 not possible yet). Off ones are 
 #N_ marks a setting a newer entry overrides. Every rule has its own **Turn off / Turn on**
 button beside it (long lists have ◀ Prev / Next ▶ pages, about 11 rules each: Discord's
 limit). For several at once: `/rules disable:3, 5-7` / `/rules enable:4`. Turning an entry
-off brings back the one before it. If Discord ever refuses the list, it comes as `rules.txt`. **Notes** are things the editor has no setting for yet: they
-guide Claude when it reads your next feedback, but don't change the edits themselves.
+off brings back the one before it. If Discord ever refuses the list, it comes as `rules.txt`. **Notes** and **not possible yet** items are compiled automatically (the *rule compiler*,
+`spikebot/rules.py`): at start, right after each `/feedback` and every few minutes, Claude reads each
+one against what the editor can do now. If settings achieve it they are added as new rules and the
+note is switched off ("now #N"); if the editor already does it, "built in now"; if it needs new code
+it stays on, marked _needs new editor code_, goes into `data/rules/needs_code.json` and, with
+`GITHUB_TOKEN` in `.env` (a fine-grained token with Issues read/write on this repo), is filed as a
+GitHub issue labelled `rule-request`, which a daily Claude Code job builds and deploys. Each verdict
+is stamped with a hash of the settings menu (`ai.settings_menu()`) and `style.BUILT_IN`, so when new
+code adds a setting every open note is read again and switches itself on. #status gets one line per
+rule handled.
 `/style setting value` also adds an entry. Version C (experimental) never tries an option
 you've rejected more often than you've picked it.
 

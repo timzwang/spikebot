@@ -185,8 +185,8 @@ def format_rule(rule: dict) -> str:
     """What one feedback added to the rules list, one numbered line per entry."""
     lines = [rule.get("summary") or "Saved:"]
     for e in rule.get("entries") or []:
-        tag = {"note": " _(note: the editor can't apply this yet)_",
-               "unsupported": " _(not possible yet)_"}.get(e["kind"], "")
+        tag = {"note": " _(note: being turned into settings automatically)_",
+               "unsupported": " _(not possible yet: queued for new editor code)_"}.get(e["kind"], "")
         lines.append(f"**#{e['n']}** {st.entry_text(e, where=False)}{tag} → applies to"
                      f" **{st.modes_label(st.entry_modes(e))}**")
     if not rule.get("entries"):

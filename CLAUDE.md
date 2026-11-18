@@ -16,7 +16,7 @@ revenue on a budget of about £20/month. Give all times in UK time.
 - Every Short must add original value (captions, hook, context). Never raw re-uploads,
   so it stays within YouTube's reused content rules.
 - Never commit or print secrets (Discord webhook, Discord bot token, Twitch secret, Google
-  OAuth JSON, `gcs-key.json`, Instagram access token, Anthropic API key).
+  OAuth JSON, `gcs-key.json`, Instagram access token, Anthropic API key, GitHub token).
 - Nothing is published to YouTube/Instagram/TikTok without Tim's Approve in Discord.
 - #inspiration downloads other creators' Shorts **only to measure style**: delete the file
   right after analysis, never reuse their footage, audio or wording.
@@ -288,6 +288,17 @@ it in sync when behaviour or config changes.
   settings rows with scope this_edit/always, notes, unsupported, hook_text) and `study_reference`
   (frames + measured numbers -> what makes it good, techniques, text use, look settings).
   `settings_menu()` lists every setting the editor really has: keep it in sync with style.py.
+- `spikebot/rules.py`: **rule compiler**. `ReviewBot.rules_loop` (start, after /feedback via `rules_wake`,
+  every 2 min, AI backoff) -> `compile_rules`: `decide` (one Claude request for the enabled note/unsupported
+  entries not yet `checked` against `capabilities_version()` = hash of `ai.settings_menu()` + `style.BUILT_IN`)
+  -> `apply` under `profile_lock` on a fresh profile: verdict settings (new entries, limited to the note's
+  kinds, note off "now #N"), built_in (off), needs_code (stays on, `status`/`needs`, `data/rules/needs_code.json`,
+  GitHub issue label `rule-request` when `GITHUB_TOKEN` is in .env, retried hourly), not_editor. #status
+  gets `compile_notice`. **When you build a new editor capability, expose it in `settings_menu` (or add a
+  `BUILT_IN` line) so saved notes upgrade themselves.**
+- `spikebot/deploy_requests.json`: one-off actions run once by `ReviewBot.run_deploy_requests` after the
+  restart that deploys them (whitelist: `trend`; `until` = expiry; done ids in `data/deploy_requests.json`).
+  Use it when Tim asks for e.g. "/trend after the restart".
 - `spikebot/feedback.py`: `learn()` (/feedback -> `Profile.add_rule`: entries in the rules list) and
   `for_variant()` (review Feedback button: re-render changes; saved as entries too unless the wording
   is `ONLY_THIS` ("just this one") or the AI says scope this_edit; the round stores `entries` so its

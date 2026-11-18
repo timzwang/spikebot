@@ -34,6 +34,7 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
+from . import ai
 from . import feedback as fb
 from . import presets as presets_
 from . import progress, review
@@ -192,6 +193,13 @@ def rule_line(e: dict, over: dict[int, int]) -> str:
         why = f"_{e['upgraded']}_" if e.get("upgraded") else "_off_"
         return f"~~**#{e['n']}** {text}~~ · {why}"[:500]
     tag = f" · _replaced by #{over[e['n']]}_" if e["n"] in over else ""
+    if e.get("status") == "needs_code":
+        tag += " · _needs new editor code" + (f" (issue #{e['issue']})" if e.get("issue") else "") + \
+            (f", {e['partly']}" if e.get("partly") else "") + "_"
+    elif e.get("status") == "not_editor":
+        tag += " · _not about the edit itself_"
+    elif e.get("kind") in ("note", "unsupported") and not e.get("checked"):
+        tag += " · _being turned into settings…_"
     return f"**#{e['n']}** {text}{tag}"[:500]
 
 
@@ -492,6 +500,7 @@ class ReviewBot:
         self._publisher = None
         self._archive_checked = 0.0
         self._trend_running = False
+        self.rules_wake = asyncio.Event()
         self._progress_lock = asyncio.Lock()
         self.bar_emojis: dict[str, str] = {}   # rounded progress bar pieces (the bot's own emojis)
         self.force_stopped: set[int] = set()   # pids /cancel had to kill (their parent shouldn't call it a crash)
@@ -673,7 +682,7 @@ class ReviewBot:
                 bot.started = True
                 bot.render_q = asyncio.Queue()
                 for coro in (bot.scan_loop(), bot.render_worker(), bot.publish_loop(), bot.trend_loop(),
-                             bot.progress_loop(), bot.stats_loop()):
+                             bot.progress_loop(), bot.stats_loop(), bot.rules_loop(), bot.run_deploy_requests()):
                     asyncio.create_task(coro)
 
         @tree.error
@@ -1663,7 +1672,111 @@ class ReviewBot:
             profile = self.store.profile()
             rule, problems = fb.learn(text, mode, profile, self.base, client=client)
             profile.save()
+        self.rules_wake.set()   # any note it saved is compiled straight away
         return rule, problems
+
+    # ---- rule compiler: notes -> settings / new-code requests (spikebot/rules.py) ---------
+    def compile_rules(self, client=None, now: float | None = None) -> list[dict]:
+        """One pass: read pending notes against the current editor, apply the verdicts, export
+        what still needs code and file issues for it. Blocking (runs in a thread)."""
+        from . import rules as rules_
+        version, results = rules_.decide(self.store.profile(), self.base, client=client)
+        changes = []
+        with self.profile_lock:
+            profile = self.store.profile()   # fresh: a render may have saved in between
+            if results:
+                changes = rules_.apply(profile, version, results, now=now)
+            token = rules_.github_token(self.base)
+            repo = (self.rcfg.get("rules") or {}).get("github_repo") or rules_.REPO
+            for e in rules_.needs_code(profile.entries()):
+                last = e.get("issue_try")
+                if token and not e.get("issue") and (last is None or (now or time.time()) - last > 3600):
+                    e["issue_try"] = now or time.time()
+                    try:
+                        e["issue"] = rules_.file_issue(e, token, repo)
+                        for c in changes:
+                            if c["n"] == e["n"]:
+                                c["issue"] = e["issue"]
+                    except (OSError, ValueError, KeyError) as err:
+                        log.warning("rule #%s: could not file a GitHub issue: %s", e["n"], err)
+            profile.save()
+            rules_.export(profile.entries(), self.data_dir)
+        return changes
+
+    @staticmethod
+    def compile_notice(changes: list[dict], token: bool) -> str:
+        lines = []
+        for c in changes:
+            short = (c.get("text") or "")[:80]
+            if c["verdict"] == "settings" and c["added"] and not c.get("needs"):
+                lines.append(f"✅ Rule #{c['n']} ({short}) is now applied: " + ", ".join(f"#{n}" for n in c["added"]))
+            elif c["verdict"] == "built_in":
+                lines.append(f"✅ Rule #{c['n']} ({short}): the editor already does this")
+            elif c["verdict"] == "needs_code":
+                where = (f"filed as issue #{c['issue']}, the daily Claude Code job builds it" if c.get("issue")
+                         else "queued in data/rules/needs_code.json" + ("" if token else
+                              " (add GITHUB_TOKEN to .env so it files itself as an issue)"))
+                lines.append(f"🛠️ Rule #{c['n']} ({short}) needs new editor code: {where}")
+        return "\n".join(lines)
+
+    async def rules_loop(self, every: float = 120) -> None:
+        """Compile saved rules: at start (every note already saved), after each /feedback, and
+        every few minutes (Feedback-button notes, newly deployed editor settings)."""
+        from . import rules as rules_
+        backoff = every
+        while True:
+            try:
+                changes = await asyncio.to_thread(self.compile_rules)
+                backoff = every
+                text = self.compile_notice(changes, bool(rules_.github_token(self.base)))
+                if text:
+                    log.info("rules compiled:\n%s", text)
+                    if self.notifier:
+                        await self.notifier.send(f"rules:{time.time():.0f}", text[:1900], kind="start")
+            except ai.AIError as e:
+                backoff = min(backoff * 2, 3600)
+                log.warning("rule compiler: %s (next try in %.0f s)", e, backoff)
+            except Exception as e:  # noqa: BLE001 - never take the bot down
+                backoff = min(backoff * 2, 3600)
+                log.warning("rule compiler failed: %s", e)
+            try:
+                await asyncio.wait_for(self.rules_wake.wait(), backoff)
+            except asyncio.TimeoutError:
+                pass
+            self.rules_wake.clear()
+
+    # ---- one-off requests shipped with a deploy (spikebot/deploy_requests.json) -------------
+    async def run_deploy_requests(self, now: float | None = None, path: Path | None = None) -> list[str]:
+        """Run each request in the deployed code once, after the restart, if it hasn't expired.
+        Only whitelisted actions (`trend`). Done ids live in data/deploy_requests.json."""
+        path = path or Path(__file__).with_name("deploy_requests.json")
+        state = self.data_dir / "deploy_requests.json"
+        now = now or time.time()
+        try:
+            reqs = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return []
+        try:
+            done = set(json.loads(state.read_text(encoding="utf-8")))
+        except (OSError, ValueError):
+            done = set()
+        ran = []
+        for r in reqs if isinstance(reqs, list) else []:
+            rid = str(r.get("id") or "")
+            if not rid or rid in done or r.get("action") not in ("trend",):
+                continue
+            done.add(rid)   # once, even if it is stale or fails
+            until = r.get("until")
+            if until and now > datetime.fromisoformat(until).timestamp():
+                log.info("deploy request %s expired", rid)
+                continue
+            log.info("deploy request %s: %s", rid, r["action"])
+            ran.append(rid)
+            if r["action"] == "trend":
+                asyncio.create_task(self.run_trend(None, r.get("song"), int(r.get("per_song") or 1)))
+        state.parent.mkdir(parents=True, exist_ok=True)
+        state.write_text(json.dumps(sorted(done)), encoding="utf-8")
+        return ran
 
     async def report_error(self, inter, error: BaseException, what: str) -> None:
         """Log the traceback and tell Tim what failed (Discord's own message says nothing)."""
