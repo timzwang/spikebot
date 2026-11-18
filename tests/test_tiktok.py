@@ -129,3 +129,21 @@ def test_inbox_mode_asks_only_for_upload_scopes(tmp_path, capsys):
     with pytest.raises(SystemExit):
         TT.auth(tmp_path / ".env", cfg, ask=ask)
     assert "video.upload" in seen[0] and "video.publish" not in seen[0]
+
+
+def test_auth_accepts_a_link_from_an_earlier_run(tmp_path, capsys):
+    cfg = dict(CFG, redirect_uri="https://gta6-clipped.vercel.app/tiktok/callback.html")
+    links = []
+
+    def first(prompt):
+        links.append([l for l in capsys.readouterr().out.splitlines() if l.startswith("https://www.tiktok.com/")][0])
+        raise SystemExit("closed")
+    with pytest.raises(SystemExit):
+        TT.auth(tmp_path / ".env", cfg, ask=first)
+    import urllib.parse as up
+    old_state = up.parse_qs(up.urlparse(links[0]).query)["state"][0]
+    back = f"{cfg['redirect_uri']}?code=abc&scopes=user.info.basic&state={old_state}"
+    TT.auth(tmp_path / ".env", cfg, ask=lambda p: back, http=FakeHTTP())   # second run, first link: fine
+    assert "TIKTOK_REFRESH_TOKEN=RT2" in (tmp_path / ".env").read_text()
+    with pytest.raises(SystemExit, match="30 minutes"):
+        TT.auth(tmp_path / ".env", cfg, ask=lambda p: f"{cfg['redirect_uri']}?code=abc&state=forged", http=FakeHTTP())

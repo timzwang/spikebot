@@ -190,7 +190,20 @@ def auth(env_path: Path, tcfg: dict, ask=input, http=None) -> None:
     if not (tcfg.get("client_key") and tcfg.get("client_secret") and tcfg.get("redirect_uri")):
         raise SystemExit("Put TIKTOK_CLIENT_KEY, TIKTOK_CLIENT_SECRET and TIKTOK_REDIRECT_URI in .env first"
                          " (the redirect URI must match the one in your TikTok app).")
+    # Links from earlier runs in the last 30 min stay valid (opening an older link used to fail
+    # with "state mismatch"). Only the random state is kept, next to .env.
+    states_file = Path(env_path).with_name(".tiktok_auth_states.json")
+    now = time.time()
+    try:
+        recent = {k: v for k, v in json.loads(states_file.read_text()).items() if now - v < 1800}
+    except (OSError, ValueError):
+        recent = {}
     state = secrets.token_urlsafe(16)
+    recent[state] = now
+    try:
+        states_file.write_text(json.dumps(recent))
+    except OSError:
+        pass
     url = AUTH_URL + "?" + urllib.parse.urlencode({
         "client_key": tcfg["client_key"], "scope": INBOX_SCOPES if tcfg.get("mode") == "inbox" else SCOPES,
         "response_type": "code",
@@ -200,8 +213,12 @@ def auth(env_path: Path, tcfg: dict, ask=input, http=None) -> None:
     print("2. TikTok then opens your redirect page. Copy that page's FULL address from the browser bar")
     back = ask("   and paste it here: ").strip()
     q = urllib.parse.parse_qs(urllib.parse.urlparse(back).query)
-    if (q.get("state") or [""])[0] != state or not q.get("code"):
-        raise SystemExit(f"Authorisation failed: {(q.get('error_description') or q.get('error') or ['state mismatch'])[0]}")
+    got = (q.get("state") or [""])[0]
+    if q.get("error") or not q.get("code"):
+        raise SystemExit(f"Authorisation failed: {(q.get('error_description') or q.get('error') or ['no code in that address'])[0]}")
+    if got not in recent:
+        raise SystemExit("Authorisation failed: that address came from a link more than 30 minutes old"
+                         " (or from another server). Open the link printed above and try again.")
     http = http or _http()
     r = http.post(TOKEN_URL, data={"client_key": tcfg["client_key"], "client_secret": tcfg["client_secret"],
                                    "code": q["code"][0], "grant_type": "authorization_code",
