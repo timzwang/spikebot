@@ -552,7 +552,8 @@ per ~5 minutes (Discord allows 2 renames per channel per 10 minutes). `/stats` r
   which only works after re-running `python -m spikebot.youtube auth --env .env` (it now also
   asks for read-only access). Instagram uses `IG_ACCESS_TOKEN`; views need the insights
   permission and are only counted once every post has a number (25 posts per refresh).
-  TikTok has no free API for account totals, so it isn't counted. A platform that fails keeps
+  TikTok isn't counted yet (its API needs the `user.info.stats` / `video.list` scopes, which
+  the TikTok app doesn't ask for). A platform that fails keeps
   its last numbers for 6 hours. Refreshed every `social_every_s` (15 min); check by hand with
   `python -m spikebot.socialstats --config config.json`.
 

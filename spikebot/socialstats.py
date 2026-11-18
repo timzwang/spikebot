@@ -8,7 +8,8 @@ the platforms the bot can read with official APIs.
   the bot uploaded.
 - Instagram (Graph API, the IG_ACCESS_TOKEN the Reels poster uses): followers_count, like_count
   per post, views per post from media insights (needs the insights permission; skipped if not).
-- TikTok has no free read API for an account's totals, so it isn't counted.
+- TikTok isn't counted yet: its API gives totals only with the user.info.stats / video.list
+  scopes, which the TikTok app (spikebot/tiktok.py) doesn't ask for.
 
 `refresh()` runs in a thread from the Discord bot every `social_every_s`. A platform that
 fails keeps its last good numbers for `STALE_S`, so one bad request never makes the totals jump.
