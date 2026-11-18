@@ -167,3 +167,60 @@ def test_trending_sound_edits_use_each_sound_and_not_tokyo_girl(tmp_path):
     assert DB.mode_label(item)[0] == "Trending sound"
     assert "trending sound" in DB.round_payload(item, item["rounds"][0])["content"]
     assert TG.items_on(TG.load_state(Path(s["state_file"])), "2026-11-17") == 0   # not Tokyo Girl's quota
+
+
+@needs_ffmpeg
+def test_tokyo_girl_feedback_keeps_the_clips_and_switches_the_sound(tmp_path, monkeypatch):
+    """Tim: "same clips as B1, switch the song to impulsive" -> B2 has B1's clips in B1's order,
+    cut to Impulsive; feedback on B2 keeps both. Nothing about it is saved as a lasting rule."""
+    from spikebot import ai
+    from spikebot import music as M
+    from tests.test_music import song
+    monkeypatch.setattr(ai, "available", lambda base=None: False)   # the rule parser, no API
+    media = tmp_path / "data/rockstar_media"
+    media.mkdir(parents=True)
+    ff = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y"]
+    for i in range(8):
+        subprocess.run(ff + ["-f", "lavfi", "-i", f"gradients=s=1920x1080:seed={i}", "-frames:v", "1",
+                             str(media / f"vice_city_{i}.jpg")], check=True)
+    cfg = {"tokyo_girl": {"min_s": 8, "max_s": 16, "per_day": 1}, "data_dir": "data"}
+    s = TG.settings(cfg, tmp_path)
+    lib = M.Library(s["music_dir"])
+    lib.add(song(tmp_path / "tg.wav", seconds=30), "Tokyo Girl", replace=True)
+    imp = lib.add(song(tmp_path / "imp.wav", drop=6.0, seconds=30), "Impulsive")
+    now = datetime(2026, 11, 18, 18, 0, tzinfo=TG.UK).timestamp()
+    TG.save_state(Path(s["state_file"]), {"last_fetch": now})
+    store = R.Store(tmp_path / "data")
+    item = store.load(TG.daily(s, now)[0])
+    b1 = R.variant_of(item, 1, "B")
+    assert b1["music"]["song"] == "tokyo-girl" and b1["footage"]
+    keys = [f["key"] for f in b1["footage"]]
+
+    with store.edit(item["id"]) as it:
+        R.request(it, "feedback", now, round=1, label="B",
+                  notes="Use the exact same clips as B1 and switch the song to impulsive")
+    item = R.render_round(store, item["id"], cfg, tmp_path, now=now + 1)
+    assert (item.get("request") or {}).get("status") == "done", item.get("request")
+    b2 = item["rounds"][-1]["variants"][0]
+    assert b2["label"] == "B2" and b2["music"]["song"] == imp["name"]
+    assert [f["key"] for f in b2["footage"]] == [keys[i % len(keys)] for i in range(len(b2["footage"]))]
+    assert b2["footage_note"].startswith("Same clips as B1")
+    assert "Tokyo Girl" not in b2["captions"]["tiktok"]
+    assert "Sound: impulsive" in item["rounds"][-1]["comment"]
+    assert not [e for e in store.profile().entries() if e["kind"] in ("note", "unsupported")]
+
+    with store.edit(item["id"]) as it:        # next feedback: keeps the sound and the clips
+        R.request(it, "feedback", now + 2, round=2, label="B2", notes="warmer colours")
+    item = R.render_round(store, item["id"], cfg, tmp_path, now=now + 3)
+    b3 = item["rounds"][-1]["variants"][0]
+    assert b3["music"]["song"] == imp["name"] and b3["style"]["grade"] == "warm"
+    assert [f["key"] for f in b3["footage"]] == [f["key"] for f in b2["footage"]][:len(b3["footage"])] or \
+        b3["footage_note"].startswith("Same clips as B2")
+
+
+def test_feedback_reads_footage_and_sound_requests():
+    from spikebot import feedback as fb
+    assert fb.footage_of("use the exact same clips as B1") == "keep"
+    assert fb.footage_of("different clips please") == "new" and fb.footage_of("darker") == "default"
+    assert fb.song_of("switch song to impulsive") == "impulsive"
+    assert fb.song_of("use the impulsive sound") == "impulsive" and fb.song_of("darker") is None

@@ -348,7 +348,7 @@ def adapter_for(mode: str, cfg: dict, base: Path):
 
 
 def specs_for(item: dict, req: dict, store: Store, rng: random.Random,
-              base_dir: Path | None = None, ai_client=None) -> tuple[list[dict], str]:
+              base_dir: Path | None = None, ai_client=None, sounds: list[str] | None = None) -> tuple[list[dict], str]:
     """Styles (and text overrides) to render for a request, and a comment for Discord."""
     profile = store.profile()
     presets = store.presets().all()
@@ -361,10 +361,12 @@ def specs_for(item: dict, req: dict, store: Store, rng: random.Random,
     if kind == "feedback":
         from . import feedback as fb
         res = fb.for_variant(req.get("notes", ""), style_mode(item), base["style"], profile, base_dir,
-                             item_id=item["id"], client=ai_client)
+                             item_id=item["id"], client=ai_client, sounds=sounds)
         new = res["style"]
+        # a re-render changes only what Tim asked for: same clips unless he wants new ones
         spec = {"label": f"{base['label'][0]}{n}", "style": new, "preset": base.get("preset"),
-                "experimental": False, "texts": res["texts"], "from": base, "intents": res["intents"]}
+                "experimental": False, "texts": res["texts"], "from": base, "intents": res["intents"],
+                "keep_footage": res.get("footage", "keep") != "new", "song": res.get("song")}
         profile.feedback(item["id"], base["label"], req.get("notes", ""), res["intents"], base["style"], new,
                          style_mode(item))
         profile.save()
@@ -379,7 +381,7 @@ def specs_for(item: dict, req: dict, store: Store, rng: random.Random,
         if custom:
             new["custom"] = custom
         spec = {"label": f"P{n}", "style": new, "preset": p["name"], "experimental": False,
-                "texts": {}, "from": base}
+                "texts": {}, "from": base, "keep_footage": True}
         return [spec], f"Re-rendered {base['label']} with preset **{p['name']}** ({', '.join(p.get('copy') or [])})"
     raise ValueError(f"unknown request {kind!r}")
 
@@ -420,8 +422,9 @@ def render_round(store: Store, item_id: str, cfg: dict, base: Path, req: dict | 
 def _render_round(store, item_id, item, cfg, base, req, rcfg, now, adapter, seed) -> dict:
     try:
         rng = random.Random(seed if seed is not None else f"{item_id}-{len(item['rounds'])}-{now}")
-        specs, comment = specs_for(item, req, store, rng, base)
         adapter = adapter or adapter_for(item["mode"], cfg, base)
+        sounds = adapter.sounds() if hasattr(adapter, "sounds") else None
+        specs, comment = specs_for(item, req, store, rng, base, sounds=sounds)
         n = len(item["rounds"]) + 1
         budget = int(rcfg["preview_total_mb"] * 1_000_000 / max(len(specs), 1))
         variants = adapter.render(item, specs, n, store.dir(item_id), budget)

@@ -43,6 +43,29 @@ def _split(rows: list[dict], default_mode: str) -> tuple[list[dict], list[dict],
     return ok, clear, bad
 
 
+KEEP_FOOTAGE = re.compile(r"(?i)\b(same|exact|identical|keep( the)?|original)\s+(clips?|footage|shots?|scenes?|video)\b"
+                          r"|\bdon'?t change the (clips?|footage|shots?)\b|\bclips? (as|from) [a-c]\d\b")
+NEW_FOOTAGE = re.compile(r"(?i)\b(different|new|other|fresh|change the)\s+(clips?|footage|shots?|scenes?)\b")
+SONG_TO = re.compile(r"(?i)\b(?:song|sound|music|track|audio)\b\s*(?:to|as|=|:|with|->)\s*[\"“']?([^\"”'.,;\n]{2,40}?)[\"”']?"
+                     r"(?=\s+(?:and|but|with|please|instead)\b|[.,;!\n]|$)")
+SONG_NAMED = re.compile(r"(?i)\b(?:use|switch to|change to|swap to)\s+(?:the\s+)?[\"“']?((?:[\w'-]+\s+){0,3}?[\w'-]+)[\"”']?"
+                        r"\s+(?:song|sound|track)\b")
+SONG_QUOTED = re.compile(r"(?i)\b(?:song|sound|music|track|audio)\b[^\"“\n]{0,20}[\"“]([^\"”\n]{2,60})[\"”]")
+SONG = SONG_TO   # used to spot sound requests in "can't do" lines
+
+
+def footage_of(text: str) -> str:
+    """"keep" / "new" / "default" from the wording (rule parser)."""
+    if NEW_FOOTAGE.search(text or "") and not KEEP_FOOTAGE.search(text or ""):
+        return "new"
+    return "keep" if KEEP_FOOTAGE.search(text or "") else "default"
+
+
+def song_of(text: str) -> str | None:
+    m = SONG_QUOTED.search(text or "") or SONG_TO.search(text or "") or SONG_NAMED.search(text or "")
+    return m.group(1).strip() if m else None
+
+
 ONLY_THIS = re.compile(r"(?i)\b(just|only) (for )?(this|that|here)\b|\b(this|that) one only\b|\bjust here\b|"
                        r"\bthis (edit|clip|video|one) only\b|\bnot (always|every time|in future)\b")
 
@@ -82,16 +105,21 @@ def rule_based(text: str, mode: str, profile: st.Profile, current: dict | None =
             seen.add(key)
             uniq.append(r)
     summary = ("Understood: " + ", ".join(intents)) if intents else "Nothing I could turn into a setting"
+    footage, song = footage_of(text), song_of(text)
+    if current is not None:   # per-edit requests aren't "can't do" items
+        unknown = [u for u in unknown if not (KEEP_FOOTAGE.search(u) or NEW_FOOTAGE.search(u) or SONG.search(u))]
     return {"summary": summary, "settings": uniq, "notes": [],
-            "unsupported": unknown, "hook_text": hook, "engine": "rules", "intents": intents}
+            "unsupported": unknown, "hook_text": hook, "engine": "rules", "intents": intents,
+            "footage": footage, "song": song}
 
 
 def interpret(text: str, mode: str, profile: st.Profile, base: Path | None, context: str = "slash",
-              current: dict | None = None, client=None) -> dict:
+              current: dict | None = None, client=None, sounds: list[str] | None = None) -> dict:
     if client is not None or ai.available(base):
         try:
             out = ai.interpret_feedback(text, mode, base=base, current=current, context=context,
-                                        taste=profile.taste(None if mode == "all" else mode), client=client)
+                                        taste=profile.taste(None if mode == "all" else mode), client=client,
+                                        sounds=sounds)
             out["engine"] = "claude"
             return out
         except ai.AIError as e:
@@ -128,10 +156,13 @@ def learn(text: str, mode: str, profile: st.Profile, base: Path | None = None, n
 
 
 def for_variant(text: str, mode: str, style: dict, profile: st.Profile, base: Path | None = None,
-                item_id: str = "", now: float | None = None, client=None) -> dict:
-    """Feedback button: {style (new), texts, intents, comment, rule}. Settings apply to the
-    re-render; the ones meant for future edits also become a rule."""
-    out = interpret(text, mode, profile, base, "review", current=style, client=client)
+                item_id: str = "", now: float | None = None, client=None, sounds: list[str] | None = None) -> dict:
+    """Feedback button: {style (new), texts, intents, comment, rule, footage, song}. Settings apply
+    to the re-render; the ones meant for future edits also become a rule. `footage` ("keep" unless
+    Tim asks for new clips) and `song` (a sound to switch to) are for this edit only."""
+    out = interpret(text, mode, profile, base, "review", current=style, client=client, sounds=sounds)
+    footage = out.get("footage") if out.get("footage") in ("keep", "new") else "keep"
+    song = (out.get("song") or "").strip() or None
     everywhere = bool(EVERY.search(text or ""))
     rows = out.get("settings", [])
     if not everywhere:   # about this clip: this kind of clip only
@@ -164,13 +195,16 @@ def for_variant(text: str, mode: str, style: dict, profile: st.Profile, base: Pa
         bits.append("Saved to /rules as " + ", ".join(f"#{e['n']}" for e in rule["entries"]))
     if len(applied) > len((rule or {}).get("settings") or []):
         bits.append("(some changes were only for this edit)")
+    bits.append("Same clips as before" if footage == "keep" else "New clips")
+    if song:
+        bits.append(f"Sound: {song}")
     if out.get("unsupported"):
         bits.append("Can't do yet: " + " | ".join(u[:90] for u in out["unsupported"][:3]))
     if bad:
         bits.append("Skipped: " + " | ".join(b[:90] for b in bad[:3]))
     intents = out.get("intents") or [f"{r['setting']}={r['value']}" for r in ok]
     return {"style": new, "texts": texts, "intents": intents, "comment": ". ".join(bits), "rule": rule,
-            "engine": out.get("engine")}
+            "engine": out.get("engine"), "footage": footage, "song": song}
 
 
 NAMED = {"lacy": r"\blacy\b", "tokyo_girl": r"\btokyo\s*girl\b", "trend": r"\btrend(ing)?\b"}

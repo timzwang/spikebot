@@ -108,7 +108,8 @@ def round_payload(item: dict, rnd: dict, extra: str = "", entry_on: dict | None 
         embeds.append({
             "title": name[:250], "color": VARIANT_COLOUR.get(v["label"][0], 0x99AAB5),
             "description": (f"{v.get('duration', '?')}s · {v.get('cuts', 0)} cuts\n{st.describe(v['style'])}"
-                            + (f"\n{v['music_note']}" if v.get("music_note") else ""))[:1500],
+                            + (f"\n{v['music_note']}" if v.get("music_note") else "")
+                            + (f"\n🎞️ {v['footage_note']}" if v.get("footage_note") else ""))[:1500],
             "fields": [{"name": "YouTube title", "value": code(v.get("title", ""), 120), "inline": False},
                        {"name": "Instagram caption", "value": code(caps.get("instagram", "")), "inline": False},
                        {"name": "TikTok caption", "value": code(caps.get("tiktok", "")), "inline": False}],

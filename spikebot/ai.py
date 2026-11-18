@@ -152,8 +152,9 @@ def settings_menu() -> str:
                  " the logo builds before the drop; logo_size = the logo's largest width as a share of the screen"
                  " (0.6 = 60%); fade_s = crossfade length in seconds")
     lines.append("Footage is matched to each story's tags; the #inspiration presets Tim approves steer pacing"
-                 " and look. Only text that is really impossible (e.g. music inside the file: edits are silent"
-                 " on purpose) belongs in unsupported.")
+                 " and look. Edits are exported silent, but which SOUND an edit is cut to (its beats, drop and"
+                 " length) is chosen per edit with the `song` field, never a setting, note or unsupported item."
+                 " Which clips a re-render uses is the `footage` field.")
     lines.append("Value 'auto' (or null) clears a pinned setting so the editor goes back to learning it.")
     return "\n".join(lines)
 
@@ -178,8 +179,10 @@ FEEDBACK_SCHEMA = {
         "notes": {"type": "array", "items": {"type": "string"}},
         "unsupported": {"type": "array", "items": {"type": "string"}},
         "hook_text": {"type": ["string", "null"]},
+        "footage": {"type": "string", "enum": ["keep", "new", "default"]},
+        "song": {"type": ["string", "null"]},
     },
-    "required": ["summary", "settings", "notes", "unsupported", "hook_text"],
+    "required": ["summary", "settings", "notes", "unsupported", "hook_text", "footage", "song"],
     "additionalProperties": False,
 }
 
@@ -207,11 +210,19 @@ Rules:
   (notes are queued for new editor code and switch themselves into settings once it exists).
 - unsupported: things the editor cannot do yet, plainly worded, so the creator knows. Do not pretend.
 - hook_text: only if the creator wrote the exact new opening text they want, otherwise null.
+- footage (review feedback on one edit): "keep" = re-render with exactly the same clips as the edit
+  being reviewed (e.g. "same clips as B1", "keep the footage", or when he only asks to change text,
+  colour, song or timing); "new" = he wants different clips; "default" = he said nothing about clips
+  (the editor then keeps them). Never turn a footage request into a note, setting or unsupported item.
+- song: the sound this edit should be cut to, when he asks to switch it (e.g. "switch the song to
+  impulsive"): copy the closest name from "Sounds available", else his exact words. null = unchanged.
+  This is a per-edit choice: never a note, setting or unsupported item.
 - summary: one plain sentence of what you will change."""
 
 
 def interpret_feedback(text: str, mode: str, base: Path | None = None, current: dict | None = None,
-                       context: str = "slash", taste: list[str] | None = None, client=None) -> dict:
+                       context: str = "slash", taste: list[str] | None = None, client=None,
+                       sounds: list[str] | None = None) -> dict:
     """Plain-language feedback -> {summary, settings[], notes[], unsupported[], hook_text}.
     `context` is "slash" (/feedback, future edits) or "review" (the Feedback button on
     one variant: `current` is that variant's style)."""
@@ -219,11 +230,15 @@ def interpret_feedback(text: str, mode: str, base: Path | None = None, current: 
              f"Mode the creator is talking about: {mode}"]
     if current:
         parts.append("Current settings of that edit: " + json.dumps(current, sort_keys=True))
+    if sounds:
+        parts.append("Sounds available: " + ", ".join(sounds[:60]))
     if taste:
         parts.append("Instructions already in force (newest last):\n- " + "\n- ".join(taste[-30:]))
     parts.append("Feedback:\n" + text.strip()[:3000])
     out = ask_json(FEEDBACK_SYSTEM.format(menu=settings_menu()), "\n\n".join(parts), FEEDBACK_SCHEMA,
                    base=base, max_tokens=4000, client=client, effort="medium", task="feedback")
+    out.setdefault("footage", "default")
+    out.setdefault("song", None)
     for row in out.get("settings", []):
         if str(row.get("value", "")).lower() in ("auto", "null", "none") and row.get("setting") not in (
                 "text_level", "intro", "ending", "transition"):

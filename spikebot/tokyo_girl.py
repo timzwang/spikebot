@@ -650,6 +650,70 @@ def with_intro_shot(plan: Plan, shots: list[Shot], intro_s: float, uses: dict[st
     return Plan(plan.story, plan.cards, [first] + plan.slots[k + 1:], plan.duration)
 
 
+def footage_of(plan: Plan) -> list[dict]:
+    """The clips of a rendered edit, in order (saved on the variant so a re-render can reuse them)."""
+    return [{"key": sl.shot.key, "offset": sl.offset, "pan": sl.pan} for sl in plan.slots]
+
+
+def refit(plan: Plan, footage: list[dict], shots: list[Shot]) -> tuple[Plan, int]:
+    """Put the clips of an earlier version back into a new plan, slot by slot in the same order
+    (the timing may differ: another sound, pace or length). A clip keeps its spot in the source
+    and moves only as far as it must to fill a longer slot; a slot whose clip is gone or too
+    short keeps the new plan's pick. Returns (plan, slots that got their old clip)."""
+    if not footage:
+        return plan, 0
+    by_key = {s.key: s for s in shots}
+    slots, kept = [], 0
+    for i, sl in enumerate(plan.slots):
+        f = footage[i % len(footage)]
+        shot = by_key.get(f.get("key"))
+        if shot is None or shot.length < sl.dur - 1e-3:
+            slots.append(sl)
+            continue
+        if shot.kind == "video":
+            offset = min(max(float(f.get("offset", shot.start)), shot.start), shot.end - sl.dur)
+        else:
+            offset = 0.0
+        slots.append(Slot(shot, round(offset, 3), sl.beats, sl.start, sl.dur, sl.card, sl.flash,
+                          int(f.get("pan") or sl.pan), sl.punch))
+        kept += 1
+    return Plan(plan.story, plan.cards, slots, plan.duration), kept
+
+
+def footage_note(base_v: dict | None, spec: dict, kept: int, slots: int) -> str | None:
+    """The line on a re-render's card that says whether it kept the clips."""
+    if not base_v:
+        return None
+    name = base_v["label"] if any(c.isdigit() for c in base_v["label"]) else f"{base_v['label']}1"
+    if not spec.get("keep_footage"):
+        return "New clips (as asked)"
+    if not base_v.get("footage"):
+        return (f"Couldn't reuse {name}'s clips: it was made before clip lists were saved."
+                " Feedback on this version keeps its clips")
+    return f"Same clips as {name}" + ("" if kept == slots else f" ({kept} of {slots}; the rest were too short)")
+
+
+def find_sound(lib, name: str) -> dict:
+    """A sound from the music library by (part of) its name: "impulsive" = Impulsive-2.mp3.
+    Raises editor.EditError naming the sounds there are."""
+    from . import music
+    try:
+        return lib.current(name)
+    except music.MusicError:
+        pass
+    want = music.clean_name(name)
+    files = lib.files()
+    hits = [p for p in files if want and want in music.clean_name(p.stem)]
+    if not hits:   # every word of what he typed, in any order
+        words = [w for w in re.split(r"[^a-z0-9]+", name.lower()) if len(w) > 2]
+        hits = [p for p in files if words and all(w in p.stem.lower() for w in words)]
+    if hits:
+        return lib.get(max(hits, key=lambda p: p.stat().st_mtime))
+    names = ", ".join(sorted(p.stem for p in files)) or "none"
+    raise editor.EditError(f"no sound called {name!r} in the library (sounds: {names}). Send it in"
+                           " #inspiration first")
+
+
 def plan_clip(story: Story, shots: list[Shot], lcfg: dict, today: date, rng: random.Random,
               uses: dict[str, int] | None = None, pace: str = "normal", transition: str = "flash",
               cards: list[str] | None = None, beats: list[float] | None = None, hold_beats: int = 1,
@@ -1083,14 +1147,8 @@ class ReviewAdapter:
         from . import music
         src = item.get("source") or {}
         trend = src.get("kind") == "trend"
-        song = None
-        try:
-            song = music.Library(self.lcfg["music_dir"]).current(
-                src.get("song") if trend else (self.lcfg.get("song") or music.TOKYO_GIRL_SONG))
-        except (music.MusicError, OSError) as e:
-            if trend:   # a trending-sound edit without its sound makes no sense
-                raise editor.EditError(f"trending sound {src.get('song')!r} is unavailable: {e}") from e
-            log.warning("song beat map unavailable, using the %s BPM grid: %s", self.lcfg["bpm"], e)
+        default_song = src.get("song") if trend else (self.lcfg.get("song") or music.TOKYO_GIRL_SONG)
+        lib = music.Library(self.lcfg["music_dir"])
         out = []
         from . import progress
         job = progress.current()
@@ -1098,6 +1156,22 @@ class ReviewAdapter:
           with job.span(vi / len(specs), (vi + 1) / len(specs)):
             job.update(0.0, f"Version {spec['label']} ({vi + 1}/{len(specs)}): planning")
             r = st.resolve(spec["style"])
+            base_v = spec.get("from")
+            # the sound: the one Tim asked for in his feedback, else the version's own, else the default
+            asked = (spec.get("song") or "").strip()
+            own = ((base_v or {}).get("music") or {}).get("song")
+            song = None
+            if asked:
+                song = find_sound(lib, asked)   # a sound that isn't there fails the round (Tim is told why)
+            else:
+                try:
+                    song = lib.current(own or default_song)
+                except (music.MusicError, OSError) as e:
+                    if trend:   # a trending-sound edit without its sound makes no sense
+                        raise editor.EditError(f"trending sound {own or default_song!r} is unavailable: {e}") from e
+                    log.warning("song beat map unavailable, using the %s BPM grid: %s", self.lcfg["bpm"], e)
+            is_tg_song = bool(song) and music.clean_name(song["name"]) == music.clean_name(
+                self.lcfg.get("song") or music.TOKYO_GIRL_SONG)
             shots = self.shots()
             if r["media"] == "clips":   # trailer video only, never screenshots
                 shots = [x for x in shots if x.kind == "video"]
@@ -1117,7 +1191,6 @@ class ReviewAdapter:
                     build_beats = max(1, round(lead_s / (60.0 / float(song["bpm"]))))
                 song_start, room = music.window(song, float(self.lcfg["min_s"]), cap, build_beats)
                 plan_cfg = dict(self.lcfg, max_s=room, min_s=min(float(self.lcfg["min_s"]), room))
-            base_v = spec.get("from")
             texts = spec.get("texts") or {}
             if base_v:
                 story = next(x for x in STORIES if x.id == base_v["story"])
@@ -1158,6 +1231,9 @@ class ReviewAdapter:
                                      hold_beats=r["hold_beats"], intro_s=intro_s if want_logo else 0.0,
                                      intact=r["hold_beats"] >= 2 or r["motion"] == "none")
                 plan = trim_plan(plan, end)
+            kept = 0
+            if base_v and spec.get("keep_footage") and base_v.get("footage"):
+                plan, kept = refit(plan, base_v["footage"], shots)
             stem = f"r{n}_{spec['label']}"
             mp4 = folder / f"{stem}.mp4"
             if r["text_level"] == "plain":
@@ -1176,8 +1252,9 @@ class ReviewAdapter:
                 uses[sl.shot.key] = uses.get(sl.shot.key, 0) + 1
             state["recent"] = (state.get("recent", []) + [story.id])[-12:]
             hook = plain(fill(texts["hook"], today)) if texts.get("hook") else None
-            caps = dict(base_v["captions"]) if base_v and not hook else \
-                (trend_captions if trend else tg_captions)(story, today, self.lcfg, hook)
+            same_song = ((base_v or {}).get("music") or {}).get("song") == (song or {}).get("name")
+            caps = dict(base_v["captions"]) if base_v and not hook and same_song else \
+                (tg_captions if (is_tg_song and not trend) else trend_captions)(story, today, self.lcfg, hook)
             title = (base_v["title"] if base_v and not hook
                      else (hook or plain(fill(story.caption, today)))[:95])
             out.append({"label": spec["label"], "style": spec["style"], "preset": spec.get("preset"),
@@ -1188,13 +1265,22 @@ class ReviewAdapter:
                         "tags": ["GTA 6", "GTA VI", "Shorts", "Vice City"], "hook": title,
                         "captions": caps, "file": mp4.name, "preview": prev.name,
                         "duration": round(plan.duration, 1), "cuts": len(plan.slots) - 1, "silent": True,
-                        "text_cards": len(shown), "engine": engine,
+                        "text_cards": len(shown), "engine": engine, "footage": footage_of(plan),
+                        "footage_note": footage_note(base_v, spec, kept, len(plan.slots)),
                         "intro": r["intro"] if intro_s and (want_logo or r["intro"] == "countdown") else "none",
                         "music": ({"song": song["name"], "start_s": song_start, "bpm": song["bpm"]}
                                   if song else None),
                         "music_note": music.note(song, song_start) if song else None})
         save_state(state_path, state)
         return out
+
+    def sounds(self) -> list[str]:
+        """Names of the sounds in the music library (so feedback can switch an edit's sound)."""
+        from . import music
+        try:
+            return sorted(p.stem for p in music.Library(self.lcfg["music_dir"]).files())
+        except OSError:
+            return []
 
     def render_edit(self, plan: Plan, mp4: Path, r: dict, shown, logo: Path | None, intro_s: float) -> str:
         """Remotion when available (or forced), ffmpeg otherwise or if Remotion fails.

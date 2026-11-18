@@ -304,6 +304,10 @@ it in sync when behaviour or config changes.
   `for_variant()` (review Feedback button: re-render changes; saved as entries too unless the wording
   is `ONLY_THIS` ("just this one") or the AI says scope this_edit; the round stores `entries` so its
   card gets Turn off/on buttons). Falls back to `style.parse_feedback` without a key or on API failure.
+  Per-edit only (never rules): `footage` keep|new (default keep; `footage_of`) and `song` (`song_of`; the AI
+  gets the library's `sounds`) -> spec `keep_footage` / `song`; Tokyo Girl `ReviewAdapter` saves each variant's
+  `footage` (`footage_of(plan)`), re-renders `refit` the new plan onto it slot by slot, `find_sound` matches the
+  name, the variant's own sound carries over to later rounds, `footage_note` goes on the card.
 - `spikebot/discord_bot.py`: `ReviewBot` (started by `Bot.run` when the token is set; reconnects,
   never crashes the bot). Pure layouts `round_payload` / `buttons` / `manual_payload` /
   `style_overview`; custom ids `rv|action|item|round|label` handled in `on_interaction` (survive

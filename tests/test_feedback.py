@@ -330,3 +330,23 @@ def test_feedback_scope_is_explicit(tmp_path):
     res = fb.for_variant("no zoom here and on Lacy clips too", "trend", style, prof, tmp_path,
                          client=FakeClaude(answer([row("motion", "none", mode="lacy"), row("transition", "cut")])))
     assert {e["setting"]: e["modes"] for e in res["rule"]["entries"]} == {"motion": ["lacy"], "transition": ["trend"]}
+
+
+def test_review_feedback_carries_footage_and_sound_from_claude(tmp_path):
+    prof = S.Profile(tmp_path / "p.json")
+    a = answer() | {"footage": "keep", "song": "Impulsive"}
+    c = FakeClaude(a)
+    style = S.default_style("tokyo_girl")
+    res = fb.for_variant("same clips as B1, switch the song to impulsive", "tokyo_girl", style, prof,
+                         tmp_path, client=c, sounds=["impulsive", "tokyo-girl"])
+    assert res["footage"] == "keep" and res["song"] == "Impulsive" and res["rule"] is None
+    sent = c.requests[0]["messages"][0]["content"]
+    assert "Sounds available: impulsive, tokyo-girl" in sent
+    assert "Sound: Impulsive" in res["comment"] and "Same clips" in res["comment"]
+    assert '"footage"' in json.dumps(c.requests[0]["output_config"]["format"]["schema"])
+    # nothing said about clips -> still the same clips; "new clips" -> new ones
+    res = fb.for_variant("darker", "tokyo_girl", style, prof, tmp_path, client=FakeClaude(answer()))
+    assert res["footage"] == "keep" and res["song"] is None
+    res = fb.for_variant("new clips", "tokyo_girl", style, prof, tmp_path,
+                         client=FakeClaude(answer() | {"footage": "new", "song": None}))
+    assert res["footage"] == "new"

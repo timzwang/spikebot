@@ -131,6 +131,10 @@ BUILT_IN = (
     "Tokyo Girl: the edit starts one bar before the song's drop; trend edits never run past the end of their sound",
     "Tokyo Girl: the last story card is a question (unless text_level plain/none); no channel watermark ever",
     "Every variant (A/B/C) uses every enabled setting rule; only unpinned settings differ between them",
+    "Tokyo Girl / trend: a Feedback re-render keeps exactly the same clips as the version it came from (same"
+    " shots, same order) unless the feedback asks for new clips",
+    "Tokyo Girl / trend: a Feedback re-render can switch that edit to any sound in the music library"
+    " (\"switch the song to impulsive\"); later re-renders of it keep that sound",
 )
 CUSTOM_STR = {"text_colour", "highlight", "hook_style"}
 
