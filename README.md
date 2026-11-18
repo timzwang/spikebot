@@ -330,8 +330,9 @@ no captions, story cards or hook box), whatever a rule or preset says.
   `npm ci` in `remotion/`, Remotion's headless Chrome; about 500 MB disk). About 2 minutes
   per 15 s edit on the VM. If Remotion isn't there or a render fails, the ffmpeg renderer
   is used, so an edit is never lost. Force one with `tokyo_girl.engine`: `auto` (default),
-  `remotion` or `ffmpeg`. Edits render at 60 fps, CRF 18 (Lacy clips too: 60 fps, or the VOD's
-  own rate when it's lower). A Remotion render that prints nothing for 5 min, or runs over
+  `remotion` or `ffmpeg`. Tokyo Girl / trend edits render at 30 fps (the trailers' own rate; 60 doubled
+  every frame and stuttered), CRF 18. Lacy clips: 60 fps, or the VOD's
+  own rate when it's lower. A Remotion render that prints nothing for 5 min, or runs over
   40 min, is killed and falls back to ffmpeg. `tokyo_girl.remotion_concurrency` sets frames
   rendered in parallel (default: half the CPUs, max 4).
   `remotion_cache_mb` sets Remotion's decoded-frame cache; `remotion_tmp` (e.g. `/dev/shm/spikebot-remotion`)
@@ -603,6 +604,18 @@ cd /opt/spikebot && sudo -u spikebot venv/bin/python -m spikebot.review list
 cd /opt/spikebot && sudo -u spikebot venv/bin/python -m spikebot.review approve lacy-20261119-061502 B
 cd /opt/spikebot && sudo -u spikebot venv/bin/python -m spikebot.review publish
 ```
+
+Re-render an edit you already approved (e.g. after a renderer fix), as long as nothing went
+out automatically to YouTube/Instagram. This one is safe with the bot running: it re-renders the
+approved version unchanged (same clips, text, sound and style) and posts it in #ready-to-post
+to approve again.
+
+```bash
+cd /opt/spikebot && sudo -u spikebot venv/bin/python -m spikebot.review reopen ITEM_ID   # ids from `review list`
+```
+
+Before rendering, every trailer clip is checked for scene cuts the library scan missed (dark
+shots) and moved off them, so no other scene flashes up between two clips.
 
 ## #inspiration: copy the style of Shorts you like
 

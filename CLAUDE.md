@@ -181,11 +181,12 @@ it in sync when behaviour or config changes.
 - `spikebot/tokyo_girl.py`: **Tokyo Girl mode** (on by default; `TOKYO_GIRL_MODE`,
   `TOKYO_GIRL_PER_DAY`, `tokyo_girl` config block). Standalone CLI, not part of `Bot`: run daily
   by `spikebot-tokyo-girl.timer` (06:47 UK, `daily` tops up to `per_day`). Makes silent
-  (`-an`, no audio stream) 1080x1920 60 fps 15-30 s edits from official Rockstar GTA VI trailers and
+  (`-an`, no audio stream) 1080x1920 30 fps 15-30 s edits from official Rockstar GTA VI trailers and
   screenshots only (`fetch`: `ALLOWED_HOSTS`, yt-dlp limited to uploader Rockstar; plus a drop
   folder `data/rockstar_media/`). `Library` caches per-file analysis (scene cuts, YAVG,
   letterbox crop) in `library.json`; `build_shots` trims trailer head/tail, dark shots and
-  `tags.json` excludes. `plan_clip` puts text cards on whole bars and cuts on beats
+  `tags.json` excludes; `clean_plan` (in `render_edit` / `render_plan`) moves clips off cuts the scan
+  missed (`window_cuts`, threshold 0.12, crossfade tail included). `plan_clip` puts text cards on whole bars and cuts on beats
   (`bpm`, default 120), picking least-used footage by the story's tags. `STORIES` hold the
   on-screen text (last card is always a question; date windows relative to launch).
   Output `exports/tokyo_girl/*.mp4` + `.txt` (IG/TikTok captions from `caption_ig` /
@@ -298,7 +299,8 @@ it in sync when behaviour or config changes.
   silent) filtered by `Publisher.available()`; the rest are manual (#tiktok-queue).
   `Publisher.publish()` respects windows (UK), `youtube_max_per_day`, the Lacy CSV cap, the IG
   cap; retries 3x; Lacy also gets thumbnail, submissions CSV row and job status. Never posts a
-  platform twice. CLI `list | render | approve ITEM LABEL | reject | publish` (fallback only).
+  platform twice. CLI `list | render | approve ITEM LABEL | reject | publish` (fallback only); `reopen ITEM` undoes an
+  approval with nothing auto-published and queues an `again` request (same version, current renderer).
 - `spikebot/ai.py`: Claude API (optional; `ANTHROPIC_API_KEY` from `.env` next to config, then env;
   model `claude-opus-5-5` (`SPIKEBOT_AI_MODEL`) for #inspiration, `claude-sonnet-5-5`
   (`SPIKEBOT_FEEDBACK_MODEL`) for feedback via `model_name(base, task)`; lazy `anthropic` import). `ask_json` = one

@@ -28,7 +28,7 @@ from pathlib import Path
 
 log = logging.getLogger("remotion")
 ROOT = Path(__file__).resolve().parent.parent / "remotion"
-FPS = 60    # same as tokyo_girl.FPS (#39)
+FPS = 30    # same as tokyo_girl.FPS (#39)
 CRF = 18    # same as editor.CRF (#39)
 TEXT_Y = {"high": 0.27, "middle": 0.44, "low": 0.6}
 

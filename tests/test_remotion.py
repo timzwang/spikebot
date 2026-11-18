@@ -90,6 +90,6 @@ def test_real_remotion_render(tmp_path, monkeypatch):
 
 
 def test_edits_render_at_60_fps_crf_18():
-    """#39: Tokyo Girl / trend edits at 60 fps and CRF 18 in both renderers."""
+    """#39: Tokyo Girl / trend edits at 30 fps (the trailers' rate) and CRF 18 in both renderers."""
     from spikebot import editor, remotion, tokyo_girl
-    assert tokyo_girl.FPS == remotion.FPS == 60 and remotion.CRF == editor.CRF == 18
+    assert tokyo_girl.FPS == remotion.FPS == 30 and remotion.CRF == editor.CRF == 18
