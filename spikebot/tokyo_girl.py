@@ -30,6 +30,7 @@ CLI (run from /opt/spikebot):
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import logging
 import math
@@ -85,8 +86,8 @@ DEFAULTS = {
     "scene_threshold": 0.3,
     "font": "DejaVu Sans",
     "font_size": 104,
-    "caption_ig": "{hook} Song: Tokyo Girl by @PassiveBand #GTA6",
-    "caption_tiktok": "{hook} Song: Tokyo Girl by @Passive #GTA6",
+    "caption_ig": "{hook} 🎵 Tokyo Girl by @PassiveBand #gta6 #gtavi #vicecity",
+    "caption_tiktok": "{hook} 🎵 Tokyo Girl by @Passive #gta6 #gtavi #vicecity",
 }
 
 TRUE = {"1", "true", "yes", "on"}
@@ -250,6 +251,32 @@ STORIES = [
 KINDS = ("news", "theory", "meme", "couple")
 
 
+# Post captions for the edits (Tim, 18 Nov 2026: the old ones "sound terrible"). Short,
+# lowercase, how people actually caption GTA edits: no "Theory:", no forced question, at most
+# one emoji. Picked by how far we are from launch; {days_text} = "2 days".
+EDIT_LINES = {
+    "pre": ["vice city in {days_text} 🌴", "{days_text} left and i'm not ready", "13 years for this",
+            "the wait is almost over", "{days_text}. clear your schedule", "leonida is calling",
+            "counting down the hours at this point", "this trailer still gives me chills"],
+    "launch": ["it's finally here", "vice city is open", "13 years. it's here", "see you in leonida",
+               "gta 6 day one 🌴", "the wait is over"],
+    "post": ["vice city hits different at night", "leonida never gets old", "this game is unreal",
+             "can't stop playing this", "one more mission they said", "nothing feels like vice city"],
+    "any": ["vice city at night", "leonida looks unreal", "the detail in this game", "jason and lucia",
+            "this city 🌴", "rockstar really did that", "golden hour in vice city"],
+}
+
+
+def edit_line(story: "Story", today: date, salt: str = "") -> str:
+    """The caption line for an edit: natural and short, chosen per story/day so the three
+    versions and the next days differ."""
+    d = days_to_launch(today)
+    phase = "pre" if d > 0 else "launch" if d == 0 else "post"
+    pool = EDIT_LINES[phase] + (EDIT_LINES["any"] if phase != "launch" else [])
+    i = int(hashlib.sha1(f"{story.id}|{today.isoformat()}|{salt}".encode()).hexdigest(), 16) % len(pool)
+    return fill(pool[i], today)
+
+
 def days_to_launch(today: date) -> int:
     return (LAUNCH - today).days
 
@@ -294,14 +321,13 @@ def pick_story(today: date, recent: list[str], rng: random.Random,
 
 
 def captions(story: Story, today: date, lcfg: dict) -> str:
-    hook = plain(fill(story.caption, today)).strip()
-    return (lcfg["caption_ig"].format(hook=hook).strip() + "\n"
-            + lcfg["caption_tiktok"].format(hook=hook).strip() + "\n")
+    c = tg_captions(story, today, lcfg)
+    return c["instagram"] + "\n" + c["tiktok"] + "\n"
 
 
 def caption_file(story: Story, today: date, lcfg: dict) -> str:
-    ig, tt = captions(story, today, lcfg).splitlines()
-    return f"IG: {ig}\nTikTok: {tt}\n"
+    c = tg_captions(story, today, lcfg)
+    return f"IG: {c['instagram']}\nTikTok: {c['tiktok']}\n"
 
 
 # --------------------------------------------------------------------------
@@ -1203,7 +1229,7 @@ def make(lcfg: dict, n: int = 1, story_id: str | None = None, now: float | None 
 # Review variants (spikebot/review.py): 3 versions per edit, Tim approves one
 # --------------------------------------------------------------------------
 def tg_captions(story: Story, today: date, lcfg: dict, hook: str | None = None) -> dict[str, str]:
-    h = hook or plain(fill(story.caption, today)).strip()
+    h = hook or edit_line(story, today).strip()
     return {"instagram": lcfg["caption_ig"].format(hook=h).strip(),
             "tiktok": lcfg["caption_tiktok"].format(hook=h).strip()}
 
@@ -1360,7 +1386,7 @@ class ReviewAdapter:
             caps = dict(base_v["captions"]) if base_v and not hook and same_song else \
                 (tg_captions if (is_tg_song and not trend) else trend_captions)(story, today, self.lcfg, hook)
             title = (base_v["title"] if base_v and not hook
-                     else (hook or plain(fill(story.caption, today)))[:95])
+                     else (hook or edit_line(story, today))[:95])
             out.append({"label": spec["label"], "style": spec["style"], "preset": spec.get("preset"),
                         "experimental": spec.get("experimental", False), "story": story.id, "seed": seed,
                         "cards": cards, "title": title,
@@ -1453,7 +1479,7 @@ class ReviewAdapter:
 def trend_captions(story: Story, today: date, lcfg: dict, hook: str | None = None) -> dict[str, str]:
     """Trending-sound edits: the hook + GTA tags. No Tokyo Girl credit; the sound itself is
     added in the app (that's what puts the edit on the sound's page)."""
-    h = hook or plain(fill(story.caption, today)).strip()
+    h = hook or edit_line(story, today).strip()
     return {"instagram": f"{h} #GTA6 #GTAVI #ViceCity #Rockstar".strip(),
             "tiktok": f"{h} #GTA6 #GTAVI #ViceCity #fyp".strip()}
 

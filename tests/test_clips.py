@@ -177,8 +177,18 @@ def test_trailer_edits_never_get_text_and_clips_always_get_captions(tmp_path):
 
 # ---- end to end: an Adin Ross clip becomes three captioned variants ----------------------
 @needs_ffmpeg
-def test_adin_ross_job_becomes_three_captioned_variants(tmp_path):
+def test_adin_ross_job_becomes_three_captioned_variants(tmp_path, monkeypatch):
     from tests.test_lacy import make_stream
+    from spikebot import ai
+    asked = []
+
+    def fake_copy(name, game, transcript, vibe=None, n=3, base=None, client=None):
+        asked.append(transcript)
+        return [{"title": "Adin Ross hits the jump of his life in GTA 6", "caption": "adin ross actually landed it 😭"},
+                {"title": "Adin Ross can't believe chat saw this", "caption": "this is so cringe adin ross"},  # banned word
+                {"title": "No name in this title at all", "caption": "adin ross and chat"}]               # no name
+    monkeypatch.setattr(ai, "available", lambda base=None: True)
+    monkeypatch.setattr(ai, "write_clip_copy", fake_copy)
     src = tmp_path / "stream.mp4"
     make_stream(src, seconds=12)
     cfg = {"channels": CHANNELS[:1], "data_dir": str(tmp_path)}
@@ -206,6 +216,10 @@ def test_adin_ross_job_becomes_three_captioned_variants(tmp_path):
     assert item["source"]["streamer"] == "Adin Ross" and item["source"]["platform"] == "kick"
     vs = item["rounds"][0]["variants"]
     assert len(vs) == 3
+    assert len(asked) == 1 and "jump" in asked[0]                  # written from the transcript, once
+    assert vs[0]["title"] == "Adin Ross hits the jump of his life in GTA 6"
+    assert vs[0]["hook"] == "adin ross actually landed it 😭"
+    assert "cringe" not in vs[1]["hook"] and "Adin Ross" in vs[2]["title"]   # bad ones fall back to templates
     for v in vs:
         assert L.title_ok(v["title"], "Adin Ross") and "Lacy" not in v["title"]
         assert "#AdinRoss" in v["description"] and "Adin Ross" in v["captions"]["instagram"]

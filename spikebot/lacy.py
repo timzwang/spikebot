@@ -638,6 +638,28 @@ class ReviewAdapter:
         except ValueError:
             return self.lcfg
 
+    def clip_copy(self, job: dict, d: Path, words: list) -> list[dict]:
+        """Titles + captions written by Claude from the transcript (spikebot/ai.py), made once
+        per clip and kept in copy.json. [] without a key or on any failure: templates then."""
+        f = d / "copy.json"
+        try:
+            return json.loads(f.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            pass
+        from . import ai
+        if not ai.available(self.base):
+            return []
+        name, _ = who(job)
+        text = " ".join(w.text.strip() for w in words)
+        try:
+            out = ai.write_clip_copy(name, game_tag(job.get("category") or ""), text, job.get("vibe"),
+                                     n=3, base=self.base)
+        except ai.AIError as e:
+            log.info("clip %s: AI captions unavailable (%s), using templates", job["id"], e)
+            return []
+        f.write_text(json.dumps(out, ensure_ascii=False), encoding="utf-8")
+        return out
+
     def _used(self) -> set[str]:
         if self.used_titles is not None:
             return set(self.used_titles)
@@ -659,6 +681,7 @@ class ReviewAdapter:
         duration = float(job["duration"])
         peak = (job["peak_time"] - job["clip_start"]) if job.get("peak_time") else None
         used = self._used() | {v["title"] for r in item["rounds"] for v in r["variants"]}
+        written = self.clip_copy(job, d, words) if not any(sp.get("from") for sp in specs) else []
         hooks_used = instagram.PostLog(instagram.settings(self.cfg, self.base)["posts_csv"]).recent_hooks()
         from . import sfx
         dd = Path(self.cfg.get("data_dir", "data"))
@@ -679,15 +702,22 @@ class ReviewAdapter:
                                      f" '{name}', 10-100 English characters, no negative words)")
             elif base_v:
                 title = base_v["title"]
+            elif (vi < len(written) and title_ok(written[vi]["title"].strip(), name)
+                  and written[vi]["title"].strip().lower() not in {u.lower() for u in used}):
+                title = written[vi]["title"].strip()   # Claude, from what was said
             else:
                 tone = spec["style"].get("hook")
                 title = make_title(job["vibe"], job["category"], used, random.Random(f"{item['id']}{n}{spec['label']}"),
                                    tone=None if tone == "matched" else tone, hook_style=r.get("hook_style"),
                                    name=name)
             used.add(title)
+            ai_cap = written[vi]["caption"].strip() if vi < len(written) else ""
             if base_v and not texts.get("hook"):
                 caps = dict(base_v["captions"])
                 social = base_v.get("hook")
+            elif ai_cap and title == written[vi]["title"].strip() and instagram.hook_ok(ai_cap, title, name):
+                social = ai_cap
+                caps = instagram.captions(job | {"title": title}, social)
             else:
                 tone = spec["style"].get("hook")
                 social = instagram.pick_hook(job | {"title": title}, hooks_used | used,
