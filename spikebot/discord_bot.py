@@ -13,6 +13,7 @@ Runs inside the main bot process (Bot.run) and never takes it down:
   /rules          every instruction from /feedback, Feedback and /style as one numbered
                   list by category; turn entries off/on (menus, buttons, or disable:3,5-7).
   /preset         apply | list | show | rename | edit | delete | combine.
+  /help           every command and button by category (category:, search:).
   /cancel         stop a running job by its run id (renders, trend edits, Lacy clips,
                   #inspiration analysis, sound downloads, queued re-renders); every
                   progress bar also has a Cancel button.
@@ -36,6 +37,7 @@ from pathlib import Path
 
 from . import ai
 from . import feedback as fb
+from . import help as help_
 from . import presets as presets_
 from . import progress, review
 from . import style as st
@@ -2282,6 +2284,16 @@ class ReviewBot:
             if not await guard(inter):
                 return
             await bot.rules_command(inter, disable, enable, search)
+
+        @tree.command(name="help", description="Every command and button, what it does and how to use it")
+        @app_commands.describe(category="Only one group of commands", search="Words to find, e.g. caption, stop, preset")
+        @app_commands.choices(category=[app_commands.Choice(name=label, value=key)
+                                        for key, _, label in help_.CATEGORIES])
+        async def help_cmd(inter: discord.Interaction, category: str | None = None, search: str | None = None):
+            parts = help_.chunks(help_.help_text(category, search))
+            await inter.response.send_message(parts[0], ephemeral=True)
+            for p in parts[1:]:
+                await inter.followup.send(p, ephemeral=True)
 
         group = app_commands.Group(name="preset", description="Style presets from #inspiration")
 

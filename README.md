@@ -493,6 +493,12 @@ official Tokyo Girl sound in each app). To auto-post them anyway set
 counts, recurring feedback and presets ranked by approvals. Pin a setting with
 `/style setting:font value:montserrat` (all variants then use it); `value:auto` unpins.
 
+**`/help [category] [search]`**: every slash command, review button and #inspiration action with
+a one-line explanation and how to use it, grouped by category (style & rules, making & stopping edits,
+presets, review buttons, channels, server). `/help category:Presets` shows one group;
+`/help search:caption` finds commands by any word. Only you see the reply. New commands must get a line
+in `spikebot/help.py` (a test fails otherwise).
+
 **`/trend [song] [per_song]`**: trailer edits cut to your **trending sounds** (every sound
 saved from #inspiration except the Tokyo Girl song; `song:` picks one, `per_song` 1-3). Same
 official Rockstar footage, styles and 3 versions as the Tokyo Girl edits, but labelled
@@ -641,8 +647,8 @@ DISCORD_APPROVER_IDS=...            # your user id (only you can press buttons)
 ```
 
 6. `sudo systemctl restart spikebot`. `--check` shows "Discord approval bot: token set" and the
-   channel ids. The bot comes online and `/style`, `/feedback`, `/rules` and `/preset` appear
-   when you type `/`.
+   channel ids. The bot comes online and `/help`, `/style`, `/feedback`, `/rules` and `/preset`
+   appear when you type `/`.
 
 Without a token, clips still render and wait in `data/review/`; nothing posts. Fallback
 commands on the server (only while the bot is off, so nothing posts twice):

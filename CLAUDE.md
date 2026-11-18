@@ -386,6 +386,10 @@ it in sync when behaviour or config changes.
   every 10 min; `stats_source` = `main.Bot.stats_snapshot`.
   `archive_inspiration` (from `scan_loop`, every 10 min): the bot's #inspiration threads with no
   message for `review.inspiration_archive_hours` (12) are archived (`stale_threads`, snowflake times).
+- `spikebot/help.py` (pure): **/help** [category] [search] (ephemeral): `COMMANDS` (name, `cat`, what, how, tags)
+  under `CATEGORIES`, `help_text` / `select` / `chunks` (<= 2000 chars per message). Lists slash commands,
+  review buttons and #inspiration actions. **Add a line for every new command**: `tests/test_help.py`
+  checks every command registered in `ReviewBot.register_commands` is listed.
 - `spikebot/progress.py`: live progress for long jobs. `Job.create` writes data/progress/<id>.json;
   `current()` (contextvar, or `SPIKEBOT_PROGRESS` env from the bot for subprocesses), `update`,
   nested `span(lo, hi)`, `finish(ok, text, state)`; `review.render_round` makes one unless a
