@@ -732,7 +732,15 @@ class ReviewBot:
             if st_ in ("open", "approved"):
                 for rnd in item["rounds"]:
                     if rnd["status"] == "ready" and not rnd.get("message_id"):
-                        await self.post_round(item["id"], rnd["n"])
+                        try:
+                            await self.post_round(item["id"], rnd["n"])
+                        except Exception as e:  # noqa: BLE001 - tell Tim, keep retrying
+                            log.warning("review %s: posting round %s failed: %s", item["id"], rnd["n"], e)
+                            if self.notifier:
+                                await self.notifier.send(f"post_failed:{item['id']}:{rnd['n']}",
+                                                         f"🎬 Round {rnd['n']} of `{item['id']}` is rendered but"
+                                                         f" couldn't be posted: {type(e).__name__}: {e}"[:400],
+                                                         kind="lacy")
                         item = self.store.load(item["id"])
             req = item.get("request") or {}
             if req.get("status") == "failed" and not req.get("told"):
@@ -842,26 +850,47 @@ class ReviewBot:
         rnd = review.round_of(item, n)
         payload = round_payload(item, rnd, entry_on=self.entry_states())
         d = self.store.dir(item_id)
-        files = [discord.File(d / v["preview"], filename=f"{v['label']}_{item_id}.mp4")
-                 for v in rnd["variants"] if (d / v["preview"]).exists()]
-        if item.get("thread_id"):
-            target = await self.channel(item["thread_id"])
-        else:
-            target = await self.channel(self.rcfg["channel_id"])
+
+        def files():   # fresh each try: a File can only be sent once
+            return [discord.File(d / v["preview"], filename=f"{v['label']}_{item_id}.mp4")
+                    for v in rnd["variants"] if (d / v["preview"]).exists()]
+        main = await self.channel(self.rcfg["channel_id"])
+        target = (await self.channel(item["thread_id"])) if item.get("thread_id") else None
+        in_thread = target is not None
+        if target is None:      # no thread yet, or it can't be reached: the channel itself
+            target = main
         if target is None:
-            return
+            raise RuntimeError("neither the clip's thread nor #ready-to-post can be reached")
         kw = dict(content=payload["content"], embeds=self.embeds(payload["embeds"]),
                   view=self.view(payload["rows"]), allowed_mentions=discord.AllowedMentions.none())
+
+        async def send(where):
+            try:
+                return await where.send(files=files(), **kw)
+            except discord.HTTPException as e:
+                if e.status != 413:
+                    raise
+                links = await asyncio.to_thread(self.preview_links, item, rnd)
+                kw2 = dict(kw, content=(payload["content"] + "\nPreviews (too big to attach): "
+                                        + " · ".join(f"[{k}]({u})" for k, u in links.items()))[:1990] if links else
+                           payload["content"] + "\nPreviews too big to attach and no bucket set: approve from the cards.")
+                return await where.send(**kw2)
         try:
-            msg = await target.send(files=files, **kw)
-        except discord.HTTPException as e:
-            if e.status != 413:
+            msg = await send(target)
+        except Exception as e:  # noqa: BLE001 - e.g. an archived/locked thread: post in the channel instead
+            if not in_thread or main is None:
                 raise
-            links = await asyncio.to_thread(self.preview_links, item, rnd)
-            kw["content"] = (payload["content"] + "\nPreviews (too big to attach): "
-                             + " · ".join(f"[{k}]({u})" for k, u in links.items()))[:1990] if links else \
-                payload["content"] + "\nPreviews too big to attach and no bucket set: approve from the cards."
-            msg = await target.send(**kw)
+            log.warning("review %s: could not post round %s in its thread (%s): posting in the channel", item_id, n, e)
+            target, in_thread = main, False
+            msg = await send(target)
+        if in_thread and main is not None and rnd.get("n", n) > 1:
+            # re-renders post in the thread: say so in the channel too, so nothing is missed
+            try:
+                labels = ", ".join(v["label"] for v in rnd["variants"])
+                await main.send(f"🎬 **{labels}** of `{item_id}` is ready: {msg.jump_url}",
+                                allowed_mentions=discord.AllowedMentions.none())
+            except Exception as e:  # noqa: BLE001
+                log.warning("review %s: could not post the pointer: %s", item_id, e)
         with self.store.edit(item_id) as it:
             r = review.round_of(it, n)
             r["message_id"], r["channel_id"], r["status"] = msg.id, target.id, "posted"
@@ -881,6 +910,22 @@ class ReviewBot:
                                                                rnd["entries"], head)))
             except Exception as e:  # noqa: BLE001 - the rules are saved either way
                 log.warning("review %s: could not post the saved rules: %s", item_id, e)
+
+    async def repost_latest(self, item_id: str) -> None:
+        """Send a copy of the item's newest rendered round (previews + the same buttons) to
+        #ready-to-post itself. Nothing in the item changes."""
+        import discord
+        item = self.store.load(item_id)
+        rnd = next((r for r in reversed(item["rounds"]) if r.get("variants")), None)
+        main = await self.channel(self.rcfg["channel_id"])
+        if rnd is None or main is None:
+            raise RuntimeError("no rendered round" if rnd is None else "#ready-to-post can't be reached")
+        payload = round_payload(item, rnd, entry_on=self.entry_states())
+        d = self.store.dir(item_id)
+        files = [discord.File(d / v["preview"], filename=f"{v['label']}_{item_id}.mp4")
+                 for v in rnd["variants"] if (d / v["preview"]).exists()]
+        await main.send(content=payload["content"][:1990], embeds=self.embeds(payload["embeds"]), files=files,
+                        view=self.view(payload["rows"]), allowed_mentions=discord.AllowedMentions.none())
 
     def preview_links(self, item: dict, rnd: dict) -> dict[str, str]:
         from . import delivery
@@ -1766,7 +1811,7 @@ class ReviewBot:
         ran = []
         for r in reqs if isinstance(reqs, list) else []:
             rid = str(r.get("id") or "")
-            if not rid or rid in done or r.get("action") not in ("trend", "feedback"):
+            if not rid or rid in done or r.get("action") not in ("trend", "feedback", "repost"):
                 continue
             done.add(rid)   # once, even if it is stale or fails
             until = r.get("until")
@@ -1777,6 +1822,14 @@ class ReviewBot:
             ran.append(rid)
             if r["action"] == "trend":
                 asyncio.create_task(self.run_trend(None, r.get("song"), int(r.get("per_song") or 1)))
+            elif r["action"] == "repost":
+                try:
+                    await self.repost_latest(r["item"])
+                except Exception as e:  # noqa: BLE001
+                    log.warning("deploy request %s failed: %s", rid, e)
+                    if self.notifier:
+                        await self.notifier.send(f"deploy_request:{rid}",
+                                                 f"🎬 Couldn't re-post `{r.get('item')}`: {e}", kind="lacy")
             elif r["action"] == "feedback":
                 try:
                     if not (self.store.dir(r["item"]) / "item.json").exists():

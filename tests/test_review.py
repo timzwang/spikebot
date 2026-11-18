@@ -808,3 +808,30 @@ def test_progress_dead_worker_shows_stopped(tmp_path):
     assert progress.state_of(d, now) == "stalled"
     assert "process ended" in progress.text(d, now)
     assert job.data["pid"] == os.getpid()
+
+
+def test_rerender_posts_in_thread_with_a_pointer_and_falls_back_to_the_channel(tmp_path, monkeypatch):
+    """A finished re-render is never invisible: it posts in the thread with a link in
+    #ready-to-post, or in #ready-to-post itself when the thread can't take it."""
+    store, item = new_item(tmp_path)
+    b, reg = bot_for(tmp_path, store)
+    asyncio.run(b.scan(T))                                       # round 1 + thread 999
+    with store.edit(item["id"]) as it:
+        R.request(it, "redo", T)
+    R.render_round(store, item["id"], {}, tmp_path, now=T + 1, adapter=FakeAdapter(), seed=2)
+    asyncio.run(b.scan(T + 2))
+    assert len(reg[999].sent) >= 1 and reg[999].sent[-1].kw.get("files")
+    pointer = reg[100].sent[-1].content
+    assert "is ready: https://discord.com/channels/1/999/" in pointer
+
+    async def broken(content=None, **kw):                        # e.g. a locked thread
+        raise RuntimeError("thread is locked")
+    reg[999].send = broken
+    with store.edit(item["id"]) as it:
+        R.request(it, "redo", T + 3)
+    R.render_round(store, item["id"], {}, tmp_path, now=T + 4, adapter=FakeAdapter(), seed=3)
+    before = len(reg[100].sent)
+    asyncio.run(b.scan(T + 5))
+    item = store.load(item["id"])
+    assert item["rounds"][-1]["message_id"] and item["rounds"][-1]["channel_id"] == 100
+    assert len(reg[100].sent) == before + 1 and reg[100].sent[-1].kw.get("files")
