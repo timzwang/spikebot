@@ -393,7 +393,9 @@ it in sync when behaviour or config changes.
 - `spikebot/progress.py`: live progress for long jobs. `Job.create` writes data/progress/<id>.json;
   `current()` (contextvar, or `SPIKEBOT_PROGRESS` env from the bot for subprocesses), `update`,
   nested `span(lo, hi)`, `finish(ok, text, state)`; `review.render_round` makes one unless a
-  job is active (Lacy `render_job` has its own); `text(d, now, render_bar)` / `bar()` (text fallback, 1/8 cells) / `eta()` (time left) for the message (`NN% | ⏱ m:ss spent | m:ss remaining` beside the bar);
+  job is active (Lacy `render_job` has its own; `/trend` = `Bot.run_trend` makes one bar for the whole batch
+  before the subprocess starts: library check (`Library.scan(on_file=)`, the nudity check of new files can
+  take minutes), sounds, then each edit in a span; no sounds = skipped); `text(d, now, render_bar)` / `bar()` (text fallback, 1/8 cells) / `eta()` (time left) for the message (`NN% | ⏱ m:ss spent | m:ss remaining` beside the bar);
   rounded bar = `bar_pieces()` (9 PNG pieces, pure-Python encoder) uploaded once as application emojis
   by `ReviewBot.ensure_bar_emojis` (`EMOJI_PREFIX`), drawn by `emoji_bar`; `progress_loop` every 2 s,
   each bar edited at most every 2 s x ceil(bars in channel / 2); each write stores the worker `pid`, and `state_of` shows a job whose process died as stopped at once. Never raises,

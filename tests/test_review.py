@@ -888,3 +888,42 @@ def test_clip_card_shows_streamer_and_vod_time_only():
          "music_note": "🎵 Sound: **Tokyo Girl** — start it at **0:42** · <https://www.tiktok.com/music/x-1>"}
     e = DB.round_payload(tg, {"n": 1, "kind": "initial", "variants": [v]})["embeds"][0]
     assert "🎵 **Tokyo Girl** · start **0:42** · [sound](https://www.tiktok.com/music/x-1)" in e["description"]
+
+
+def test_trend_command_shows_one_bar_from_the_start(tmp_path, monkeypatch):
+    """/trend makes its bar before the subprocess starts (the library's nudity check runs
+    first and can take minutes), hands it over via the env, and finishes it afterwards."""
+    from spikebot import progress
+    store = R.Store(tmp_path / "data")
+    b, _ = bot_for(tmp_path, store)
+    seen = {}
+
+    class Proc:
+        pid, returncode = 4242, 0
+
+        async def communicate(self):
+            path = Path(seen["env"][progress.ENV])
+            d = json.loads(path.read_text())
+            seen["job"] = (d["title"], d["channel_id"], d["pid"])
+            return b"review item x (impulsive.mp3): ready for #ready-to-post\n", None
+
+    async def fake_exec(*cmd, env=None, **kw):
+        seen["env"] = env
+        return Proc()
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+
+    class Inter:
+        channel_id = 555
+    asyncio.run(b.run_trend(Inter(), "impulsive", 1))
+    assert seen["job"] == ("Trending-sound edits · impulsive", 555, 4242)
+    [(_, d)] = progress.load_all(b.data_dir)
+    assert d["state"] == "done"
+
+    Proc.returncode = 1                                    # scheduled run, nothing to cut to: skipped, not failed
+
+    async def no_sounds(self):
+        return b"EditError: no trending sounds saved: post a TikTok sound link\n", None
+    monkeypatch.setattr(Proc, "communicate", no_sounds)
+    asyncio.run(b.run_trend(None, "auto", 1))
+    states = sorted(d["state"] for _, d in progress.load_all(b.data_dir))
+    assert states == ["done", "skipped"]

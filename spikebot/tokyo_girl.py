@@ -520,17 +520,23 @@ class Library:
                       if p.is_file() and p.suffix.lower() in VIDEO_EXT | IMAGE_EXT
                       and not any(part.startswith(".") for part in p.relative_to(self.root).parts))
 
-    def scan(self) -> dict:
+    def scan(self, on_file=None) -> dict:
+        """`on_file(i, n, rel)` is called before each file that needs work (a progress bar)."""
         try:
             cache = json.loads(self.cache_file.read_text(encoding="utf-8"))
         except (FileNotFoundError, ValueError):
             cache = {}
         out = {}
-        for p in self.files():
+        files = self.files()
+        for i, p in enumerate(files):
             rel = p.relative_to(self.root).as_posix()
             st = p.stat()
             sig = [st.st_size, int(st.st_mtime)]
-            if rel in cache and cache[rel].get("sig") == sig:
+            cached = rel in cache and cache[rel].get("sig") == sig
+            if on_file and (not cached or "nsfw" not in cache[rel]
+                            or (cache[rel].get("kind") == "video" and "motion" not in cache[rel])):
+                on_file(i, len(files), rel)
+            if cached:
                 out[rel] = cache[rel]
                 if "nsfw" not in cache[rel]:
                     nudity_scan(p, out[rel], rel)
@@ -572,8 +578,8 @@ class Library:
             log.warning("tags.json is not valid JSON, ignoring it: %s", e)
             return {}
 
-    def shots(self, entries: dict | None = None) -> list[Shot]:
-        entries = self.scan() if entries is None else entries
+    def shots(self, entries: dict | None = None, on_file=None) -> list[Shot]:
+        entries = self.scan(on_file) if entries is None else entries
         ov = self.overrides()
         out: list[Shot] = []
         for rel, entry in entries.items():
@@ -1498,9 +1504,11 @@ def make_trend(lcfg: dict, songs: list[str] | None = None, per_song: int = 1, no
     """Review items cut to trending sounds (every one in the library except the Tokyo Girl
     song, or just `songs`). Same official trailer footage and style as Tokyo Girl, silent.
     Not counted in Tokyo Girl's per_day. Returns the item ids."""
-    from . import music, review
+    from . import music, progress, review
     now = now or time.time()
     dt = datetime.fromtimestamp(now, UK)
+    job = progress.current()   # the bot's /trend bar (render_round then adds none of its own)
+    job.update(stage="Reading the trending sounds")
     lib = music.Library(lcfg["music_dir"])
     rows = lib.trending(lcfg.get("song") or music.TOKYO_GIRL_SONG)
     used_path = trend_used_path(lcfg)
@@ -1515,14 +1523,18 @@ def make_trend(lcfg: dict, songs: list[str] | None = None, per_song: int = 1, no
     store = review.Store(Path(lcfg["data_dir"]))
     cfg, base = lcfg.get("_cfg") or {}, lcfg.get("_base") or Path(".")
     adapter = ReviewAdapter(cfg, base, lcfg, shots)
-    ids, k = [], 0
+    ids, k, total = [], 0, len(rows) * per_song
     for row in rows:
         for i in range(per_song):
+            title = f"Trending sound edit · {row['name']}" + (f" #{i + 1}" if per_song > 1 else "")
             item = store.create("tokyo_girl", {"day": dt.date().isoformat(), "kind": "trend",
-                                               "song": row["file"]}, now + k,
-                                title=f"Trending sound edit · {row['name']}" + (f" #{i + 1}" if per_song > 1 else ""))
-            item = review.render_round(store, item["id"], cfg, base, {"kind": "initial"}, now=now + k,
-                                       adapter=adapter)
+                                               "song": row["file"]}, now + k, title=title)
+            if progress.active():
+                job.data["title"] = title + (f" ({k + 1}/{total})" if total > 1 else "")
+                job.data.setdefault("meta", {})["item"] = item["id"]   # a forced stop cleans this one up
+            with job.span(k / total, (k + 1) / total):
+                item = review.render_round(store, item["id"], cfg, base, {"kind": "initial"}, now=now + k,
+                                           adapter=adapter)
             log.info("trending-sound review item %s (%s): %s", item["id"], row["name"], item["status"])
             used[row["file"]] = used.get(row["file"], 0) + 1
             save_state(used_path, used)
@@ -1560,16 +1572,16 @@ def items_on(state: dict, day: str) -> int:
                and m.get("status") != "failed")
 
 
-def ensure_media(lcfg: dict) -> list[Shot]:
+def ensure_media(lcfg: dict, on_file=None) -> list[Shot]:
     """Usable shots on disk; runs `fetch` once first if there are none."""
-    shots = Library(lcfg).shots()
+    shots = Library(lcfg).shots(on_file=on_file)
     if not shots:
         log.info("no usable media in %s yet, fetching official Rockstar media", lcfg["media_dir"])
         try:
             fetch(lcfg)
         except Exception as e:
             log.warning("fetch failed: %s", e)
-        shots = Library(lcfg).shots()
+        shots = Library(lcfg).shots(on_file=on_file)
     return shots
 
 
@@ -1820,13 +1832,26 @@ def main(argv: list[str] | None = None) -> None:
         else:
             print("delivered:", ", ".join(deliver_pending(lcfg)) or "nothing pending")
     elif args.cmd == "trend":
-        shots = ensure_media(lcfg)
-        if not shots:
-            sys.exit(f"no usable media in {lcfg['media_dir']}")
+        job = progress.current()   # the bot's bar for this /trend (a no-op when run by hand)
+        job.update(0.0, "Checking the trailer library")
+
+        def checking(i, n, rel):
+            job.update(i / max(1, n), "Checking the trailer library (new files: nudity check, motion)",
+                       f"{i + 1}/{n} · {Path(rel).name}")
+        try:
+            with job.span(0.0, 0.1):
+                shots = ensure_media(lcfg, on_file=checking)
+            if not shots:
+                sys.exit(f"no usable media in {lcfg['media_dir']}")
+            with job.span(0.1, 1.0):
+                ids = make_trend(lcfg, args.song, args.n, shots=shots)
+        except progress.Cancelled:
+            print("trend edits cancelled")
+            return
         from . import review
         store = review.Store(Path(lcfg["data_dir"]))
         failed = 0
-        for item_id in make_trend(lcfg, args.song, args.n, shots=shots):
+        for item_id in ids:
             item = store.load(item_id)
             ok = item.get("status") != "failed"
             failed += not ok

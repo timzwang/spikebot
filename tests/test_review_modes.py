@@ -263,3 +263,32 @@ def test_clips_of_an_old_edit_are_read_back_from_its_video(tmp_path):
     hits = sum(1 for t in times if at(got, t) == at(v["footage"], t))
     assert hits >= len(times) * 0.7, (srcs_truth, srcs_got)   # synthetic footage: real trailers match better
     assert abs(len(got) - len(truth)) <= 3
+
+
+@needs_ffmpeg
+def test_trend_batch_uses_the_bots_bar_with_library_check_first(tmp_path):
+    """With the bot's /trend bar active, make_trend renders under it (no second bar), names the
+    edit and its item, and the library check reports each new file."""
+    from spikebot import music as M
+    from spikebot import progress
+    from tests.test_music import song
+    media = tmp_path / "data/rockstar_media"
+    media.mkdir(parents=True)
+    ff = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y"]
+    for i in range(3):
+        subprocess.run(ff + ["-f", "lavfi", "-i", f"gradients=s=1920x1080:seed={i}", "-frames:v", "1",
+                             str(media / f"vice_city_{i}.jpg")], check=True)
+    s = TG.settings({"tokyo_girl": {"min_s": 8, "max_s": 16}, "data_dir": "data"}, tmp_path)
+    lib = M.Library(s["music_dir"])
+    lib.add(song(tmp_path / "t.wav", drop=8.0, seconds=12), "impulsive")
+    job = progress.Job.create(tmp_path / "data", "Trending-sound edits", channel="custom")
+    checked = []
+    with progress.tracking(job):
+        shots = TG.ensure_media(s, on_file=lambda i, n, rel: checked.append((i, n)))
+        assert checked == [(0, 3), (1, 3), (2, 3)]
+        TG.ensure_media(s, on_file=lambda i, n, rel: checked.append("again"))
+        assert "again" not in checked                       # cached files need no work
+        ids = TG.make_trend(s, now=datetime(2026, 11, 18, 21, 44, tzinfo=TG.UK).timestamp(), shots=shots)
+    assert [p.stem for p, _ in progress.load_all(tmp_path / "data")] == [job.data["id"]]   # one bar only
+    assert job.data["title"] == "Trending sound edit · impulsive"
+    assert job.data["meta"]["item"] == ids[0] and job.data["frac"] == 1.0

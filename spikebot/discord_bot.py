@@ -1626,7 +1626,7 @@ class ReviewBot:
         except OSError:
             pass
 
-    def progress_job(self, title: str, channel_id: int, icon: str) -> "progress.Job":
+    def progress_job(self, title: str, channel_id: int | None, icon: str) -> "progress.Job":
         return progress.Job.create(self.data_dir, title, channel="custom", channel_id=channel_id, icon=icon)
 
     # ---- /cancel and the progress bar's Cancel button -------------------------------
@@ -1806,9 +1806,17 @@ class ReviewBot:
         """`python -m spikebot.tokyo_girl trend` in a subprocess; the scan loop posts the rounds."""
         cmd = [sys.executable, "-m", "spikebot.tokyo_girl", "--config", self.config_path, "trend",
                "-n", str(per_song)] + (["--song", song] if song else [])
+        # One bar from the start (library check, sounds, every edit): the renders alone only
+        # showed one after the library's nudity check, which can take many minutes.
+        where = getattr(inter, "channel_id", None) if inter is not None else None
+        pj = self.progress_job("Trending-sound edits" + (f" · {song}" if song and song != "auto" else ""),
+                               where, "🎵")
+        ok, why, state = False, "", None
         try:
             p = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE,
-                                                     stderr=asyncio.subprocess.STDOUT, start_new_session=True)
+                                                     stderr=asyncio.subprocess.STDOUT, env=progress_env(pj),
+                                                     start_new_session=True)
+            pj.adopt(p.pid)
             try:
                 out, _ = await asyncio.wait_for(p.communicate(), 3 * 3600)
             except asyncio.TimeoutError:
@@ -1818,6 +1826,11 @@ class ReviewBot:
             text = out.decode(errors="replace")
             log.info("trend edits: %s", text[-500:].strip())
             self.wake.set()
+            ok = p.returncode == 0
+            bad = [ln for ln in text.splitlines() if "FAILED" in ln or "Error" in ln or "error" in ln]
+            why = (bad or text.strip().splitlines() or ["?"])[-1][:300]
+            if "no trending sounds" in text:
+                state = "skipped"
             if p.pid in self.force_stopped:
                 log.info("trend edits stopped by /cancel")
             elif p.returncode != 0 and inter is None:
@@ -1830,12 +1843,14 @@ class ReviewBot:
                                            + ("\n".join(lines[-5:]) or text[-300:]))[:1990])
         except Exception as e:  # noqa: BLE001 - never crash the bot on a command
             log.warning("/trend failed: %s", e)
+            why = str(e)[:300]
             try:
                 if inter is not None:
                     await inter.followup.send(f"⚠️ Trending-sound edits failed: {e}"[:1990])
             except Exception:  # noqa: BLE001
                 pass
         finally:
+            pj.finish(ok, "" if ok else why, state)
             if song == "auto":
                 self._trend_running = False
 
