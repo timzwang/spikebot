@@ -64,13 +64,14 @@ DEFAULTS = {
     "privacy": "public",           # YouTube privacy for non-Lacy modes (Lacy uses lacy.privacy)
     "youtube_max_per_day": 6,      # all modes together; Lacy also obeys lacy.max_uploads_per_day
     "max_attempts": 3,
-    "windows": {"youtube": ["07:00-23:00"], "instagram": ["08:00-22:30"]},  # UK time
+    "windows": {"youtube": ["07:00-23:00"], "instagram": ["08:00-22:30"], "tiktok": ["07:00-23:30"]},  # UK
     "modes": {
-        "lacy": {"auto": ["youtube", "instagram"]},
-        # Tokyo Girl edits are silent: the official sound is added in each app by hand,
-        # so by default every platform is manual (#tiktok-queue).
-        "tokyo_girl": {"auto": []},
-        "default": {"auto": ["youtube", "instagram"]},
+        # stream clips: straight to all three (TikTok direct once audited, else as an inbox draft)
+        "lacy": {"auto": ["youtube", "instagram", "tiktok"]},
+        # Tokyo Girl / trend edits are silent: the sound must be added in the app, so TikTok gets
+        # an inbox draft (open TikTok, add the sound, post); YouTube/Instagram stay manual.
+        "tokyo_girl": {"auto": ["tiktok"]},
+        "default": {"auto": ["youtube", "instagram", "tiktok"]},
     },
 }
 PLATFORMS = ("youtube", "instagram", "tiktok")
@@ -101,7 +102,14 @@ def settings(cfg: dict) -> dict:
 
 def auto_platforms(rcfg: dict, mode: str) -> list[str]:
     m = rcfg["modes"].get(mode) or rcfg["modes"].get("default") or {}
-    return [p for p in m.get("auto", []) if p in ("youtube", "instagram")]
+    out = [p for p in m.get("auto", []) if p in PLATFORMS]
+    # TikTok is automatic everywhere (Tim, 18 Nov 2026: "automate posts"), even with an older
+    # config.json that lists only YouTube/Instagram; "tiktok": false in a mode switches it off.
+    if m.get("tiktok", True) is False:
+        return [p for p in out if p != "tiktok"]
+    if "tiktok" not in out:
+        out.append("tiktok")
+    return out
 
 
 def uk_day(ts: float) -> str:
@@ -542,6 +550,7 @@ class Publisher:
         self.lcfg = lacy.settings(cfg)
         self.youtube_factory = youtube_factory or self._youtube
         self.ig = ig if ig is not None else instagram.crossposter(cfg, base)
+        self.tiktok_factory = None   # tests swap in a fake
 
     def clip_profile(self, item: dict) -> dict:
         """Streamer settings of a stream-clip item (Lacy's for old items)."""
@@ -563,7 +572,21 @@ class Publisher:
             out.add("youtube")
         if instagram.active(self.ig.icfg, self.ig.token):
             out.add("instagram")
+        from . import tiktok
+        if tiktok.configured(self.tiktok_cfg()):
+            out.add("tiktok")
         return out
+
+    def tiktok_cfg(self) -> dict:
+        """TikTok settings with .env read fresh (its refresh token rotates and is saved there)."""
+        from . import tiktok
+        from .main import load_dotenv
+        return tiktok.settings(self.cfg, load_dotenv(Path(self.base) / ".env"))
+
+    def tiktok_today(self, day: str) -> int:
+        return sum(1 for it in self.store.all()
+                   if (it.get("publish") or {}).get("tiktok", {}).get("day") == day
+                   and it["publish"]["tiktok"].get("status") == "done")
 
     # ---- caps -------------------------------------------------------------------
     def youtube_today(self, day: str) -> int:
@@ -586,6 +609,10 @@ class Publisher:
                 done = Submissions(Path(prof["submissions_csv"])).uploads_on(day)
                 if done >= prof["max_uploads_per_day"]:
                     return f"{prof.get('name', 'Lacy')} daily cap {prof['max_uploads_per_day']} reached"
+        if platform == "tiktok":
+            cap = int(self.tiktok_cfg()["max_per_day"])
+            if self.tiktok_today(day) >= cap:
+                return f"TikTok daily cap {cap} reached"
         if platform == "instagram":
             if self.ig.posts.published_on(day) >= int(self.ig.icfg["max_per_day"]):
                 return f"Instagram daily cap {self.ig.icfg['max_per_day']} reached"
@@ -596,7 +623,7 @@ class Publisher:
         for it in self.store.all():
             if it["status"] != "approved":
                 continue
-            for p in ("youtube", "instagram"):
+            for p in ("youtube", "instagram", "tiktok"):
                 row = (it.get("publish") or {}).get(p)
                 if row and row.get("status") in ("queued", "waiting", "retry"):
                     out.append((it["id"], p))
@@ -624,6 +651,8 @@ class Publisher:
         try:
             if platform == "youtube":
                 row.update(self._youtube_upload(item, v, path, now))
+            elif platform == "tiktok":
+                row.update(self._tiktok_post(item, v, path, now))
             else:
                 row.update(self._instagram_post(item, v, path, now))
             row.update(status="done", day=uk_day(now), ts=now, reason=None)
@@ -697,6 +726,20 @@ class Publisher:
                 jobs.save(job)
             except (FileNotFoundError, ValueError):
                 pass
+
+    def _tiktok_post(self, item: dict, v: dict, path: Path, now: float) -> dict:
+        from . import tiktok
+        tt = (self.tiktok_factory or (lambda: tiktok.TikTok(self.tiktok_cfg(), Path(self.base) / ".env")))()
+        caption = (v.get("captions") or {}).get("tiktok") or v.get("title") or ""
+        res = tt.post(path, caption, inbox=bool(v.get("silent")))   # silent edits: add the sound in the app
+        out = {"url": res["url"], "how": res["how"], "publish_id": res["publish_id"]}
+        if res["how"] == "inbox":
+            out["note"] = "draft in your TikTok inbox: add the sound and post"
+        if item["mode"] == "lacy" and res["url"].startswith("https://"):
+            from . import lacy
+            job_id = item["source"].get("job_id") or item["id"]
+            lacy.Submissions(Path(self.clip_profile(item)["submissions_csv"])).set_links(job_id, {"tiktok": res["url"]})
+        return out
 
     def _instagram_post(self, item: dict, v: dict, path: Path, now: float) -> dict:
         from . import instagram

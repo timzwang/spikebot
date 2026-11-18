@@ -60,7 +60,9 @@ def test_settings_from_env_and_defaults():
     assert r["token"] == "x" and r["channel_id"] == 123 and r["approver_ids"] == [1, 2]
     assert r["windows"]["youtube"] == ["10:00-12:00"] and r["windows"]["instagram"] == ["08:00-22:30"]
     assert r["expire_hours"] == 48 and r["tiktok_channel_id"] == 0
-    assert R.auto_platforms(r, "lacy") == ["youtube", "instagram"] and R.auto_platforms(r, "tokyo_girl") == []
+    assert R.auto_platforms(r, "lacy") == ["youtube", "instagram", "tiktok"] and R.auto_platforms(r, "tokyo_girl") == ["tiktok"]
+    r["modes"]["tokyo_girl"]["tiktok"] = False
+    assert R.auto_platforms(r, "tokyo_girl") == []
     assert R.settings({"review_enabled": "false"})["enabled"] is False
 
 
