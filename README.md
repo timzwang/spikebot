@@ -201,37 +201,78 @@ Clips live in `data/lacy/jobs/<id>/`; the cut segment is kept while the clip is 
 (Redo/Feedback re-render from it) and deleted once it is posted, rejected or expired.
 The Whisper model (~150 MB) downloads on the first render.
 
-## Stream clips for the other programme channels (Adin Ross, Seal...)
+## Stream clips for the other channels (Adin Ross, Seal, Kai Cenat...)
 
 The same pipeline as Lacy mode, for **every channel in `config.json` `channels` that has a
-`programme`** (today: `kick/adinross`, `kick/sealstats`). On by default; `CLIPS_MODE=false`
-in `.env` switches it off. Channels with `"programme": null` (and auto-watch channels) never
-get clips: check clipping permission first, then give the channel its programme.
+`programme`**, plus channels you cleared yourself in `clips.allow` (default `["kaicenat"]`).
+On by default; `CLIPS_MODE=false` in `.env` switches it off. Any other `"programme": null`
+channel (and auto-watch channels) never gets clips.
 
 - Chat spike -> the category is checked **right then** (Kick channel info / Helix): only GTA V
   or VI (Kick's "GTA V"/"GTA VI" names too). Gambling and anything else: no clip.
-- The clip is cut from the streamer's VOD. Kick often publishes the VOD only when the stream
-  ends, so a job without one waits (`waiting_vod`, checked every 10 min for up to 14 h)
-  instead of failing.
-- Same render as Lacy: facecam top third, gameplay below, BRB/non-English skipped, 3 variants
-  in #ready-to-post (labelled with the streamer's name), nothing posted until you Approve.
-- **Captions are always on** for stream clips (`text_level` full or minimal; "none" is never
-  used). Titles, hooks and hashtags use the streamer's name (`#AdinRoss`, `#Seal`).
-- Each streamer has its own daily cap (`max_uploads_per_day`, default 3) and its own
-  submissions CSV for the programme: `logs/<channel>_submissions.csv`.
-- Facecam: the default box is the top-left quarter. Check it on a real clip and set it per
-  streamer in `config.json`:
+- **Highlights without chat** (`spikebot/highlights.py`, `HIGHLIGHTS_MODE`, on by default): every
+  10 min the bot reads the newest VOD *audio* of each clip streamer and turns the loudest moments
+  (shouting, laughing, crashes) into clip jobs too, max 2 per stream-hour, only while the stream
+  was in GTA, never near a chat-spike clip. Job ids end in `-a`.
+- A 150 s sample around each moment is cut from the VOD (`sample_before_s` / `sample_after_s` /
+  `sample_s`); the editor picks the Short from inside it and **never starts or ends mid-word or
+  mid-sentence**. Kick often publishes the VOD only when the stream ends, so a job without one
+  waits (`waiting_vod`, checked every 10 min for up to 14 h) instead of failing.
+- **The facecam is found automatically** in each clip (the face that stays put), unless you set a
+  box for that streamer. To check, with no file needed (grabs a few seconds of the live stream):
 
-```json
-"clips": {"streamers": {"adinross": {"name": "Adin Ross", "facecam": {"x": 0.75, "y": 0.0, "w": 0.25, "h": 0.3}}}}
+```bash
+cd /opt/spikebot && sudo -u spikebot venv/bin/python -m spikebot.lacy layout --streamer adinross --out /tmp/check.jpg
+```
+
+  It writes the Short's layout plus `/tmp/check_frame.jpg` (whole frame, box + grid). To fix a box:
+  `"clips": {"streamers": {"adinross": {"facecam": {"x": 0.75, "y": 0.0, "w": 0.25, "h": 0.3}}}}`.
+- Same review as Lacy: 3 variants in #ready-to-post (labelled with the streamer's name).
+  **Captions are always on** for stream clips. Titles and post captions are written by Claude
+  from what was actually said in the clip (with `ANTHROPIC_API_KEY`), templates otherwise.
+- Each streamer has its own daily cap (`max_uploads_per_day`, default 3) and its own
+  submissions CSV: `logs/<channel>_submissions.csv`. Job ids are `<channel>-YYYYMMDD-HHMMSS`.
+
+## Nudity check
+
+Every rendered version (clips and edits) is scanned with NudeNet (`spikebot/safety.py`) before
+it reaches #ready-to-post: anything with nudity (or a sustained sexual close-up such as strip-club
+or twerking framing) is **deleted and never shown**; #announcements says what was blocked. It is
+checked again right before posting, and nothing posts if the check can't run. Tokyo Girl / trend
+edits never use trailer shots that were flagged. Manual check: `venv/bin/python -m spikebot.safety scan VIDEO`.
+
+## TikTok auto-post
+
+After Approve, stream clips go to YouTube, Instagram **and TikTok** automatically. Silent edits
+(Tokyo Girl, trending sounds) go to your **TikTok inbox as drafts**: open TikTok, tap the
+notification, add the sound, post (the sound has to be added in the app for the edit to count on
+the sound's page). Until TikTok audits your app, public direct posts aren't allowed, so clips also
+arrive as inbox drafts; after the audit they post straight to the profile.
+
+Setup, once:
+1. developers.tiktok.com > Manage apps > Connect an app. Add **Login Kit** and **Content Posting
+   API** (turn on Direct Post), scopes `user.info.basic`, `video.upload`, `video.publish`, and a
+   redirect URI on a site you control (e.g. your GitHub Pages URL).
+2. `.env`: `TIKTOK_CLIENT_KEY`, `TIKTOK_CLIENT_SECRET`, `TIKTOK_REDIRECT_URI`.
+3. Consent (saves `TIKTOK_REFRESH_TOKEN`, never printed), then check:
+
+```bash
+cd /opt/spikebot && sudo -u spikebot venv/bin/python -m spikebot.tiktok --env .env auth
 ```
 
 ```bash
-cd /opt/spikebot && sudo -u spikebot venv/bin/python -m spikebot.lacy layout clip.mp4 --streamer adinross --out /tmp/check.jpg
+cd /opt/spikebot && sudo -u spikebot venv/bin/python -m spikebot.tiktok --env .env check
 ```
 
-`lacy list` shows today's uploads per streamer. Job ids are `<channel>-YYYYMMDD-HHMMSS`
-(Lacy keeps `YYYYMMDD-HHMMSS`).
+4. For public direct posts, submit the app for TikTok's audit (Content Posting API > Apply).
+`TIKTOK_MAX_PER_DAY` (15) caps posts per UK day; `"tiktok": false` in `review.modes.<mode>`
+turns TikTok off for that kind.
+
+## #announcements
+
+New rules, what the rule compiler built, videos going live, blocked videos and what a deploy
+changed go to the server's channel with "announcements" in its name (or
+`DISCORD_ANNOUNCEMENTS_CHANNEL_ID`). #status keeps bot health only.
 
 ## Instagram Reels (auto-post) and the TikTok folder
 

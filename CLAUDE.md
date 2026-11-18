@@ -9,8 +9,11 @@ revenue on a budget of about £20/month. Give all times in UK time.
 
 - Main income is clipping programmes: Adin Ross, Seal (via Content Rewards) and Lacy
   (via Reach). Channels with `programme: null` need Tim to check permission before
-  anything is posted.
-- Never write code that downloads video from streamers who haven't allowed clipping.
+  anything is posted. Tim cleared Kai Cenat himself on 18 Nov 2026 (`clips.allow`).
+- Never write code that downloads video from streamers who haven't allowed clipping (or that
+  Tim hasn't cleared in `clips.allow`).
+- **Nudity is never posted**: every rendered video goes through `spikebot/safety.py` before review
+  and again before any platform; blocked = deleted. Don't add a path around it.
 - GTA gameplay only. Skip gambling/casino segments.
 - Rockstar policy: no isolated cutscenes, endings, story spoilers or leaked footage.
 - Every Short must add original value (captions, hook, context). Never raw re-uploads,
@@ -156,6 +159,30 @@ it in sync when behaviour or config changes.
   mode stays `lacy` (style mode too); `discord_bot.mode_label` shows the streamer. A failed fresh
   lookup still alerts #moments but makes no clip. YouTube tags/descriptions/hashtags target launch-week
   searches ("gta 6 gameplay", "gta 6 clips", "<streamer> gta 6"). Tested in `tests/test_clips.py`.
+- **Feedback button = this video only** unless the wording asks for a rule (`feedback.ALWAYS`:
+  always / from now on / every / never...). /feedback is how rules are added on purpose.
+- `spikebot/safety.py`: NudeNet (onnx, CPU) on 2 fps frames: `judge` (exposed >= 0.45 once, >= 0.30
+  twice, or a big covered-buttocks/breast box in 3+ frames = blocked), `screen_variants` (in
+  `review._render_round`, deletes blocked files; all blocked = item failed "🔞 blocked"),
+  `Publisher.safety_check` (re-scan unless `safety: ok`; unavailable = not posted), Tokyo Girl
+  `nudity_scan` -> library entry `nsfw` times -> `build_shots` skips those shots. Also
+  `find_facecam` / `facecam_from_faces` (the face that stays put = the webcam) for clip profiles
+  with `facecam_auto` (no box in config); the job stores `facecam`.
+- `spikebot/highlights.py` + `Bot.highlights_loop`: clip streamers' VOD **audio only**, a 30 min
+  chunk per 10 min tick (`plan_scan`, state data/highlights/state.json, category history `cats`),
+  `envelope` / `peaks` (robust z vs the last 3 min), `pick` (away from chat spikes, 2 per hour) ->
+  jobs `<id>-a` with `source: audio`. `HIGHLIGHTS_MODE`.
+- `spikebot/tiktok.py`: Content Posting API (`TikTok.post`: creator_info -> direct init, or inbox
+  init when the app isn't audited / the edit is silent; FILE_UPLOAD chunks; status poll). Refresh
+  token rotates and is saved to .env. `Publisher._tiktok_post`, `tiktok_cfg` (reads .env fresh),
+  `auto_platforms` always adds tiktok unless `"tiktok": false`. CLI `auth | check | post`.
+- #announcements: `ReviewBot.announce` (channel id or the one named "announcements", else
+  #status): new rules (`announce_new_rules`), compiler notices, live links, blocked videos,
+  deploy request `announce {text}`.
+- Review cards (`round_payload`) are minimal: streamer/category/VOD time or song + start, length,
+  clip title. No style details.
+- Kick key: `kick_pusher_credentials` tries the realtime descriptor, then `pusher_from_js` on
+  kick.com's scripts; cached 6 h, failures 30 min.
 - **Text rules** (`style.LOCKED` / `enforce`, applied to every rendered spec in `review.specs_for`; saved
   rules and `dims` are unchanged):
   stream clips always captioned (text_level full|minimal, the adapter turns none into full), Tokyo Girl

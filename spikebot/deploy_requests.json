@@ -36,5 +36,12 @@
   "per_song": 1,
   "until": "2026-11-19T06:00:00+00:00",
   "why": "Tim: dish out more edits ASAP (one trending-sound edit per sound now)"
+ },
+ {
+  "id": "announce-2026-11-18-launch-pack",
+  "action": "announce",
+  "until": "2026-11-20T12:00:00+00:00",
+  "text": "🚀 **Launch update deployed**\n• Stream clips now for Adin Ross, Seal and Kai Cenat (+ Lacy), facecam found automatically\n• Clips also come from loud gameplay moments when chat doesn't react (ids end in -a)\n• 🔞 Every video is nudity-checked; anything flagged is deleted, never shown or posted\n• Captions stay in one place; clips never cut someone off mid-word\n• Feedback = this video only. Say \"always\" / \"from now on\" to make it a rule\n• Titles/captions rewritten (clips: written from what was said)\n• Approve = auto-post to YouTube, Instagram and TikTok (TikTok needs its one-time setup)\n• Shorter #ready-to-post cards",
+  "why": "Tim: key stuff goes to #announcements"
  }
 ]
