@@ -290,6 +290,27 @@ def close(item: dict, status: str, now: float | None = None, why: str = "") -> N
     note(item, why or status, now)
 
 
+def reopen(item: dict, now: float | None = None) -> dict:
+    """Undo an approval so the approved version can be rendered again (e.g. after a renderer fix):
+    queues an `again` request (same style, same clips, current renderer). Refused once anything
+    went out automatically (YouTube / Instagram): those posts can't be swapped."""
+    if item["status"] not in ("approved", "done"):
+        raise ValueError(f"this clip is {item['status']}, not approved")
+    sent = [p for p, x in (item.get("publish") or {}).items()
+            if p != "manual" and x.get("status") not in ("off", None, "queued", "failed")]
+    if sent:
+        raise ValueError(f"already published on {', '.join(sent)}; can't redo it")
+    a = item["approved"]
+    now = now or time.time()
+    item.pop("approved", None)
+    item.pop("publish", None)
+    item.pop("closed", None)
+    item["status"] = "open"
+    item["request"] = {"kind": "again", "status": "queued", "ts": now, "round": a["round"], "label": a["label"]}
+    note(item, f"reopened: re-render {a['label']} (round {a['round']}) with the current renderer", now)
+    return item["request"]
+
+
 def due_to_expire(item: dict, now: float) -> bool:
     return item["status"] in OPEN and bool(item.get("expires")) and now >= item["expires"]
 
@@ -372,6 +393,11 @@ def specs_for(item: dict, req: dict, store: Store, rng: random.Random,
         profile.save()
         req["entries"] = [e["n"] for e in (res.get("rule") or {}).get("entries") or []]   # card gets on/off buttons
         return [spec], res["comment"]
+    if kind == "again":   # same version, current renderer (review reopen)
+        spec = {"label": f"{base['label'][0]}{n}", "style": json.loads(json.dumps(base["style"])),
+                "preset": base.get("preset"), "experimental": False, "texts": {}, "from": base,
+                "keep_footage": True}
+        return [spec], f"Re-rendered {base['label']} unchanged with the current renderer"
     if kind == "preset":
         p = store.presets().load(req["name"])
         ps = presets_.to_style(p, style_mode(item))
@@ -401,7 +427,7 @@ def render_round(store: Store, item_id: str, cfg: dict, base: Path, req: dict | 
     from . import progress
     own = None
     if not progress.active():   # inside a Lacy job the Lacy job's bar is already showing
-        what = {"redo": "redo", "feedback": "after feedback", "preset": "preset"}.get(req.get("kind"), "")
+        what = {"redo": "redo", "feedback": "after feedback", "preset": "preset", "again": "re-render"}.get(req.get("kind"), "")
         own = progress.Job.create(store.data_dir, f"{item.get('title') or item_id}"
                                   + (f" · {what}" if what else ""), channel="review", meta={"item": item_id})
     with progress.tracking(own) if own else contextlib.nullcontext():
@@ -700,6 +726,7 @@ def main(argv: list[str] | None = None) -> int:
     a.add_argument("item")
     a.add_argument("label", help="A, B, C (latest round) or e.g. B3")
     sub.add_parser("reject").add_argument("item")
+    sub.add_parser("reopen", help="re-render an approved edit with the current renderer").add_argument("item")
     sub.add_parser("publish", help="post approved items that are due (normally the bot does this)")
     args = ap.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -734,6 +761,15 @@ def main(argv: list[str] | None = None) -> int:
         profile.save()
         finish(store, cfg, base, item["id"], "rejected", why="rejected (CLI)")
         print(f"{item['id']}: rejected")
+        return 0
+    if args.cmd == "reopen":
+        try:
+            with store.edit(item["id"]) as it:
+                reopen(it)
+        except ValueError as e:
+            print(f"{item['id']}: {e}")
+            return 1
+        print(f"{item['id']}: reopened. The bot re-renders it and posts the new version in #ready-to-post.")
         return 0
     if args.cmd == "approve":
         m = re.fullmatch(r"([A-Z])(\d*)", args.label.upper())

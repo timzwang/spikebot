@@ -470,3 +470,37 @@ def test_parallel_remotion_renders_share_cpus_and_cache(tmp_path, monkeypatch):
     assert f"--offthreadvideo-cache-size-in-bytes={2048 * 1024 * 1024}" in seen["cmd"]
     assert not (work / "active" / "999999999-dead").exists()
     assert [f.name for f in (work / "active").iterdir()] == [f"{os.getpid()}-other"]
+
+
+def _cut_plan(offset, dur=1.0, tail=0.0):
+    shot = TG.Shot("t.mp4", "video", 10.0, 14.0, ["x"])
+    story = TG.STORIES[0]
+    sl = TG.Slot(shot, offset, 2, 0.0, dur, 0, False, 1)
+    other = TG.Slot(img_shot("a.jpg", ["x"]), 0.0, 2, dur, 1.0, 0, False, 1)
+    return TG.Plan(story, [], [sl, other], dur + 1.0)
+
+
+def test_clean_plan_moves_clip_off_a_missed_cut():
+    cuts = lambda sh: [12.4]
+    # clean already: untouched
+    assert TG.clean_plan(_cut_plan(10.5), Path("."), cuts_of=cuts).slots[0].offset == 10.5
+    # window 11.9-12.9 crosses 12.4: moves to the nearest clean side (before the cut)
+    off = TG.clean_plan(_cut_plan(11.9), Path("."), cuts_of=cuts).slots[0].offset
+    assert off + 1.0 <= 12.4 and off == pytest.approx(12.4 - 0.05 - 1.0)
+    # the crossfade tail counts too
+    off = TG.clean_plan(_cut_plan(11.3), Path("."), tail=0.45, cuts_of=cuts).slots[0].offset
+    assert off + 1.45 <= 12.4 or off >= 12.4
+    # nothing changes for stills
+    assert TG.clean_plan(_cut_plan(11.9), Path("."), cuts_of=cuts).slots[1].offset == 0.0
+
+
+@needs_ffmpeg
+def test_window_cuts_finds_a_dark_cut(tmp_path):
+    """Two dark shots (the kind the library scan missed) joined at 1.0 s."""
+    src = tmp_path / "dark.mp4"
+    subprocess.run(["ffmpeg", "-v", "error", "-y",
+                    "-f", "lavfi", "-i", "testsrc2=s=320x180:r=30:d=1,eq=brightness=-0.35",
+                    "-f", "lavfi", "-i", "mandelbrot=s=320x180:r=30,trim=duration=1,eq=brightness=-0.35",
+                    "-filter_complex", "[0][1]concat=n=2:v=1", "-pix_fmt", "yuv420p", str(src)], check=True)
+    cuts = TG.window_cuts(src, 0.0, 2.0)
+    assert len(cuts) == 1 and abs(cuts[0] - 1.0) < 0.1

@@ -894,6 +894,62 @@ def slot_filter(slot: Slot, zoom: float, motion: str = "full", framing: str = "f
     return ",".join(vf)
 
 
+CUT_CHECK_THRESHOLD = 0.12   # lower than the library's: dark-to-dark trailer cuts score ~0.2
+_cut_cache: dict[tuple, list[float]] = {}
+
+
+def window_cuts(src: Path, start: float, end: float, threshold: float = CUT_CHECK_THRESHOLD) -> list[float]:
+    """Hard cuts inside [start, end] of a source video (absolute seconds). The library's scan
+    can miss a cut between two dark shots; this finer check runs on the shot before rendering.
+    Never raises: on any failure it reports no cuts."""
+    key = (str(src), round(start, 3), round(end, 3), threshold)
+    if key in _cut_cache:
+        return _cut_cache[key]
+    cuts: list[float] = []
+    try:
+        res = subprocess.run(["ffmpeg", "-hide_banner", "-nostats", "-loglevel", "error",
+                              "-ss", f"{start:.3f}", "-t", f"{end - start:.3f}", "-i", str(src), "-an",
+                              "-vf", f"scale=160:-2,select='gt(scene,{threshold})',metadata=print:file=-",
+                              "-f", "null", "-"], capture_output=True, text=True, timeout=300)
+        cuts = [start + t for t, _ in parse_meta(res.stdout)]
+    except (OSError, subprocess.SubprocessError, ValueError) as e:
+        log.warning("cut check failed for %s: %s", src, e)
+    _cut_cache[key] = cuts
+    return cuts
+
+
+def clean_plan(plan: Plan, media: Path, tail: float = 0.0, cuts_of=None) -> Plan:
+    """Move each trailer clip's window off any hard cut inside it, so no other scene flashes up
+    for a few frames. `tail` = extra seconds rendered past a slot (crossfade overlap). A clip
+    stays as close to its planned spot as it can; if no clean stretch is long enough it takes
+    the longest one (the flash is then as short as possible)."""
+    cuts_of = cuts_of or (lambda sh: window_cuts((media / sh.src).resolve(), sh.start, sh.end))
+    margin = 0.05
+    slots = []
+    for i, sl in enumerate(plan.slots):
+        if sl.shot.kind != "video":
+            slots.append(sl)
+            continue
+        need = sl.dur + (tail if i < len(plan.slots) - 1 else 0.0)
+        inner = [c for c in cuts_of(sl.shot) if sl.shot.start + margin < c < sl.shot.end - margin]
+        if not any(sl.offset < c < sl.offset + need for c in inner):
+            slots.append(sl)
+            continue
+        edges = [sl.shot.start] + inner + [sl.shot.end]
+        parts = [(a + (margin if a > sl.shot.start else 0), b - (margin if b < sl.shot.end else 0))
+                 for a, b in zip(edges, edges[1:])]
+        fits = [(a, b) for a, b in parts if b - a >= need]
+        if fits:
+            a, b = min(fits, key=lambda p: abs(min(max(sl.offset, p[0]), p[1] - need) - sl.offset))
+            off = min(max(sl.offset, a), b - need)
+        else:
+            a, b = max(parts, key=lambda p: p[1] - p[0])
+            off = max(sl.shot.start, min(a, sl.shot.end - need))
+        log.info("clip %s: moved %.2f -> %.2f s to avoid a scene cut", sl.shot.key, sl.offset, off)
+        slots.append(Slot(sl.shot, round(off, 3), sl.beats, sl.start, sl.dur, sl.card, sl.flash, sl.pan, sl.punch))
+    return Plan(plan.story, plan.cards, slots, plan.duration)
+
+
 def render_slot(slot: Slot, media: Path, out: Path, motion: str = "full", framing: str = "fill",
                 extra: float = 0.0) -> None:
     """`extra`: seconds rendered past the slot's end (the overlap of a crossfade)."""
@@ -1003,6 +1059,11 @@ def join_crossfade(names: list[str], plan: Plan, fade_s: float, cwd: Path) -> st
     return "joined.mp4"
 
 
+def fade_of(r: dict, plan: Plan) -> float:
+    """Crossfade length (0 = hard cuts)."""
+    return float(r.get("fade_s") or 0.45) if r.get("transition") == "fade" and len(plan.slots) > 1 else 0.0
+
+
 def render_plan(plan: Plan, lcfg: dict, out: Path, grade: str = "", text_style: dict | None = None,
                 cards: list[tuple[float, float, str]] | None = None, logo: Path | None = None,
                 intro_s: float = 0.0, look: str = "") -> Path:
@@ -1014,7 +1075,8 @@ def render_plan(plan: Plan, lcfg: dict, out: Path, grade: str = "", text_style: 
     cards = plan.cards if cards is None else cards
     r = text_style or {}
     motion, framing = r.get("motion", "full"), r.get("framing", "fill")
-    fade = float(r.get("fade_s") or 0.45) if r.get("transition") == "fade" and len(plan.slots) > 1 else 0.0
+    fade = fade_of(r, plan)
+    plan = clean_plan(plan, media, fade)
     out.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory() as tmp:
         tmpd = Path(tmp)
@@ -1325,6 +1387,7 @@ class ReviewAdapter:
         from . import remotion
         from . import style as st
         engine = self.lcfg.get("engine", "auto")
+        plan = clean_plan(plan, Path(self.lcfg["media_dir"]), fade_of(r, plan))
         if engine == "remotion" or (engine == "auto" and remotion.available()):
             try:
                 remotion.render(plan, self.lcfg, mp4, r, shown, logo, intro_s)

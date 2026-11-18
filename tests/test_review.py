@@ -835,3 +835,36 @@ def test_rerender_posts_in_thread_with_a_pointer_and_falls_back_to_the_channel(t
     item = store.load(item["id"])
     assert item["rounds"][-1]["message_id"] and item["rounds"][-1]["channel_id"] == 100
     assert len(reg[100].sent) == before + 1 and reg[100].sent[-1].kw.get("files")
+
+
+def test_reopen_approved_edit_renders_it_again(tmp_path):
+    """An approved edit with nothing auto-published can be re-rendered unchanged (renderer fixes)."""
+    store, item = new_item(tmp_path, mode="tokyo_girl")
+    with store.edit(item["id"]) as it:
+        R.approve(it, 1, "B", R.settings({}), set(), T)
+        it["publish"]["manual"]["status"] = "done"
+    with store.edit(item["id"]) as it:
+        req = R.reopen(it, T + 10)
+    item = store.load(item["id"])
+    assert item["status"] == "open" and "approved" not in item and "publish" not in item
+    assert req == {"kind": "again", "status": "queued", "ts": T + 10, "round": 1, "label": "B"}
+    old = R.variant_of(item, 1, "B")
+    item = R.render_round(store, item["id"], {}, tmp_path, now=T + 60, adapter=FakeAdapter())
+    v = item["rounds"][1]["variants"]
+    assert len(v) == 1 and v[0]["label"] == "B2" and v[0]["style"] == old["style"]
+    assert item["status"] == "open" and item["request"]["status"] == "done"
+    with store.edit(item["id"]) as it:
+        R.approve(it, 2, "B2", R.settings({}), set(), T + 70)   # and it can be approved again
+
+
+def test_reopen_refused_after_auto_publish(tmp_path):
+    store, item = approved(tmp_path)
+    with store.edit(item["id"]) as it:
+        it["publish"]["youtube"]["status"] = "done"
+    with pytest.raises(ValueError, match="youtube"):
+        with store.edit(item["id"]) as it:
+            R.reopen(it)
+    store2, open_item = new_item(tmp_path / "x")
+    with pytest.raises(ValueError, match="not approved"):
+        with store2.edit(open_item["id"]) as it:
+            R.reopen(it)

@@ -571,6 +571,18 @@ cd /opt/spikebot && sudo -u spikebot venv/bin/python -m spikebot.review approve 
 cd /opt/spikebot && sudo -u spikebot venv/bin/python -m spikebot.review publish
 ```
 
+Re-render an edit you already approved (e.g. after a renderer fix), as long as nothing went
+out automatically to YouTube/Instagram. This one is safe with the bot running: it re-renders the
+approved version unchanged (same clips, text, sound and style) and posts it in #ready-to-post
+to approve again.
+
+```bash
+cd /opt/spikebot && sudo -u spikebot venv/bin/python -m spikebot.review reopen ITEM_ID   # ids from `review list`
+```
+
+Before rendering, every trailer clip is checked for scene cuts the library scan missed (dark
+shots) and moved off them, so no other scene flashes up between two clips.
+
 ## #inspiration: copy the style of Shorts you like
 
 Post a TikTok / Instagram / YouTube link, or upload the video, in #inspiration. Optional notes
