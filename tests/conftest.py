@@ -17,3 +17,20 @@ def _ffmpeg_renderer_unless_marked(request, monkeypatch):
 
 def pytest_configure(config):
     config.addinivalue_line("markers", "remotion: renders with Remotion (needs node + remotion/node_modules)")
+
+
+@pytest.fixture(autouse=True)
+def _no_nudity_model_on_test_patterns(request, monkeypatch):
+    """The nudity model sees things in synthetic test patterns (mandelbrot, test cards), which
+    would randomly drop shots and versions in render tests. Those tests get a clean scan;
+    tests/test_safety.py tests the real decision logic with its own fake detector."""
+    if request.module.__name__.endswith("test_safety"):
+        return
+    from spikebot import safety
+    monkeypatch.setattr(safety, "flag_times", lambda *a, **k: [])
+    real_scan = safety.scan
+
+    def scan(path, fps=safety.SAMPLE_FPS, detector=None):
+        return real_scan(path, fps, detector=detector or (lambda frame: []))
+    monkeypatch.setattr(safety, "scan", scan)
+    monkeypatch.setattr(safety, "find_facecam", lambda *a, **k: None)

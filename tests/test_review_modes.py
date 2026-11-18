@@ -128,7 +128,7 @@ def test_tokyo_girl_review_items_are_silent_and_different(tmp_path):
                            capture_output=True, text=True, check=True)
         streams = json.loads(p.stdout)["streams"]
         assert [x["codec_type"] for x in streams] == ["video"]   # silent
-        assert v["silent"] and v["captions"]["instagram"].endswith("#GTA6")
+        assert v["silent"] and v["captions"]["instagram"].endswith("#vicecity")
     # approving copies the edit to exports/tokyo_girl
     with store.edit(item["id"]) as it:
         R.approve(it, 1, "B", R.settings({}), set())
