@@ -163,7 +163,7 @@ it in sync when behaviour or config changes.
 - `spikebot/tokyo_girl.py`: **Tokyo Girl mode** (on by default; `TOKYO_GIRL_MODE`,
   `TOKYO_GIRL_PER_DAY`, `tokyo_girl` config block). Standalone CLI, not part of `Bot`: run daily
   by `spikebot-tokyo-girl.timer` (06:47 UK, `daily` tops up to `per_day`). Makes silent
-  (`-an`, no audio stream) 1080x1920 60 fps 15-30 s edits from official Rockstar GTA VI trailers and
+  (`-an`, no audio stream) 1080x1920 30 fps 15-30 s edits from official Rockstar GTA VI trailers and
   screenshots only (`fetch`: `ALLOWED_HOSTS`, yt-dlp limited to uploader Rockstar; plus a drop
   folder `data/rockstar_media/`). `Library` caches per-file analysis (scene cuts, YAVG,
   letterbox crop) in `library.json`; `build_shots` trims trailer head/tail, dark shots and

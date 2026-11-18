@@ -296,8 +296,9 @@ hand. On by default, 2 a day (`TOKYO_GIRL_PER_DAY` in `.env`, or `tokyo_girl.per
   `npm ci` in `remotion/`, Remotion's headless Chrome; about 500 MB disk). About 2 minutes
   per 15 s edit on the VM. If Remotion isn't there or a render fails, the ffmpeg renderer
   is used, so an edit is never lost. Force one with `tokyo_girl.engine`: `auto` (default),
-  `remotion` or `ffmpeg`. Edits render at 60 fps, CRF 18 (Lacy clips too: 60 fps, or the VOD's
-  own rate when it's lower). A Remotion render that prints nothing for 5 min, or runs over
+  `remotion` or `ffmpeg`. Tokyo Girl / trend edits render at 30 fps (the trailers' own rate; 60 doubled
+  every frame and stuttered), CRF 18. Lacy clips: 60 fps, or the VOD's
+  own rate when it's lower. A Remotion render that prints nothing for 5 min, or runs over
   40 min, is killed and falls back to ffmpeg. `tokyo_girl.remotion_concurrency` sets frames
   rendered in parallel (default: half the CPUs, max 4).
   `remotion_cache_mb` sets Remotion's decoded-frame cache; `remotion_tmp` (e.g. `/dev/shm/spikebot-remotion`)
