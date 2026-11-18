@@ -739,15 +739,48 @@ def test_progress_bar_is_posted_edited_and_removed(tmp_path):
     assert env[P.ENV] == str(j2.path)
 
 
-def test_stats_channels_are_created_once_then_renamed(tmp_path):
+def test_stats_names_launch_countdown_and_social():
     from datetime import datetime as _dt
     from spikebot import review as RV
     now = _dt(2026, 11, 17, 21, 0, tzinfo=RV.UK).timestamp()
     names = DB.stat_names({"live": 5, "watching": 40, "moments_today": 12, "to_review": 3,
                            "approved_today": 2, "started": now - (5 * 3600 + 30 * 60 + 20)}, now)
     assert names["live"] == "🟢 Live streamers: 5/40" and names["uptime"] == "⏱ Bot uptime: 5h 30m"
-    assert names["gta6"] == "🎮 GTA 6 in 2 days"
-    assert DB.stat_names({}, _dt(2026, 11, 19, 9, 0, tzinfo=RV.UK).timestamp())["gta6"] == "🎮 GTA 6: out now"
+    # UK unlock is 00:00 GMT Thu 19 Nov
+    assert names["gta6"] == "🎮 GTA 6 in 1d 3h (Thu 19 Nov 00:00 UK)"
+    eve = _dt(2026, 11, 18, 17, 34, 50, tzinfo=RV.UK).timestamp()
+    assert DB.stat_names({}, eve)["gta6"] == "🎮 GTA 6 in 6h 25m (Thu 19 Nov 00:00 UK)"
+    assert DB.stat_names({}, _dt(2026, 11, 19, 9, 5, tzinfo=RV.UK).timestamp())["gta6"] == "🎮 GTA 6 out now: 9h 05m in"
+    assert DB.stat_names({}, _dt(2026, 11, 21, 9, 0, tzinfo=RV.UK).timestamp())["gta6"] == "🎮 GTA 6 out: day 3"
+    assert DB.stat_names({"live": 3, "watching": 35, "unchecked": 4}, now)["live"] == \
+        "🟢 Live streamers: 3/35 (4 unchecked)"
+    social = {"views": {"total": 1234567, "platforms": ["YT", "IG"]},
+              "likes": {"total": 45210, "platforms": ["YT", "IG"]},
+              "followers": {"total": 999, "platforms": ["IG"]}}
+    n = DB.stat_names({"social": social}, now)
+    assert n["views"] == "👁 Views: 1.23M (YT+IG)" and n["likes"] == "❤️ Likes: 45.2K (YT+IG)"
+    assert n["followers"] == "👥 Followers: 999 (IG)"
+    assert "views" not in DB.stat_names({"social": {}}, now)
+    assert [DB.compact(x) for x in (0, 1000, 10500, 2_000_000, 123_456_789)] == ["0", "1K", "10.5K", "2M", "123M"]
+
+
+def test_stats_renames_respect_discord_limit():
+    names, cur = {"live": "new", "uptime": "u2"}, {"live": "old", "uptime": "u1"}
+    hist = {}
+    assert DB.renames_due(names, cur, hist, 1000.0) == ["live", "uptime"]
+    DB.note_rename(hist, "live", 1000.0)
+    assert DB.renames_due(names, cur, hist, 1100.0) == ["uptime"]          # spaced ~5 min
+    assert DB.renames_due(names, cur, hist, 1100.0, burst=True) == ["live", "uptime"]   # /stats
+    DB.note_rename(hist, "live", 1100.0)
+    assert "live" not in DB.renames_due(names, cur, hist, 1500.0, burst=True)   # 2 in 10 min
+    assert "live" in DB.renames_due(names, cur, hist, 1000.0 + 611)
+    assert DB.renames_due(names, {"live": "new", "uptime": "u2"}, {}, 0) == []   # up to date
+
+
+def test_stats_channels_are_created_once_then_renamed(tmp_path):
+    from datetime import datetime as _dt
+    from spikebot import review as RV
+    now = _dt(2026, 11, 17, 21, 0, tzinfo=RV.UK).timestamp()
 
     class Ch:
         _n = 100
@@ -782,6 +815,7 @@ def test_stats_channels_are_created_once_then_renamed(tmp_path):
     store = R.Store(tmp_path / "data")
     b, _ = bot_for(tmp_path, store)
     b.rcfg["guild_id"] = 1
+    b.social = {"totals": {"views": {"total": 5000, "platforms": ["YT"]}}}
 
     class Client:
         def get_guild(self, gid):
@@ -791,11 +825,22 @@ def test_stats_channels_are_created_once_then_renamed(tmp_path):
     b.stats_source = lambda t: {"live": live["n"], "watching": 40, "moments_today": 1}
     asyncio.run(b.stats_tick(now))
     made = [c.name for c in g.chans.values()]
-    assert "📊 Stats" in made and "🟢 Live streamers: 5/40" in made and len(made) == 7
+    assert "📊 Stats" in made and "🟢 Live streamers: 5/40" in made and "👁 Views: 5K (YT)" in made
+    assert len(made) == 8
     live["n"] = 6
-    asyncio.run(b.stats_tick(now + 600))
-    assert len(g.chans) == 7                                  # no duplicates
+    asyncio.run(b.stats_tick(now + 60))
+    assert len(g.chans) == 8                                  # no duplicates
     assert "🟢 Live streamers: 6/40" in [c.name for c in g.chans.values()]
+    live["n"] = 7
+    asyncio.run(b.stats_tick(now + 120))                      # renamed a minute ago: waits ~5 min
+    assert "🟢 Live streamers: 6/40" in [c.name for c in g.chans.values()]
+    asyncio.run(b.stats_tick(now + 120, force=True))          # /stats: 2nd rename in 10 min is fine
+    assert "🟢 Live streamers: 7/40" in [c.name for c in g.chans.values()]
+    live["n"] = 8
+    asyncio.run(b.stats_tick(now + 400, force=True))          # a 3rd would hit Discord's limit
+    assert "🟢 Live streamers: 7/40" in [c.name for c in g.chans.values()]
+    asyncio.run(b.stats_tick(now + 60 + 611))
+    assert "🟢 Live streamers: 8/40" in [c.name for c in g.chans.values()]
 
 
 def test_progress_dead_worker_shows_stopped(tmp_path):

@@ -472,8 +472,12 @@ def progress_env(job) -> dict | None:
     return dict(os.environ, **{progress.ENV: str(job.path)})
 
 
-LAUNCH_DAY = "2026-11-19"   # GTA 6 release (UK)
-STAT_KEYS = ("live", "moments", "review", "approved", "uptime", "gta6")
+# GTA 6 unlocks at midnight local time: 00:00 GMT Thu 19 Nov 2026 in the UK (US 05:00 UK).
+# review.stats.gta6_launch overrides it (ISO time with offset).
+GTA6_LAUNCH = "2026-11-19T00:00:00+00:00"
+STAT_KEYS = ("live", "moments", "review", "approved", "views", "likes", "followers", "uptime", "gta6")
+RENAME_WINDOW_S = 610.0   # Discord: 2 renames per channel per 10 min (+10 s margin)
+RENAME_GAP_S = 305.0      # so normally one rename per channel every ~5 min
 
 
 def uptime_text(seconds: float) -> str:
@@ -482,25 +486,81 @@ def uptime_text(seconds: float) -> str:
     return f"{d}d {h}h {m}m" if d else f"{h}h {m:02d}m"
 
 
-def stat_names(snap: dict, now: float) -> dict[str, str]:
+def compact(n) -> str:
+    """1234 -> 1.2K, 1234567 -> 1.23M (YouTube-style)."""
+    n = int(n or 0)
+    for div, suf in ((1_000_000_000, "B"), (1_000_000, "M"), (1_000, "K")):
+        if n >= div:
+            v = n / div
+            txt = f"{v:.2f}" if v < 10 else f"{v:.1f}" if v < 100 else f"{v:.0f}"
+            return txt.rstrip("0").rstrip(".") + suf
+    return str(n)
+
+
+def launch_text(now: float, launch: str = GTA6_LAUNCH) -> str:
+    """Countdown to the UK unlock to the minute, then time since launch."""
+    at = datetime.fromisoformat(launch)
+    left = at.timestamp() - now
+    uk = at.astimezone(review.UK)
+    when = f"{uk:%a} {uk.day} {uk:%b %H:%M}"
+    if left > 86400:
+        d, h = int(left // 86400), int(left % 86400 // 3600)
+        return f"🎮 GTA 6 in {d}d {h}h ({when} UK)"
+    if left > 0:
+        h, m = int(left // 3600), int(left % 3600 // 60)
+        return f"🎮 GTA 6 in {h}h {m:02d}m ({when} UK)"
+    since = -left
+    if since < 86400:
+        h, m = int(since // 3600), int(since % 3600 // 60)
+        return f"🎮 GTA 6 out now: {h}h {m:02d}m in"
+    return f"🎮 GTA 6 out: day {int(since // 86400) + 1}"
+
+
+def stat_names(snap: dict, now: float, launch: str = GTA6_LAUNCH) -> dict[str, str]:
     """Channel names for the Stats category. Only what Discord can show in a name
     (max 100 chars); keys missing from `snap` are left out."""
     out = {}
     if "live" in snap:
         out["live"] = f"🟢 Live streamers: {snap['live']}/{snap.get('watching', '?')}"
+        if snap.get("unchecked"):
+            out["live"] += f" ({snap['unchecked']} unchecked)"
     if "moments_today" in snap:
         out["moments"] = f"⚡ Moments today: {snap['moments_today']}"
     if "to_review" in snap:
         out["review"] = f"🎬 Waiting for review: {snap['to_review']}"
     if "approved_today" in snap:
         out["approved"] = f"✅ Approved today: {snap['approved_today']}"
+    social = snap.get("social") or {}
+    for key, icon, label in (("views", "👁", "Views"), ("likes", "❤️", "Likes"),
+                             ("followers", "👥", "Followers")):
+        row = social.get(key)
+        if row and row.get("platforms"):
+            out[key] = f"{icon} {label}: {compact(row['total'])} ({'+'.join(row['platforms'])})"
     if snap.get("started"):
         out["uptime"] = f"⏱ Bot uptime: {uptime_text(now - snap['started'])}"
-    today = datetime.fromtimestamp(now, review.UK).date()
-    days = (datetime.fromisoformat(LAUNCH_DAY).date() - today).days
-    out["gta6"] = ("🎮 GTA 6: out now" if days <= 0 else
-                   "🎮 GTA 6: tomorrow" if days == 1 else f"🎮 GTA 6 in {days} days")
+    out["gta6"] = launch_text(now, launch)
     return {k: v[:100] for k, v in out.items()}
+
+
+def renames_due(names: dict[str, str], current: dict[str, str], history: dict[str, list],
+                now: float, burst: bool = False) -> list[str]:
+    """Stat keys whose channel name is out of date and may be renamed now. Discord allows
+    2 renames per channel per 10 min: never more than that in any 10 min (`history` = recent
+    rename times per key), and normally spaced ~5 min apart; `burst` (/stats) only applies
+    the 2-per-10-min rule."""
+    out = []
+    for k in STAT_KEYS:
+        if k not in names or k not in current or current[k] == names[k]:
+            continue
+        recent = [t for t in history.get(k) or [] if now - t < RENAME_WINDOW_S]
+        if len(recent) >= 2 or (not burst and recent and now - max(recent) < RENAME_GAP_S):
+            continue
+        out.append(k)
+    return out
+
+
+def note_rename(history: dict[str, list], key: str, now: float) -> None:
+    history[key] = [t for t in history.get(key) or [] if now - t < RENAME_WINDOW_S][-1:] + [now]
 
 
 def _no_mentions():
@@ -577,6 +637,7 @@ class ReviewBot:
         self.stats_source = None   # main.Bot sets this: -> {live, watching, moments_today, started}
         self.started_at = time.time()
         self._stats_warned = False
+        self.social: dict = {}     # socialstats.refresh() -> views/likes/followers totals
 
     # ---- helpers ------------------------------------------------------------
     @property
@@ -751,7 +812,7 @@ class ReviewBot:
                 bot.started = True
                 bot.render_q = asyncio.Queue()
                 for coro in (bot.scan_loop(), bot.render_worker(), bot.publish_loop(), bot.trend_loop(),
-                             bot.progress_loop(), bot.stats_loop(), bot.rules_loop(), bot.run_deploy_requests()):
+                             bot.progress_loop(), bot.stats_loop(), bot.social_loop(), bot.rules_loop(), bot.run_deploy_requests()):
                     asyncio.create_task(coro)
 
         @tree.error
@@ -1370,6 +1431,10 @@ class ReviewBot:
     # ---- stats channels -------------------------------------------------------------
     def stats_snapshot(self, now: float) -> dict:
         snap = {"started": self.started_at}
+        if not self.social:
+            from . import socialstats
+            self.social = socialstats.load(self.data_dir)   # last totals, kept across restarts
+        snap["social"] = (self.social or {}).get("totals") or {}
         if self.stats_source:
             try:
                 snap.update(self.stats_source(now))
@@ -1386,18 +1451,32 @@ class ReviewBot:
     async def stats_loop(self) -> None:
         await asyncio.sleep(20)          # let the cache fill after connecting
         while True:
-            every = float((self.rcfg.get("stats") or {}).get("every_s") or 600)
-            ok = False
             try:
-                ok = await self.stats_tick(time.time())
+                await self.stats_tick(time.time())
             except Exception as e:  # noqa: BLE001
                 log.warning("stats channels: %s", e)
-            # Discord: 2 renames per channel per 10 min. Until it works (e.g. the permission was
-            # only just granted) try again every minute.
-            await asyncio.sleep(max(300.0, every) if ok else 60.0)
+            # Checked every minute; each channel is renamed at most once per ~5 min (Discord's
+            # limit is 2 per 10 min), so a change shows within a minute unless that channel
+            # was just renamed.
+            await asyncio.sleep(60.0)
 
-    async def stats_tick(self, now: float) -> bool:
-        """True when every stats channel is in place and up to date."""
+    async def social_loop(self) -> None:
+        """Views / likes / followers across YouTube and Instagram (spikebot/socialstats.py)."""
+        from . import socialstats
+        await asyncio.sleep(30)
+        while True:
+            every = float((self.rcfg.get("stats") or {}).get("social_every_s") or 900)
+            try:
+                if (self.rcfg.get("stats") or {}).get("enabled"):
+                    self.social = await asyncio.to_thread(
+                        socialstats.refresh, self.cfg, self.base, self.data_dir)
+            except Exception as e:  # noqa: BLE001 - stats are cosmetic
+                log.warning("social stats: %s", e)
+            await asyncio.sleep(max(300.0, every))
+
+    async def stats_tick(self, now: float, force: bool = False) -> bool:
+        """True when every stats channel is in place (renames may still be waiting for
+        Discord's per-channel limit). `force` (/stats) skips the 5 min spacing, never the limit."""
         import discord
         scfg = self.rcfg.get("stats") or {}
         if not scfg.get("enabled"):
@@ -1413,7 +1492,9 @@ class ReviewBot:
             ids = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             ids = {}
-        names = stat_names(self.stats_snapshot(now), now)
+        renamed = {k: v for k, v in (ids.get("renamed") or {}).items() if isinstance(v, list)}
+        ids["renamed"] = renamed
+        names = stat_names(self.stats_snapshot(now), now, scfg.get("gta6_launch") or GTA6_LAUNCH)
         try:
             cat = guild.get_channel(ids.get("category") or 0)
             if cat is None:
@@ -1426,6 +1507,7 @@ class ReviewBot:
                                                                       view_channel=True)},
                     reason="spikebot stats")
             ids["category"] = cat.id
+            chans = {}
             for key in STAT_KEYS:
                 if key not in names:
                     continue
@@ -1433,8 +1515,10 @@ class ReviewBot:
                 if ch is None:
                     ch = await guild.create_voice_channel(names[key], category=cat, reason="spikebot stats")
                     ids[key] = ch.id
-                elif ch.name != names[key]:
-                    await ch.edit(name=names[key], reason="spikebot stats")
+                chans[key] = ch
+            for key in renames_due(names, {k: c.name for k, c in chans.items()}, renamed, now, burst=force):
+                await chans[key].edit(name=names[key], reason="spikebot stats")
+                note_rename(renamed, key, now)
             self._stats_warned = False
             return True
         except discord.Forbidden:
@@ -2173,7 +2257,7 @@ class ReviewBot:
 
             async def go():
                 try:
-                    if not await bot.stats_tick(time.time()):
+                    if not await bot.stats_tick(time.time(), force=True):
                         await inter.followup.send("⚠️ Couldn't update them: check the bot has **Manage Channels**.",
                                                   ephemeral=True)
                 except Exception as e:  # noqa: BLE001

@@ -486,11 +486,31 @@ they start rendering.
 
 **Stats channels:** a **📊 Stats** category at the top of the server with locked voice
 channels whose names show live numbers: live streamers (of those watched), moments today,
-waiting for review, approved today, bot uptime and the GTA 6 countdown. The bot creates them
-itself and renames them every 10 minutes (Discord only allows 2 renames per channel per 10
-minutes, so they can't tick every second). It needs **Manage Channels**; without it #status
-says so (it retries every minute until it works). `/stats` refreshes them now. Settings:
-`review.stats` (`enabled`, `category`, `every_s`).
+waiting for review, approved today, total views / likes / followers, bot uptime and the GTA 6
+countdown (to the minute, to the UK unlock at 00:00 GMT Thu 19 Nov, then time since launch).
+The bot creates them itself and checks them every minute; each channel is renamed at most once
+per ~5 minutes (Discord allows 2 renames per channel per 10 minutes). `/stats` refreshes now
+(still within Discord's limit). It needs **Manage Channels**; without it #status says so.
+
+- **Live streamers** count a channel as live from a live/offline lookup in the last 10 minutes
+  (Twitch Helix, Kick channel info; auto-watched streams are live as soon as they're added).
+  A channel with no recent lookup (no Twitch keys, Kick blocked by Cloudflare) counts as live
+  only if its chat was busy in the last 5 minutes, and the name says how many are
+  `unchecked`. Failed lookups are logged as warnings (`journalctl -u spikebot | grep "live status"`).
+- **Views / likes / followers** add up the platforms the bot can read, shown in brackets
+  (`YT+IG`). YouTube: put a free **API key** in `.env` as `YOUTUBE_API_KEY` (Google Cloud
+  Console > APIs & Services > Credentials > Create credentials > API key, restricted to YouTube
+  Data API v3); the channel is found from a video the bot uploaded, or set
+  `review.stats.youtube_channel` (`UC...` or `@handle`). Without a key it uses the upload login,
+  which only works after re-running `python -m spikebot.youtube auth --env .env` (it now also
+  asks for read-only access). Instagram uses `IG_ACCESS_TOKEN`; views need the insights
+  permission and are only counted once every post has a number (25 posts per refresh).
+  TikTok has no free API for account totals, so it isn't counted. A platform that fails keeps
+  its last numbers for 6 hours. Refreshed every `social_every_s` (15 min); check by hand with
+  `python -m spikebot.socialstats --config config.json`.
+
+Settings: `review.stats` (`enabled`, `category`, `social_every_s`, `youtube_channel`,
+`gta6_launch`).
 
 **`/feedback text:<anything> [mode]`**: tell the editor what you think in plain words, e.g.
 *"the captions are AI slop, only caption when he says something that matters"* or *"open the
