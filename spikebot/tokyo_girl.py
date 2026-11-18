@@ -652,20 +652,27 @@ def with_intro_shot(plan: Plan, shots: list[Shot], intro_s: float, uses: dict[st
 
 def footage_of(plan: Plan) -> list[dict]:
     """The clips of a rendered edit, in order (saved on the variant so a re-render can reuse them)."""
-    return [{"key": sl.shot.key, "offset": sl.offset, "pan": sl.pan} for sl in plan.slots]
+    return [{"key": sl.shot.key, "offset": sl.offset, "pan": sl.pan, "start": round(sl.start, 3),
+             "dur": round(sl.dur, 3)} for sl in plan.slots]
 
 
-def refit(plan: Plan, footage: list[dict], shots: list[Shot]) -> tuple[Plan, int]:
+def refit(plan: Plan, footage: list[dict], shots: list[Shot], skip: int = 0) -> tuple[Plan, int]:
     """Put the clips of an earlier version back into a new plan, slot by slot in the same order
     (the timing may differ: another sound, pace or length). A clip keeps its spot in the source
     and moves only as far as it must to fill a longer slot; a slot whose clip is gone or too
-    short keeps the new plan's pick. Returns (plan, slots that got their old clip)."""
+    short, and any slot past the old clips (a longer edit), keeps the new plan's own pick, so
+    clips are added, never repeated. `skip`: leading slots left as planned (a new logo intro's
+    calm shot). Returns (plan, slots that got their old clip)."""
     if not footage:
         return plan, 0
     by_key = {s.key: s for s in shots}
     slots, kept = [], 0
     for i, sl in enumerate(plan.slots):
-        f = footage[i % len(footage)]
+        j = i - skip
+        if j < 0 or j >= len(footage):
+            slots.append(sl)
+            continue
+        f = footage[j]
         shot = by_key.get(f.get("key"))
         if shot is None or shot.length < sl.dur - 1e-3:
             slots.append(sl)
@@ -688,9 +695,12 @@ def footage_note(base_v: dict | None, spec: dict, kept: int, slots: int) -> str 
     if not spec.get("keep_footage"):
         return "New clips (as asked)"
     if not base_v.get("footage"):
-        return (f"Couldn't reuse {name}'s clips: it was made before clip lists were saved."
-                " Feedback on this version keeps its clips")
-    return f"Same clips as {name}" + ("" if kept == slots else f" ({kept} of {slots}; the rest were too short)")
+        return (f"Couldn't reuse {name}'s clips: it was made before clip lists were saved and its video"
+                " couldn't be matched. Feedback on this version keeps its clips")
+    how = " (read back from its video)" if base_v.get("recovered") else ""
+    old = sum(1 for f in base_v["footage"] if f.get("key"))
+    extra = "" if kept >= slots else f"; {slots - kept} new clip(s) where the edit is longer or a clip didn't fit"
+    return f"Same clips as {name}{how}: {kept} of {old}" + extra
 
 
 def find_sound(lib, name: str) -> dict:
@@ -1231,9 +1241,16 @@ class ReviewAdapter:
                                      hold_beats=r["hold_beats"], intro_s=intro_s if want_logo else 0.0,
                                      intact=r["hold_beats"] >= 2 or r["motion"] == "none")
                 plan = trim_plan(plan, end)
-            kept = 0
-            if base_v and spec.get("keep_footage") and base_v.get("footage"):
-                plan, kept = refit(plan, base_v["footage"], shots)
+            kept, recovered = 0, False
+            footage = (base_v or {}).get("footage")
+            if base_v and spec.get("keep_footage") and not footage:
+                footage = self.recover(folder, base_v)   # made before clip lists were saved
+                recovered = bool(footage)
+            if base_v and spec.get("keep_footage") and footage:
+                new_intro = bool(want_logo and intro_s) and (base_v.get("intro") or "none") == "none"
+                plan, kept = refit(plan, footage, shots, skip=1 if new_intro else 0)
+                if recovered:
+                    base_v = dict(base_v, footage=footage, recovered=True)
             stem = f"r{n}_{spec['label']}"
             mp4 = folder / f"{stem}.mp4"
             if r["text_level"] == "plain":
@@ -1273,6 +1290,26 @@ class ReviewAdapter:
                         "music_note": music.note(song, song_start) if song else None})
         save_state(state_path, state)
         return out
+
+    def recover(self, folder: Path, base_v: dict) -> list[dict]:
+        """The clip list of an old version, read back from its video (footage_match)."""
+        from . import footage_match, style as st
+        for name in (base_v.get("file"), base_v.get("preview")):
+            video = Path(folder) / name if name else None
+            if video and video.exists():
+                break
+        else:
+            return []
+        try:
+            lib = Library(self.lcfg)
+            index = footage_match.Index(lib.root, lib.scan(),
+                                        Path(self.lcfg["data_dir"]) / "tokyo_girl" / "frame_hashes.json")
+            framing = st.resolve(base_v.get("style") or {})["framing"]
+            out = footage_match.recover(video, index, self.shots(), framing)
+        except Exception as e:  # noqa: BLE001 - recovery is best effort: the plan's own clips are used
+            log.warning("could not recover the clips of %s: %s", base_v.get("label"), e)
+            return []
+        return out if any(f.get("key") for f in out) else []
 
     def sounds(self) -> list[str]:
         """Names of the sounds in the music library (so feedback can switch an edit's sound)."""

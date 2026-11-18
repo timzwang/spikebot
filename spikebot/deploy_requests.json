@@ -1,4 +1,8 @@
 [
  {"id": "trend-2026-11-18-rules", "action": "trend", "per_song": 1, "until": "2026-11-19T06:00:00+00:00",
-  "why": "Tim: start another /trend in #ready-to-post after the rule-compiler deploy"}
+  "why": "Tim: start another /trend in #ready-to-post after the rule-compiler deploy"},
+ {"id": "tg-20261118-004557-B-impulsive", "action": "feedback", "item": "tokyogirl-20261118-004557",
+  "round": 1, "label": "B", "until": "2026-11-19T12:00:00+00:00",
+  "notes": "Only for this edit: remove all on-screen text (no captions or cards: drop \"GTA 6 comes out in 1 day\"). Use the GTA 6 logo intro instead (the logo builds up and fades in, bursting on the drop, as in the rules). Switch the song to Impulsive and re-sync every cut to its beats. Keep exactly the same clips as B1, in the same order; add new clips only if the edit needs more. Keep everything else the same.",
+  "why": "Tim: re-render B1 with Impulsive, logo intro, no caption, same clips"}
 ]

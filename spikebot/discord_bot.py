@@ -1749,7 +1749,9 @@ class ReviewBot:
     # ---- one-off requests shipped with a deploy (spikebot/deploy_requests.json) -------------
     async def run_deploy_requests(self, now: float | None = None, path: Path | None = None) -> list[str]:
         """Run each request in the deployed code once, after the restart, if it hasn't expired.
-        Only whitelisted actions (`trend`). Done ids live in data/deploy_requests.json."""
+        Only whitelisted actions: `trend`, and `feedback` (a Feedback re-render of one version,
+        as if Tim had pressed the button: {item, round, label, notes}; the result posts in that
+        item's thread in #ready-to-post). Done ids live in data/deploy_requests.json."""
         path = path or Path(__file__).with_name("deploy_requests.json")
         state = self.data_dir / "deploy_requests.json"
         now = now or time.time()
@@ -1764,7 +1766,7 @@ class ReviewBot:
         ran = []
         for r in reqs if isinstance(reqs, list) else []:
             rid = str(r.get("id") or "")
-            if not rid or rid in done or r.get("action") not in ("trend",):
+            if not rid or rid in done or r.get("action") not in ("trend", "feedback"):
                 continue
             done.add(rid)   # once, even if it is stale or fails
             until = r.get("until")
@@ -1775,6 +1777,20 @@ class ReviewBot:
             ran.append(rid)
             if r["action"] == "trend":
                 asyncio.create_task(self.run_trend(None, r.get("song"), int(r.get("per_song") or 1)))
+            elif r["action"] == "feedback":
+                try:
+                    if not (self.store.dir(r["item"]) / "item.json").exists():
+                        raise ValueError("no such review item")
+                    with self.store.edit(r["item"]) as it:
+                        review.request(it, "feedback", now, round=int(r["round"]), label=str(r["label"]),
+                                       notes=str(r["notes"]))
+                    self.wake.set()   # the scan loop queues the render; the round posts in the thread
+                except Exception as e:  # noqa: BLE001 - closed item, a render already running...
+                    log.warning("deploy request %s failed: %s", rid, e)
+                    if self.notifier:
+                        await self.notifier.send(f"deploy_request:{rid}",
+                                                 f"🎬 Re-render `{r.get('item')}` {r.get('label')} could not start: {e}",
+                                                 kind="lacy")
         state.parent.mkdir(parents=True, exist_ok=True)
         state.write_text(json.dumps(sorted(done)), encoding="utf-8")
         return ran

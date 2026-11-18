@@ -203,7 +203,8 @@ def test_tokyo_girl_feedback_keeps_the_clips_and_switches_the_sound(tmp_path, mo
     assert (item.get("request") or {}).get("status") == "done", item.get("request")
     b2 = item["rounds"][-1]["variants"][0]
     assert b2["label"] == "B2" and b2["music"]["song"] == imp["name"]
-    assert [f["key"] for f in b2["footage"]] == [keys[i % len(keys)] for i in range(len(b2["footage"]))]
+    n = min(len(keys), len(b2["footage"]))
+    assert [f["key"] for f in b2["footage"]][:n] == keys[:n]
     assert b2["footage_note"].startswith("Same clips as B1")
     assert "Tokyo Girl" not in b2["captions"]["tiktok"]
     assert "Sound: impulsive" in item["rounds"][-1]["comment"]
@@ -224,3 +225,39 @@ def test_feedback_reads_footage_and_sound_requests():
     assert fb.footage_of("different clips please") == "new" and fb.footage_of("darker") == "default"
     assert fb.song_of("switch song to impulsive") == "impulsive"
     assert fb.song_of("use the impulsive sound") == "impulsive" and fb.song_of("darker") is None
+
+
+@needs_ffmpeg
+def test_clips_of_an_old_edit_are_read_back_from_its_video(tmp_path):
+    """Versions made before clip lists were saved: the clips are matched from the video."""
+    media = tmp_path / "data/rockstar_media"
+    media.mkdir(parents=True)
+    ff = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y"]
+    srcs = ["mandelbrot=s=640x360", "testsrc2=s=640x360", "gradients=s=640x360:seed=3:speed=0.02",
+            "gradients=s=640x360:seed=9:speed=0.02:type=radial", "smptehdbars=s=640x360"]
+    for i, src in enumerate(srcs):
+        subprocess.run(ff + ["-f", "lavfi", "-i", src, "-t", "12", "-r", "25", "-pix_fmt", "yuv420p",
+                             str(media / f"trailer_{i}.mp4")], check=True)
+    cfg = {"tokyo_girl": {"min_s": 8, "max_s": 12, "per_day": 1, "engine": "ffmpeg", "trailer_head_s": 0,
+                          "trailer_tail_s": 0, "min_luma": 0}, "data_dir": "data"}
+    s = TG.settings(cfg, tmp_path)
+    now = datetime(2026, 11, 18, 18, 0, tzinfo=TG.UK).timestamp()
+    TG.save_state(Path(s["state_file"]), {"last_fetch": now})
+    store = R.Store(tmp_path / "data")
+    item = store.load(TG.daily(s, now)[0])
+    v = R.variant_of(item, 1, "A")
+    truth = [f["key"] for f in v["footage"]]
+    old = dict(v)
+    old.pop("footage")
+    ad = TG.ReviewAdapter(cfg, tmp_path, s)
+    got = ad.recover(store.dir(item["id"]), old)
+    assert got, "nothing recovered"
+    srcs_truth = [k.split("@")[0] for k in truth]
+    srcs_got = [f["src"] for f in got if f.get("key")]
+    def at(rows, t):   # which file is on screen at edit time t
+        return next((r.get("src") or (r["key"] or "").split("@")[0] for r in rows
+                     if r["start"] <= t < r["start"] + r["dur"]), None)
+    times = [f["start"] + f["dur"] / 2 for f in v["footage"]]
+    hits = sum(1 for t in times if at(got, t) == at(v["footage"], t))
+    assert hits >= len(times) * 0.8, (srcs_truth, srcs_got)
+    assert abs(len(got) - len(truth)) <= 3

@@ -137,4 +137,18 @@ def test_deploy_requests_run_once_and_expire(tmp_path):
 def test_shipped_deploy_requests_are_valid():
     from pathlib import Path
     reqs = json.loads((Path(DB.__file__).with_name("deploy_requests.json")).read_text())
-    assert all(r["action"] in ("trend",) and r["id"] for r in reqs)
+    assert all(r["action"] in ("trend", "feedback") and r["id"] for r in reqs)
+
+
+def test_deploy_request_queues_a_feedback_rerender(tmp_path):
+    store, item = new_item(tmp_path)
+    b, _ = bot_for(tmp_path, store)
+    reqs = tmp_path / "reqs.json"
+    reqs.write_text(json.dumps([
+        {"id": "f1", "action": "feedback", "item": item["id"], "round": 1, "label": "B", "notes": "warmer"},
+        {"id": "f2", "action": "feedback", "item": "nope", "round": 1, "label": "B", "notes": "x"}]))
+    ran = asyncio.run(b.run_deploy_requests(now=1_800_000_000, path=reqs))
+    assert ran == ["f1", "f2"]
+    req = store.load(item["id"])["request"]
+    assert req["kind"] == "feedback" and req["status"] == "queued" and req["label"] == "B" and req["notes"] == "warmer"
+    assert not (store.dir("nope") / "item.json").exists()

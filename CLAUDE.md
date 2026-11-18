@@ -307,7 +307,12 @@ it in sync when behaviour or config changes.
   Per-edit only (never rules): `footage` keep|new (default keep; `footage_of`) and `song` (`song_of`; the AI
   gets the library's `sounds`) -> spec `keep_footage` / `song`; Tokyo Girl `ReviewAdapter` saves each variant's
   `footage` (`footage_of(plan)`), re-renders `refit` the new plan onto it slot by slot, `find_sound` matches the
-  name, the variant's own sound carries over to later rounds, `footage_note` goes on the card.
+  name, the variant's own sound carries over to later rounds, `footage_note` goes on the card. Variants
+  without a saved clip list are read back from their video: `spikebot/footage_match.py` (`Index` = 2 fps
+  gradient hashes + 4x4 brightness layouts of every library file per framing, cached in
+  data/tokyo_girl/frame_hashes.json; `frame_matches` per edit frame, `runs` by library shot, `recover`);
+  `refit(skip=1)` when a logo intro is new; extra slots get new clips, never repeats.
+  `deploy_requests.json` also takes `feedback` {item, round, label, notes} = a Feedback re-render.
 - `spikebot/discord_bot.py`: `ReviewBot` (started by `Bot.run` when the token is set; reconnects,
   never crashes the bot). Pure layouts `round_payload` / `buttons` / `manual_payload` /
   `style_overview`; custom ids `rv|action|item|round|label` handled in `on_interaction` (survive
