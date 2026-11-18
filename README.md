@@ -463,6 +463,15 @@ was for all edits or one mode. The reply lists the new numbers with **Turn off**
 The **Feedback** button on a clip does the same (the re-render shows the new numbers with
 buttons), unless you say it's only for that one, e.g. *"darker, just this one"*.
 
+**What a rule applies to:** every rule has an **Applies to** menu under it with ticks for
+**Lacy clips**, **Tokyo Girl edits** and **Trend edits** (trailer edits cut to a trending sound:
+the same editor as Tokyo Girl, but their own rules). Only the kinds where the setting exists are
+offered (an end card is Lacy only; framing, logo intro... are Tokyo Girl and Trend). Rules saved
+before this applied Tokyo Girl rules to Trend edits too, so they start with both ticked. The
+reply to `/feedback` (pick *Trend edits*, *Lacy*, *Tokyo Girl* or all) and the message under a
+Feedback re-render list each saved rule with what it applies to and the same ticks. The Feedback
+button on a clip applies to that kind of clip only, unless you say "all edits" or name another kind.
+
 **`/rules`** shows the whole list by category (🎨 colour & look, ✂️ pace & cuts, 🔤 text, 🪝
 hook/intro/ending, 🔊 sound, 📝 notes, 🚫 not possible yet). Off ones are ~~crossed out~~, and _replaced by
 #N_ marks a setting a newer entry overrides. Every rule has its own **Turn off / Turn on**

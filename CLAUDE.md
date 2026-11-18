@@ -251,6 +251,11 @@ it in sync when behaviour or config changes.
   appends one, `set_enabled(nums, on)`; `pinned(mode)` / `custom_pins(mode)` are derived: the newest
   enabled entry for "all" or that mode wins (switching one off falls back). v1 profiles (`pinned`,
   `custom_pins`, `rules`) are replayed into entries by `migrate()` on load; `parse_numbers("3, 5-7")`;
+  each entry has `modes` (subset of `STYLE_MODES` = lacy, tokyo_girl, trend; `entry_modes()`: old entries
+  without it keep "tokyo_girl" = Tokyo Girl + trend), `set_modes`, `valid_modes(setting, value)`,
+  `expand_modes`, `modes_label`; `apply_settings` keeps per row only the kinds where the setting exists.
+  `trend` is its own style mode (dims = Tokyo Girl's, `TG_LIKE`); `review.style_mode(item)` = "trend"
+  for `source.kind: trend`, used for pick_variants / feedback / stats.
   `taste()` = enabled entries for the AI; `upgrade_notes()` (once per profile, flag `upgrades`:
   `NOTES_UPGRADE`) turns old notes matching `NOTE_RULES` into setting entries and switches them and
   `NOW_POSSIBLE` "not possible" items off (`upgraded` = "now #N" shown in /rules); new dims `motion`
@@ -296,8 +301,11 @@ it in sync when behaviour or config changes.
   via `ReviewBot.layout`: `rules_pages` / `rules_page` = category headings + a `Section` per rule with its
   Turn off/on button `rv|rulep|-|<page>|<n>`, pages `rv|rulesp|-|<page>|` within 40 components / 4000
   chars; answered without deferring; Discord refusal -> `rules.txt`; old `rules_off`/`rules_on` menus still
-  toggle; `entry_buttons` / `flip_rows` = `rv|rule|<item or ->|<round>|<n>` toggles on /feedback replies and
-  feedback round cards; `report_error` + `tree.error` show the real error instead of "interaction failed"), `/cancel [run]`, `/preset apply |
+  toggle; each rule also has an "Applies to" menu `rv|rulem|<where>|<page>|<n>` (`rule_block`, `PER_RULE` = 5
+  components); `rules_subset` (where = dot-joined numbers) = the /feedback reply and the message posted
+  in the thread under a feedback round (`round.entries`); old `rv|rule|...` buttons (`entry_buttons` /
+  `flip_rows`) still toggle; /feedback mode adds `trend`; `feedback.for_variant` keeps rows to the clip's
+  own kind unless `EVERY` ("all edits") or the kind is named (`_named`); `report_error` + `tree.error` show the real error instead of "interaction failed"), `/cancel [run]`, `/preset apply |
   list | show | rename | edit | delete | combine`. #inspiration `on_message` (approvers only).
   `trend_loop` (review.trend.times UK, `trend_slots_due`, state data/trend/schedule.json) runs
   `tokyo_girl trend --song auto` (`pick_rotating`, counts in data/trend/used.json).

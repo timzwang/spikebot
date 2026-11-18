@@ -123,22 +123,22 @@ def settings_menu() -> str:
         "position: " + ", ".join(st.POSITIONS) + "  (text position)",
         "colour: " + ", ".join(st.COLOURS) + "  (caption colour scheme: white + highlight)",
         "transition: " + ", ".join(st.TRANSITIONS) + "  (between cuts; zoom is a punch-in, i.e. camera"
-        " movement); Tokyo Girl also has fade  (a soft crossfade; length fade_s)",
+        " movement); Tokyo Girl and trend edits also have fade  (a soft crossfade; length fade_s)",
         "motion: none, subtle, full  (camera movement the editor adds: none = every shot completely still,"
         " no pans, push-ins, zooms, drift or animated stills)",
-        "framing: fill, fit  (Tokyo Girl only: fill crops the 16:9 trailer to fill the 9:16 screen; fit shows"
+        "framing: fill, fit  (Tokyo Girl and trend edits only: fill crops the 16:9 trailer to fill the 9:16 screen; fit shows"
         " the whole frame so nothing is cut off, over a blurred copy of itself)",
-        "media: clips, mixed  (Tokyo Girl only: clips = real trailer video only, never screenshots)",
+        "media: clips, mixed  (Tokyo Girl and trend edits only: clips = real trailer video only, never screenshots)",
         "text_level: none, minimal, full, plain  (none = no captions/hook/text at all; minimal = short "
         "opening hook and captions only around the payoff (Lacy) / only the opening card (Tokyo Girl); "
-        "full = every spoken word captioned (Lacy) / every story card (Tokyo Girl); plain = Tokyo Girl only:"
+        "full = every spoken word captioned (Lacy) / every story card (Tokyo Girl); plain = Tokyo Girl and trend edits only:"
         " one short factual line such as 'GTA 6 is almost here...' or the release countdown, never a question)",
-        "intro: none, logo, countdown  (Tokyo Girl only: logo = the official GTA VI logo builds up over logo_s"
+        "intro: none, logo, countdown  (Tokyo Girl and trend edits only: logo = the official GTA VI logo builds up over logo_s"
         " seconds over a calm trailer shot, then bursts outward and fades exactly on the song's drop, never"
         " wider than logo_size of the screen; countdown = a plain 'N days until GTA 6' line instead)",
         "ending: " + ", ".join(st.ENDINGS) + "  (Lacy only: end card)",
-        "hook: Lacy tones " + ", ".join(st.HOOKS["lacy"]) + "; Tokyo Girl story kinds "
-        + ", ".join(st.HOOKS["tokyo_girl"]) + "  (needs mode lacy or tokyo_girl)",
+        "hook: Lacy tones " + ", ".join(st.HOOKS["lacy"]) + "; Tokyo Girl / trend story kinds "
+        + ", ".join(st.HOOKS["tokyo_girl"]) + "  (needs mode lacy, tokyo_girl or trend)",
     ]
     for k, (lo, hi) in st.CUSTOM_KEYS.items():
         lines.append(f"{k}: number {lo} to {hi}")
@@ -161,7 +161,7 @@ def settings_menu() -> str:
 SETTING_ROW = {
     "type": "object",
     "properties": {
-        "mode": {"type": "string", "enum": ["all", "lacy", "tokyo_girl"]},
+        "mode": {"type": "string", "enum": ["all", "lacy", "tokyo_girl", "trend"]},
         "setting": {"type": "string"},
         "value": {"type": "string"},
         "scope": {"type": "string", "enum": ["this_edit", "always"]},
@@ -188,6 +188,8 @@ video editor. The channel posts GTA 6 Shorts in two modes:
 - lacy: clips of the streamer Lacy playing GTA (facecam stacked over gameplay, his voice audio).
 - tokyo_girl: silent cinematic edits cut from official Rockstar GTA VI trailers and screenshots,
   with text cards; the creator adds the music in the TikTok/Instagram app.
+- trend: the same kind of silent trailer edit, cut to a trending sound instead of the Tokyo Girl song
+  (same editor and settings as tokyo_girl, but its own rules).
 
 Settings the editor can change (use these names and values exactly):
 {menu}
@@ -198,7 +200,8 @@ Rules:
 - scope "always" = it should apply to future edits; "this_edit" = only to the edit being reviewed.
   The creator wants his instructions kept: use "always" unless he clearly says it is only for this
   edit ("just this one", "only here"). Feedback sent with /feedback is always "always".
-- mode: "all" unless the feedback is clearly about one mode.
+- mode: which kind of edit a row is for: "all", "lacy", "tokyo_girl" or "trend". Use "all" only when the
+  feedback is clearly about every kind; when it names one kind, use that one.
 - notes: short lasting instructions that are not a setting (e.g. "payoff in the first 3 seconds"),
   written as instructions to an editor. The editor cannot apply notes yet, so prefer settings and
   only use a note when no setting comes close.

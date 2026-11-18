@@ -64,8 +64,11 @@ def test_rules_page_has_a_button_beside_every_rule():
                          "### 📝 Notes (the editor can't apply these yet)", "### 🚫 Asked for, not possible yet"]
     rules = {b["n"]: b for b in p["blocks"] if b["type"] == "rule"}
     assert rules[1]["content"] == "**#1** grade = moody · _replaced by #5_"
-    assert rules[2]["content"] == "**#2** text_level = none (Lacy)"
-    assert rules[3]["content"] == "~~**#3** Payoff in the first 3 seconds (Lacy)~~ · _off_"
+    assert rules[2]["content"] == "**#2** text_level = none"
+    assert {o["value"]: o["default"] for o in rules[2]["scope"]["options"]} == \
+        {"lacy": True, "tokyo_girl": False, "trend": False}                     # what it applies to
+    assert rules[2]["scope"]["custom_id"] == DB.cid("rulem", "-", 0, "2")
+    assert rules[3]["content"] == "~~**#3** Payoff in the first 3 seconds~~ · _off_"
     assert rules[1]["button"]["label"] == "Turn off" and rules[3]["button"]["label"] == "Turn on"
     assert rules[3]["button"]["custom_id"] == DB.cid("rulep", "-", 0, "3")
     assert p["pages"] == 1 and not any(b["type"] == "row" for b in p["blocks"])
@@ -105,7 +108,9 @@ def test_rules_command_answers_at_once_and_buttons_toggle(tmp_path):
     _, kw = inter.sent[-1]
     assert isinstance(kw["view"], discord.ui.LayoutView)              # sent straight away, no "thinking"
     ids = [c.accessory.custom_id for c in kw["view"].children if isinstance(c, discord.ui.Section)]
-    assert ids[0] == DB.cid("rulep", "-", 0, "1") and len(ids) == 6
+    assert ids[0] == DB.cid("rulep", "-", 0, "1") and len(ids) == 5          # 5 a page with their menus
+    menus = [c for c in kw["view"].walk_children() if isinstance(c, discord.ui.Select)]
+    assert len(menus) == 5 and menus[0].custom_id == DB.cid("rulem", "-", 0, "1")
 
     i2 = Inter()                                                       # several at once
     asyncio.run(b.rules_command(i2, disable="2, 3-4, 99"))
@@ -139,13 +144,10 @@ def test_turn_off_buttons_on_feedback_reply_and_review_card(tmp_path):
     flipped = DB.flip_rows(rows, 2, False)
     assert flipped[0][0]["label"] == "Turn on #2" and flipped[0][1] == rows[0][1]
 
-    # a feedback re-render round remembers which entries it added and shows their buttons
-    with store.edit(item["id"]) as it:
-        it["rounds"][0]["entries"] = [2, 3]
-    rnd = store.load(item["id"])["rounds"][0]
-    p = DB.round_payload(store.load(item["id"]), rnd, entry_on={2: True, 3: True})
-    assert [x["label"] for x in p["rows"][-1]] == ["Turn off #2", "Turn off #3"]
-    assert p["rows"][-1][0]["custom_id"] == DB.cid("rule", item["id"], rnd["n"], "2")
+    # the rules a feedback re-render saved get their own message (button + "applies to" each)
+    sub = DB.rules_subset(store.profile().entries(), [2, 3], "Saved")
+    rules = [b for b in sub["blocks"] if b["type"] == "rule"]
+    assert [r["n"] for r in rules] == [2, 3] and rules[0]["scope"]["custom_id"] == DB.cid("rulem", "2.3", 0, "2")
 
     class Msg:
         components = []
@@ -218,3 +220,44 @@ def test_rules_falls_back_to_a_file_when_discord_refuses(tmp_path):
     assert "as a file" in text and kw["file"].filename == "rules.txt"
     body = kw["file"].fp.read().decode()
     assert "#3 ON  pace = fast (Lacy)" in body and "#5 ON  Licensed music" in body
+
+
+def test_applies_to_ticks_change_what_a_rule_is_for(tmp_path):
+    import discord
+    store = R.Store(tmp_path / "data")
+    b, _ = bot_for(tmp_path, store)
+    prof = profile_with_rules(store)          # #2 text_level none for all edits
+    assert prof.pinned("trend")["text_level"] == "none"
+    i = Inter(["lacy", "tokyo_girl"])
+    asyncio.run(b.on_button(i, DB.parse_cid(DB.cid("rulem", "-", 0, "2"))))
+    prof = store.profile()
+    assert prof.entry(2)["modes"] == ["lacy", "tokyo_girl"] and "text_level" not in prof.pinned("trend")
+    assert "now applies to **Lacy, Tokyo Girl**" in str(i.edited["view"].to_components())
+    # the ticks offered only where the setting exists; a feedback reply's own rules redraw themselves
+    prof.add_entry("setting", "all", "framing", "fit")
+    prof.save()
+    n = prof.entries()[-1]["n"]
+    sub = DB.rules_subset(store.profile().entries(), [2, n], "Saved")
+    menus = {blk["n"]: [o["value"] for o in blk["scope"]["options"]] for blk in sub["blocks"] if blk["type"] == "rule"}
+    assert menus == {2: ["lacy", "tokyo_girl", "trend"], n: ["tokyo_girl", "trend"]}
+    i2 = Inter(["trend"])
+    asyncio.run(b.on_button(i2, DB.parse_cid(DB.cid("rulem", f"2.{n}", 0, str(n)))))
+    assert store.profile().entry(n)["modes"] == ["trend"] and isinstance(i2.edited["view"], discord.ui.LayoutView)
+    i3 = Inter(["lacy"])                                                   # framing can't apply to Lacy
+    asyncio.run(b.on_button(i3, DB.parse_cid(DB.cid("rulem", "-", 0, str(n)))))
+    assert store.profile().entry(n)["modes"] == ["trend"]
+
+
+def test_trend_edits_have_their_own_rules():
+    prof = S.Profile.__new__(S.Profile)
+    prof.data = S._blank()
+    old = {"n": 1, "kind": "setting", "mode": "tokyo_girl", "setting": "grade", "value": "moody", "on": True}
+    prof.data["entries"].append(old)                       # saved before: Tokyo Girl meant both
+    assert prof.pinned("trend")["grade"] == "moody" and prof.pinned("tokyo_girl")["grade"] == "moody"
+    prof.add_entry("setting", "trend", "grade", "warm")
+    assert prof.pinned("trend")["grade"] == "warm" and prof.pinned("tokyo_girl")["grade"] == "moody"
+    assert S.dims("trend") == S.dims("tokyo_girl")
+    v = S.pick_variants(prof, "trend", random.Random(1))
+    assert {x["style"]["grade"] for x in v} == {"warm"}
+    assert R.style_mode({"mode": "tokyo_girl", "source": {"kind": "trend"}}) == "trend"
+    assert R.style_mode({"mode": "tokyo_girl", "source": {}}) == "tokyo_girl"

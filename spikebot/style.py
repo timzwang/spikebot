@@ -83,7 +83,12 @@ ENDINGS = ("none", "question", "cta")
 HOOKS = {
     "lacy": ("matched", "funny", "shock", "hype", "neutral"),
     "tokyo_girl": ("news", "theory", "meme", "couple"),
+    "trend": ("news", "theory", "meme", "couple"),   # trending-sound edits: Tokyo Girl's editor
 }
+# The kinds of edit a rule can apply to. "trend" = trailer edits cut to a trending sound: the
+# same editor as Tokyo Girl, but its own rules (each rule says which kinds it applies to).
+STYLE_MODES = ("lacy", "tokyo_girl", "trend")
+TG_LIKE = ("tokyo_girl", "trend")
 DEFAULT = {"grade": "natural", "pace": "normal", "font": "dejavu", "size": "m",
            "position": "low", "colour": "classic", "transition": "flash",
            "ending": "none", "text_level": "minimal", "intro": "none", "motion": "full",
@@ -112,7 +117,7 @@ CUSTOM_STR = {"text_colour", "highlight", "hook_style"}
 
 def dims(mode: str) -> dict[str, tuple[str, ...]]:
     """Every dimension a variant varies in for this mode, with its options."""
-    tg = mode == "tokyo_girl"
+    tg = mode in TG_LIKE
     out = {"grade": tuple(GRADES), "pace": tuple(PACES), "font": tuple(FONTS),
            "size": tuple(SIZES), "position": POSITIONS, "colour": tuple(COLOURS),
            "transition": TG_TRANSITIONS if tg else TRANSITIONS, "hook": HOOKS.get(mode, ("matched",)),
@@ -136,7 +141,7 @@ def default_style(mode: str) -> dict:
     s["hook"] = HOOKS.get(mode, ("matched",))[0]
     if mode != "lacy":
         s.pop("ending")
-    if mode != "tokyo_girl":
+    if mode not in TG_LIKE:
         for k in TG_ONLY:
             s.pop(k)
     return s
@@ -272,7 +277,47 @@ CATEGORIES = (
     ("unsupported", "🚫 Asked for, not possible yet", ()),
 )
 CATEGORY_NAME = {k: name for k, name, _ in CATEGORIES}
-MODE_NAME = {"all": "all edits", "lacy": "Lacy", "tokyo_girl": "Tokyo Girl"}
+MODE_NAME = {"all": "all edits", "lacy": "Lacy", "tokyo_girl": "Tokyo Girl", "trend": "Trend edits"}
+
+
+def expand_modes(mode) -> list[str]:
+    """"all" / one mode / a list -> the list of modes (in STYLE_MODES order)."""
+    if mode in (None, "all"):
+        return list(STYLE_MODES)
+    ms = [mode] if isinstance(mode, str) else list(mode)
+    return [m for m in STYLE_MODES if m in ms]
+
+
+def entry_modes(e: dict) -> list[str]:
+    """Which kinds of edit an entry applies to. Entries saved before trend edits had their
+    own rules said "tokyo_girl" for both, so they keep applying to both."""
+    if e.get("modes"):
+        return expand_modes(e["modes"])
+    m = e.get("mode", "all")
+    return list(TG_LIKE) if m == "tokyo_girl" else expand_modes(m)
+
+
+def modes_label(modes: list[str]) -> str:
+    ms = expand_modes(modes)
+    return "all edits" if ms == list(STYLE_MODES) else ", ".join(MODE_NAME[m] for m in ms)
+
+
+def valid_modes(setting: str | None, value) -> list[str]:
+    """Kinds of edit where this setting (with this value) exists; every kind for notes."""
+    if not setting:
+        return list(STYLE_MODES)
+    if value is None:
+        return [m for m in STYLE_MODES if setting in dims(m) or setting in CUSTOM_KEYS or setting in CUSTOM_STR]
+    out = []
+    for m in STYLE_MODES:
+        if setting in TG_CUSTOM and m not in TG_LIKE:
+            continue
+        try:
+            set_value(default_style(m), setting, str(value), m)
+        except ValueError:
+            continue
+        out.append(m)
+    return out
 
 
 def category_of(entry: dict) -> str:
@@ -284,9 +329,10 @@ def category_of(entry: dict) -> str:
     return "look"
 
 
-def entry_text(e: dict) -> str:
-    """One line for an entry (without its number)."""
-    where = "" if e.get("mode", "all") == "all" else f" ({MODE_NAME.get(e['mode'], e['mode'])})"
+def entry_text(e: dict, where: bool = True) -> str:
+    """One line for an entry (without its number); `where` adds "(Lacy)" etc. when it isn't for all."""
+    ms = entry_modes(e)
+    where = "" if ms == list(STYLE_MODES) or not where else f" ({modes_label(ms)})"
     if e.get("kind") == "setting":
         val = "auto (let it learn)" if e.get("value") is None else e["value"]
         if isinstance(val, float) and val.is_integer():
@@ -296,7 +342,7 @@ def entry_text(e: dict) -> str:
 
 
 def _pin_target(key: str) -> tuple[str, str]:
-    """"grade" -> ("grade", "all"); "hook:lacy" -> ("hook", "lacy")."""
+    """"grade" -> ("grade", "all"); "hook:lacy" -> ("hook", "lacy"); "hook:trend" -> ("hook", "trend")."""
     if ":" in key:
         a, b = key.split(":", 1)
         return a, b
@@ -412,7 +458,7 @@ class Profile:
         opts = dims(mode)
         out: dict = {}
         for e in self.data.get("entries") or []:
-            if not e.get("on", True) or e.get("kind") != "setting" or e.get("mode", "all") not in ("all", mode):
+            if not e.get("on", True) or e.get("kind") != "setting" or mode not in entry_modes(e):
                 continue
             k, v = e["setting"], e.get("value")
             if v is not None:
@@ -438,27 +484,42 @@ class Profile:
     def entry(self, n: int) -> dict | None:
         return next((e for e in self.entries() if e["n"] == n), None)
 
-    def add_entry(self, kind: str, mode: str, setting: str | None = None, value=None, text: str = "",
+    def add_entry(self, kind: str, mode, setting: str | None = None, value=None, text: str = "",
                   said: str = "", source: str = "feedback", now: float | None = None) -> dict:
+        """`mode`: "all", one of STYLE_MODES, or a list of them."""
         es = self.entries()
+        ms = expand_modes(mode) or list(STYLE_MODES)
         e = {"n": max([x["n"] for x in es] or [0]) + 1, "ts": now or time.time(), "kind": kind,
-             "mode": mode, "setting": setting, "value": value, "text": text[:300], "said": said[:500],
-             "source": source, "on": True}
+             "mode": "all" if ms == list(STYLE_MODES) else ms[0], "modes": ms, "setting": setting, "value": value,
+             "text": text[:300], "said": said[:500], "source": source, "on": True}
         es.append(e)
         return e
+
+    def set_modes(self, n: int, modes: list[str]) -> list[str]:
+        """Change which kinds of edit entry n applies to (only kinds where its setting exists).
+        Returns the modes it now has. Raises ValueError."""
+        e = self.entry(n)
+        if e is None:
+            raise ValueError(f"no entry #{n}")
+        ok = [m for m in expand_modes(modes) if m in valid_modes(e.get("setting"), e.get("value"))]
+        if not ok:
+            raise ValueError(f"#{n} ({e.get('setting')}) can't apply to {modes_label(modes)}")
+        e["modes"] = ok
+        e["mode"] = "all" if ok == list(STYLE_MODES) else ok[0]
+        return ok
 
     def add_rule(self, text: str, summary: str, mode: str, settings: list[dict], notes: list[str],
                  unsupported: list[str], now: float | None = None, source: str = "feedback") -> dict:
         """Append one feedback's settings, notes and "can't do" items to the rules list.
         `settings` are validated {"mode", "setting", "value"} rows (value None = back to auto).
         Returns {"summary", "mode", "entries": [...]} (what was added)."""
-        added = [self.add_entry("setting", r["mode"], r["setting"], r["value"], said=text, source=source, now=now)
-                 for r in settings]
+        added = [self.add_entry("setting", r.get("modes") or r["mode"], r["setting"], r["value"], said=text,
+                                source=source, now=now) for r in settings]
         added += [self.add_entry("note", mode, text=n, said=text, source=source, now=now) for n in notes[:12]]
         added += [self.add_entry("unsupported", mode, text=u, said=text, source=source, now=now)
                   for u in unsupported[:12]]
         return {"summary": summary[:300], "mode": mode, "entries": added,
-                "settings": [{"mode": e["mode"], "setting": e["setting"], "value": e["value"]}
+                "settings": [{"mode": e["mode"], "modes": e["modes"], "setting": e["setting"], "value": e["value"]}
                              for e in added if e["kind"] == "setting"],
                 "notes": [e["text"] for e in added if e["kind"] == "note"]}
 
@@ -480,7 +541,7 @@ class Profile:
         for e in self.entries()[-n * 2:]:
             if not e.get("on", True) or e["kind"] == "unsupported":
                 continue
-            if mode and e.get("mode", "all") not in ("all", mode):
+            if mode and mode not in entry_modes(e):
                 continue
             out.append(entry_text(e))
         return out[-n:]
@@ -891,25 +952,29 @@ def migrate(d: dict) -> list[dict]:
 
 
 def apply_settings(rows: list[dict], default_mode: str = "all") -> tuple[list[dict], list[str]]:
-    """Validate [{"mode", "setting", "value"}] (from /feedback or the AI) against the
-    real options. Returns (clean rows, reasons for the ones dropped). A setting that
-    only exists in one mode (ending: Lacy, intro: Tokyo Girl) is moved to that mode."""
-    only = {"ending": "lacy", **{k: "tokyo_girl" for k in TG_ONLY + TG_CUSTOM}}
+    """Validate [{"mode" or "modes", "setting", "value"}] (from /feedback or the AI) against the
+    real options of each kind of edit. A row keeps only the kinds where the setting exists
+    (ending: Lacy; framing, intro...: Tokyo Girl and trend edits). Returns (clean rows with
+    "modes" and "mode", reasons for the ones dropped)."""
     ok, bad = [], []
     for row in rows or []:
         setting = str(row.get("setting") or "").strip()
         value = str(row.get("value") if row.get("value") is not None else "").strip()
-        mode = row.get("mode") if row.get("mode") in ("all", "lacy", "tokyo_girl") else default_mode
-        if setting in only:
-            mode = only[setting]
-        if setting == "hook" and mode == "all":
-            bad.append(f"hook tone needs a mode (Lacy or Tokyo Girl): {value}")
-            continue
-        try:
-            set_value(default_style(mode if mode != "all" else "lacy") | {"intro": "none"}, setting, value,
-                      mode if mode != "all" else "tokyo_girl" if setting == "intro" else "lacy")
-        except ValueError as e:
-            bad.append(str(e))
+        want = row.get("modes") or row.get("mode")
+        if not (want == "all" or (isinstance(want, str) and want in STYLE_MODES) or isinstance(want, list)):
+            want = default_mode
+        asked = expand_modes(want)
+        modes = [m for m in asked if m in valid_modes(setting, value)]
+        if not modes:
+            elsewhere = valid_modes(setting, value)
+            if elsewhere:
+                bad.append(f"{setting} only applies to {modes_label(elsewhere)}, not {modes_label(asked)}")
+                continue
+            try:   # the reason from the first kind asked for
+                set_value(default_style(asked[0] if asked else "lacy"), setting, value, asked[0] if asked else "lacy")
+                bad.append(f"{setting} = {value} isn't possible for {modes_label(asked)}")
+            except ValueError as e:
+                bad.append(str(e))
             continue
         if setting in CUSTOM_KEYS:
             v: float | str = float(value)
@@ -917,7 +982,8 @@ def apply_settings(rows: list[dict], default_mode: str = "all") -> tuple[list[di
             v = "#" + value.lstrip("#").upper()
         else:
             v = value
-        ok.append({"mode": mode, "setting": setting, "value": v})
+        ok.append({"mode": "all" if modes == list(STYLE_MODES) else modes[0], "modes": modes,
+                   "setting": setting, "value": v})
     return ok, bad
 
 

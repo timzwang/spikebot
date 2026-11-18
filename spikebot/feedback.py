@@ -20,7 +20,10 @@ from . import ai
 from . import style as st
 
 log = logging.getLogger("feedback")
-MODES = ("lacy", "tokyo_girl")
+MODES = st.STYLE_MODES   # lacy, tokyo_girl, trend
+# Feedback on one clip applies to that kind of clip only, unless Tim says it's for everything.
+EVERY = re.compile(r"(?i)\b(all|every|both|each)\b.{0,14}\b(edits?|clips?|videos?|modes?|shorts?|kinds?)\b"
+                   r"|\beverywhere\b|\bfor everything\b|\ball of them\b")
 
 
 def _split(rows: list[dict], default_mode: str) -> tuple[list[dict], list[dict], list[str]]:
@@ -29,7 +32,8 @@ def _split(rows: list[dict], default_mode: str) -> tuple[list[dict], list[dict],
     for r in rows or []:
         if str(r.get("value", "")).strip().lower() in ("auto", ""):
             mode = r.get("mode") if r.get("mode") in ("all", *MODES) else default_mode
-            clear.append({"mode": mode, "setting": str(r.get("setting")), "value": None})
+            clear.append({"mode": mode, "modes": st.expand_modes(mode), "setting": str(r.get("setting")),
+                          "value": None})
             continue
         good, why = st.apply_settings([r], default_mode)
         bad += why
@@ -95,11 +99,26 @@ def interpret(text: str, mode: str, profile: st.Profile, base: Path | None, cont
     return rule_based(text, mode, profile, current if context == "review" else None)
 
 
+def scoped(rows: list[dict], mode: str) -> list[dict]:
+    """Rows limited to `mode` (an explicit choice of which edits the feedback is about)."""
+    out = []
+    for r in rows:
+        r = dict(r, mode=mode)
+        r.pop("modes", None)
+        out.append(r)
+    return out
+
+
 def learn(text: str, mode: str, profile: st.Profile, base: Path | None = None, now: float | None = None,
           client=None) -> tuple[dict, list[str]]:
-    """/feedback: store a rule (and pin its settings). Returns (rule, problems)."""
+    """/feedback: store a rule (and pin its settings). `mode`: which edits it's for ("all",
+    lacy, tokyo_girl, trend): an explicit choice, so every row gets exactly that.
+    Returns (rule, problems)."""
     out = interpret(text, mode, profile, base, "slash", client=client)
-    ok, clear, bad = _split(out.get("settings", []), mode)
+    rows = out.get("settings", [])
+    if mode != "all":
+        rows = scoped(rows, mode)
+    ok, clear, bad = _split(rows, mode)
     for r in ok:
         r.pop("scope", None)
     rule = profile.add_rule(text, out.get("summary", ""), mode, ok + clear, out.get("notes") or [],
@@ -113,11 +132,16 @@ def for_variant(text: str, mode: str, style: dict, profile: st.Profile, base: Pa
     """Feedback button: {style (new), texts, intents, comment, rule}. Settings apply to the
     re-render; the ones meant for future edits also become a rule."""
     out = interpret(text, mode, profile, base, "review", current=style, client=client)
-    ok, clear, bad = _split(out.get("settings", []), mode)
+    everywhere = bool(EVERY.search(text or ""))
+    rows = out.get("settings", [])
+    if not everywhere:   # about this clip: this kind of clip only
+        rows = [r if r.get("mode") in MODES and r.get("mode") != mode and _named(text, r["mode"]) else
+                dict(r, mode=mode) for r in rows]
+    ok, clear, bad = _split(rows, mode)
     new = json.loads(json.dumps(style))
     applied = []
     for r in ok:
-        if r["mode"] not in ("all", mode):
+        if mode not in (r.get("modes") or st.expand_modes(r["mode"])):
             continue
         try:
             new = st.set_value(new, r["setting"], str(r["value"]), mode)
@@ -129,8 +153,9 @@ def for_variant(text: str, mode: str, style: dict, profile: st.Profile, base: Pa
     if lasting or out.get("notes") or out.get("unsupported"):
         for r in lasting:
             r.pop("scope", None)
-        rule = profile.add_rule(text, out.get("summary", ""), mode, lasting, out.get("notes") or [],
-                                out.get("unsupported") or [], now=now, source=f"review {item_id}")
+        rule = profile.add_rule(text, out.get("summary", ""), "all" if everywhere else mode, lasting,
+                                out.get("notes") or [], out.get("unsupported") or [], now=now,
+                                source=f"review {item_id}")
     texts = {"hook": out["hook_text"]} if out.get("hook_text") else {}
     bits = [out.get("summary") or ("Applied: " + ", ".join(applied) if applied else "No change recognised")]
     if applied:
@@ -148,13 +173,22 @@ def for_variant(text: str, mode: str, style: dict, profile: st.Profile, base: Pa
             "engine": out.get("engine")}
 
 
+NAMED = {"lacy": r"\blacy\b", "tokyo_girl": r"\btokyo\s*girl\b", "trend": r"\btrend(ing)?\b"}
+
+
+def _named(text: str, mode: str) -> bool:
+    """Did Tim name that kind of edit himself (e.g. "and on Lacy clips too")?"""
+    return bool(re.search(NAMED.get(mode, "$^"), text or "", re.I))
+
+
 def format_rule(rule: dict) -> str:
     """What one feedback added to the rules list, one numbered line per entry."""
     lines = [rule.get("summary") or "Saved:"]
     for e in rule.get("entries") or []:
         tag = {"note": " _(note: the editor can't apply this yet)_",
                "unsupported": " _(not possible yet)_"}.get(e["kind"], "")
-        lines.append(f"**#{e['n']}** {st.entry_text(e)}{tag}")
+        lines.append(f"**#{e['n']}** {st.entry_text(e, where=False)}{tag} → applies to"
+                     f" **{st.modes_label(st.entry_modes(e))}**")
     if not rule.get("entries"):
         lines.append("Nothing saved.")
     return "\n".join(lines)

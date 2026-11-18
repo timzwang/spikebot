@@ -113,8 +113,7 @@ def round_payload(item: dict, rnd: dict, extra: str = "", entry_on: dict | None 
                        {"name": "TikTok caption", "value": code(caps.get("tiktok", "")), "inline": False}],
         })
     return {"content": "\n".join(head)[:1900], "embeds": embeds[:9],
-            "rows": buttons(item, rnd) + entry_buttons(rnd.get("entries") or [], entry_on or {},
-                                                       item["id"], rnd["n"])[:2],
+            "rows": buttons(item, rnd),
             "allowed_mentions": {"parse": []}}
 
 
@@ -162,7 +161,7 @@ def replaced_by(entries: list[dict]) -> dict[int, int]:
     live = [e for e in entries if e.get("on", True) and e["kind"] == "setting"]
     for i, e in enumerate(live):
         for later in live[i + 1:]:
-            if later["setting"] == e["setting"] and later.get("mode", "all") in ("all", e.get("mode", "all")):
+            if later["setting"] == e["setting"] and set(st.entry_modes(e)) <= set(st.entry_modes(later)):
                 out[e["n"]] = later["n"]
     return out
 
@@ -184,13 +183,35 @@ MAX_COMPONENTS = 40     # per message, nested ones included
 MAX_TEXT = 3800         # Discord allows 4000 characters of text per message
 
 
+SCOPE_LABEL = {"lacy": "Lacy clips", "tokyo_girl": "Tokyo Girl edits", "trend": "Trend edits"}
+
+
 def rule_line(e: dict, over: dict[int, int]) -> str:
-    text = st.entry_text(e)
+    text = st.entry_text(e, where=False)   # what it applies to is in the dropdown under it
     if not e.get("on", True):
         why = f"_{e['upgraded']}_" if e.get("upgraded") else "_off_"
         return f"~~**#{e['n']}** {text}~~ · {why}"[:500]
     tag = f" · _replaced by #{over[e['n']]}_" if e["n"] in over else ""
     return f"**#{e['n']}** {text}{tag}"[:500]
+
+
+PER_RULE = 5   # components per rule: section + text + button, row + "applies to" menu
+
+
+def rule_block(e: dict, over: dict[int, int], where: str, page: int) -> dict:
+    """One rule: its line, a Turn off / Turn on button beside it and an "Applies to" menu
+    (ticks for Lacy / Tokyo Girl / Trend edits; only the kinds where the setting exists).
+    `where` = "-" for the /rules pages, else the dot-joined numbers of a feedback reply."""
+    on = e.get("on", True)
+    current = st.entry_modes(e)
+    opts = st.valid_modes(e.get("setting"), e.get("value"))
+    return {"type": "rule", "n": e["n"], "content": rule_line(e, over),
+            "button": {"label": "Turn off" if on else "Turn on", "style": "secondary" if on else "success",
+                       "custom_id": cid("rulep", where, page, str(e["n"])), "disabled": False},
+            "scope": {"type": "select", "custom_id": cid("rulem", where, page, str(e["n"])),
+                      "placeholder": "Applies to…", "min": 1, "max": len(opts),
+                      "options": [{"label": f"Applies to {SCOPE_LABEL[m]}", "value": m, "default": m in current}
+                                  for m in opts]}}
 
 
 def rules_pages(entries: list[dict]) -> list[list[tuple[str, dict]]]:
@@ -202,12 +223,12 @@ def rules_pages(entries: list[dict]) -> list[list[tuple[str, dict]]]:
     page: list[tuple[str, dict]] = []
     comps, chars, last = 6, 300, None      # header + nav row (4) reserved; header text
     for key, e in flat:
-        need_c = 3 + (1 if key != last else 0)
+        need_c = PER_RULE + (1 if key != last else 0)
         need_t = len(rule_line(e, over)) + (len(st.CATEGORY_NAME[key]) + 8 if key != last else 0)
         if page and (comps + need_c > MAX_COMPONENTS or chars + need_t > MAX_TEXT):
             pages.append(page)
             page, comps, chars, last = [], 6, 300, None
-            need_c = 4
+            need_c = PER_RULE + 1
             need_t = len(rule_line(e, over)) + len(st.CATEGORY_NAME[key]) + 8
         page.append((key, e))
         comps, chars, last = comps + need_c, chars + need_t, key
@@ -236,10 +257,7 @@ def rules_page(entries: list[dict], page: int = 0, notice: str = "") -> dict:
         if key != last:
             blocks.append({"type": "text", "content": f"### {st.CATEGORY_NAME[key]}"})
             last = key
-        blocks.append({"type": "rule", "n": e["n"], "content": rule_line(e, over),
-                       "button": {"label": "Turn off" if e.get("on", True) else "Turn on",
-                                  "style": "secondary" if e.get("on", True) else "success",
-                                  "custom_id": cid("rulep", "-", page, str(e["n"])), "disabled": False}})
+        blocks.append(rule_block(e, over, "-", page))
     if len(pages) > 1:
         blocks.append({"type": "row", "buttons": [
             {"label": "◀ Prev", "style": "primary", "custom_id": cid("rulesp", "-", page - 1),
@@ -249,6 +267,18 @@ def rules_page(entries: list[dict], page: int = 0, notice: str = "") -> dict:
             {"label": "Next ▶", "style": "primary", "custom_id": cid("rulesp", "-", page + 1),
              "disabled": page >= len(pages) - 1}]})
     return {"page": page, "pages": len(pages), "blocks": blocks}
+
+
+def rules_subset(entries: list[dict], numbers: list[int], head: str) -> dict:
+    """The rules one piece of feedback just saved (the /feedback reply, or under a
+    re-render), each with its button and "Applies to" menu, so the scope is explicit."""
+    keep = [e for e in entries if e["n"] in set(numbers)][:6]     # 6 x 5 components + text
+    where = ".".join(str(e["n"]) for e in keep) or "-"
+    over = replaced_by(entries)
+    blocks = [{"type": "text", "content": head[:1500]}] + [rule_block(e, over, where, 0) for e in keep]
+    if len(numbers) > len(keep):
+        blocks.append({"type": "text", "content": f"_…and {len(numbers) - len(keep)} more: see `/rules`._"})
+    return {"page": 0, "pages": 1, "blocks": blocks}
 
 
 def picker(action: str, item: dict, rnd: dict) -> list[list[dict]]:
@@ -346,7 +376,8 @@ def style_overview(profile: st.Profile, presets: dict[str, dict]) -> str:
 
 
 STYLE_SETTINGS = ["grade", "pace", "font", "size", "position", "colour", "transition", "ending",
-                  "text_level", "intro", "motion", "framing", "media", "hook:lacy", "hook:tokyo_girl"]
+                  "text_level", "intro", "motion", "framing", "media", "hook:lacy", "hook:tokyo_girl",
+                  "hook:trend"]
 
 
 def style_options(setting: str) -> list[str]:
@@ -546,6 +577,13 @@ class ReviewBot:
                 v.add_item(discord.ui.TextDisplay(blk["content"]))
             elif blk["type"] == "rule":
                 v.add_item(discord.ui.Section(discord.ui.TextDisplay(blk["content"]), accessory=button(blk["button"])))
+                sc = blk.get("scope")
+                if sc and sc["options"]:
+                    v.add_item(discord.ui.ActionRow(discord.ui.Select(
+                        custom_id=sc["custom_id"], placeholder=sc["placeholder"], min_values=sc["min"],
+                        max_values=sc["max"],
+                        options=[discord.SelectOption(label=o["label"], value=o["value"], default=o["default"])
+                                 for o in sc["options"]])))
             elif blk["type"] == "row":
                 v.add_item(discord.ui.ActionRow(*[button(b) for b in blk["buttons"]]))
         return v
@@ -824,6 +862,15 @@ class ReviewBot:
                     it["thread_id"] = th.id
             except Exception as e:  # noqa: BLE001
                 log.warning("review %s: could not create a thread: %s", item_id, e)
+        if rnd.get("entries"):   # rules this feedback saved: what each applies to, editable
+            try:
+                where = await self.channel(self.store.load(item_id).get("thread_id") or target.id)
+                head = (f"📝 Saved from your feedback on this {st.MODE_NAME[review.style_mode(item)]} clip."
+                        " Change the ticks to choose what each applies to, or turn it off.")
+                await where.send(view=self.layout(rules_subset(list(self.store.profile().entries()),
+                                                               rnd["entries"], head)))
+            except Exception as e:  # noqa: BLE001 - the rules are saved either way
+                log.warning("review %s: could not post the saved rules: %s", item_id, e)
 
     def preview_links(self, item: dict, rnd: dict) -> dict[str, str]:
         from . import delivery
@@ -858,7 +905,7 @@ class ReviewBot:
         if data["action"] == "cancel":
             await self.cancel_command(interaction, data["item"])
             return
-        if data["action"] in ("rule", "rulep", "rulesp", "rules_off", "rules_on"):
+        if data["action"] in ("rule", "rulep", "rulem", "rulesp", "rules_off", "rules_on"):
             await self.on_rules_click(interaction, data)
             return
         try:
@@ -899,7 +946,7 @@ class ReviewBot:
             review.approve(it, n, label, self.rcfg, available)
         item = self.store.load(item["id"])
         profile = self.store.profile()
-        profile.decide("approve", item["mode"], item["id"], review.round_of(item, n)["variants"], label,
+        profile.decide("approve", review.style_mode(item), item["id"], review.round_of(item, n)["variants"], label,
                        extra={"by": interaction.user.id})
         profile.save()
         await self.close_round_messages(item, f"✅ **Approved {label}** by {interaction.user.display_name}")
@@ -914,7 +961,7 @@ class ReviewBot:
         review.require_open(item)
         await interaction.response.defer(thinking=False)
         profile = self.store.profile()
-        profile.decide("reject", item["mode"], item["id"], review.round_of(item, n)["variants"],
+        profile.decide("reject", review.style_mode(item), item["id"], review.round_of(item, n)["variants"],
                        extra={"by": interaction.user.id})
         profile.save()
         item = await asyncio.to_thread(review.finish, self.store, self.cfg, self.base, item["id"], "rejected",
@@ -925,7 +972,7 @@ class ReviewBot:
         with self.store.edit(item["id"]) as it:
             review.request(it, "redo", round=n)
         profile = self.store.profile()
-        profile.decide("redo", item["mode"], item["id"], review.round_of(item, n)["variants"])
+        profile.decide("redo", review.style_mode(item), item["id"], review.round_of(item, n)["variants"])
         profile.save()
         await interaction.response.send_message("🔄 Rendering 3 new variants; they'll appear in the thread.",
                                                 ephemeral=True)
@@ -999,7 +1046,7 @@ class ReviewBot:
         item = self.store.load(item_id)
         rnd = review.latest_round(item)
         profile = self.store.profile()
-        profile.decide("expire", item["mode"], item_id, rnd["variants"] if rnd else [], now=now)
+        profile.decide("expire", review.style_mode(item), item_id, rnd["variants"] if rnd else [], now=now)
         profile.save()
         item = await asyncio.to_thread(review.finish, self.store, self.cfg, self.base, item_id, "expired", now,
                                        "expired after 48 h without approval")
@@ -1671,15 +1718,42 @@ class ReviewBot:
         if e is None:
             await inter.followup.send(f"No entry #{n}.", ephemeral=True)
             return
+        if act == "rulem":   # "Applies to" ticks
+            values = [v for v in (getattr(inter, "data", None) or {}).get("values") or [] if v in st.STYLE_MODES]
+            try:
+                modes, entries = await asyncio.to_thread(self.scope_entry, n, values)
+                notice = f"✅ #{n} now applies to **{st.modes_label(modes)}**"
+            except ValueError as err:
+                entries, notice = list(self.store.profile().entries()), f"⚠️ {err}"
+            await inter.edit_original_response(view=self.layout(self.rules_view(entries, data, notice)))
+            return
         on = not e.get("on", True)
         changed, missing, entries = await asyncio.to_thread(self.toggle_entries, [n], on)
         notice = self.toggle_notice(changed, missing, on) + f": {st.entry_text(e)}"
         if act == "rulep":
-            await inter.edit_original_response(view=self.layout(rules_page(entries, data["round"], notice)))
+            await inter.edit_original_response(view=self.layout(self.rules_view(entries, data, notice)))
             return
         rows = flip_rows(self.rows_of(inter.message), n, on)
         await inter.edit_original_response(view=self.view(rows))
         await inter.followup.send(notice, ephemeral=True)
+
+    def scope_entry(self, n: int, modes: list[str]) -> tuple[list[str], list[dict]]:
+        with self.profile_lock:
+            profile = self.store.profile()
+            ok = profile.set_modes(n, modes)
+            profile.save()
+            return ok, list(profile.entries())
+
+    @staticmethod
+    def rules_view(entries: list[dict], data: dict, notice: str) -> dict:
+        """Redraw what was clicked: a /rules page, or a feedback reply's own rules."""
+        if data["item"] in ("-", ""):
+            return rules_page(entries, data["round"], notice)
+        nums = [int(x) for x in data["item"].split(".") if x.isdigit()]
+        return rules_subset(entries, nums, notice)
+
+    def saved_rules_view(self, rule: dict, head: str) -> dict:
+        return rules_subset(list(self.store.profile().entries()), [e["n"] for e in rule["entries"]], head)
 
     async def rules_command(self, inter, disable: str | None = None, enable: str | None = None) -> None:
         """/rules: the list with a button beside every rule. Answers straight away (no
@@ -1772,7 +1846,8 @@ class ReviewBot:
                                mode="Which edits it's about (default: all)")
         @app_commands.choices(mode=[app_commands.Choice(name="All edits", value="all"),
                                     app_commands.Choice(name="Lacy clips", value="lacy"),
-                                    app_commands.Choice(name="Tokyo Girl trailer edits", value="tokyo_girl")])
+                                    app_commands.Choice(name="Tokyo Girl trailer edits", value="tokyo_girl"),
+                                    app_commands.Choice(name="Trend edits (trending sounds)", value="trend")])
         async def feedback_cmd(inter: discord.Interaction, text: str, mode: str = "all"):
             if not await guard(inter):
                 return
@@ -1791,10 +1866,10 @@ class ReviewBot:
             if not rule["entries"]:
                 msg.append("Nothing changed: try saying what to do differently, e.g. *no captions unless he says"
                            " something funny*.")
-            msg.append("`/rules` shows the whole list; the buttons below turn these off (or back on).")
-            rows = entry_buttons([e["n"] for e in rule["entries"]], {})
-            if rows:
-                await inter.followup.send("\n".join(msg)[:1990], view=bot.view(rows))
+            if rule["entries"]:
+                msg.append("Each rule below says what it applies to: change the ticks, or turn it off."
+                           " `/rules` shows the whole list.")
+                await inter.followup.send(view=bot.layout(bot.saved_rules_view(rule, "\n".join(msg))))
             else:   # discord.py refuses view=None on a follow-up
                 await inter.followup.send("\n".join(msg)[:1990])
 

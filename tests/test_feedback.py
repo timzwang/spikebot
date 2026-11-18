@@ -94,7 +94,8 @@ def test_feedback_with_claude_pins_settings_for_every_future_variant(tmp_path):
     assert "intro" not in S.pick_variants(prof, "lacy", random.Random(2))[0]["style"]
     assert "Let the gameplay carry the clip" in prof.taste("lacy")
     text = fb.format_rule(rule)
-    assert "**#1** text_level = none" in text and "intro = logo (Tokyo Girl)" in text
+    assert "**#1** text_level = none → applies to **all edits**" in text
+    assert "**#2** intro = logo → applies to **Tokyo Girl**" in text
     assert "licensed music" in text and "not possible yet" in text and "can't apply this yet" in text
     # the next request carries what was learned
     c2 = FakeClaude(answer())
@@ -173,7 +174,7 @@ def test_review_feedback_this_edit_vs_always(tmp_path):
                          item_id="abc", client=c)
     assert res["style"]["grade"] == "moody" and res["style"]["text_level"] == "none"
     assert res["texts"] == {"hook": "Lacy had no idea what was coming"}
-    assert res["rule"]["settings"] == [{"mode": "lacy", "setting": "text_level", "value": "none"}]
+    assert res["rule"]["settings"] == [{"mode": "lacy", "modes": ["lacy"], "setting": "text_level", "value": "none"}]
     assert "grade" not in prof.pinned("lacy") and prof.pinned("lacy")["text_level"] == "none"
     assert "Saved to /rules as #1" in res["comment"] and "only for this edit" in res["comment"]
 
@@ -310,3 +311,22 @@ def test_inspiration_without_key_still_works(tmp_path):
     out.mkdir()
     res = I.run("ref", list(P.PARTS), tmp_path, out, file=ref, reader=lambda img: [], base=tmp_path)
     assert res["ok"] and res["art"] is None
+
+
+def test_feedback_scope_is_explicit(tmp_path):
+    prof = S.Profile(tmp_path / "p.json")
+    # /feedback with a kind picked: exactly that kind, whatever the AI says
+    rule, _ = fb.learn("darker please", "trend", prof, client=FakeClaude(answer([row("grade", "moody")])))
+    assert [e["modes"] for e in rule["entries"]] == [["trend"]]
+    assert prof.pinned("trend")["grade"] == "moody" and "grade" not in prof.pinned("tokyo_girl")
+    # Feedback button on a trend clip: that kind only...
+    style = S.default_style("trend")
+    res = fb.for_variant("warmer", "trend", style, prof, tmp_path, client=FakeClaude(answer([row("grade", "warm")])))
+    assert res["rule"]["entries"][0]["modes"] == ["trend"]
+    # ...unless Tim says it's for everything, or names another kind himself
+    res = fb.for_variant("cooler on all edits", "trend", style, prof, tmp_path,
+                         client=FakeClaude(answer([row("grade", "cool")])))
+    assert res["rule"]["entries"][0]["modes"] == ["lacy", "tokyo_girl", "trend"]
+    res = fb.for_variant("no zoom here and on Lacy clips too", "trend", style, prof, tmp_path,
+                         client=FakeClaude(answer([row("motion", "none", mode="lacy"), row("transition", "cut")])))
+    assert {e["setting"]: e["modes"] for e in res["rule"]["entries"]} == {"motion": ["lacy"], "transition": ["trend"]}

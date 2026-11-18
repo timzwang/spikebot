@@ -329,6 +329,12 @@ def free_files(store: Store, item: dict, keep_final: bool = False) -> None:
 # --------------------------------------------------------------------------
 # Rendering rounds (runs in a subprocess, or inside the producer's own process)
 # --------------------------------------------------------------------------
+def style_mode(item: dict) -> str:
+    """Which rules an item follows: "trend" for trending-sound edits (Tokyo Girl's editor,
+    their own rules), otherwise the item's mode."""
+    return "trend" if (item.get("source") or {}).get("kind") == "trend" else item["mode"]
+
+
 def adapter_for(mode: str, cfg: dict, base: Path):
     """The mode's renderer: .render(item, specs, round_n, folder, preview_bytes) -> variants,
     .validate(item, variant) for caption edits, .finish(item, status) when it closes."""
@@ -348,25 +354,25 @@ def specs_for(item: dict, req: dict, store: Store, rng: random.Random,
     presets = store.presets().all()
     kind = req["kind"]
     if kind in ("initial", "redo"):
-        specs = st.pick_variants(profile, item["mode"], rng, presets, avoid=shown_styles(item))
+        specs = st.pick_variants(profile, style_mode(item), rng, presets, avoid=shown_styles(item))
         return specs, ""
     base = variant_of(item, int(req["round"]), req["label"])
     n = len(item["rounds"]) + 1
     if kind == "feedback":
         from . import feedback as fb
-        res = fb.for_variant(req.get("notes", ""), item["mode"], base["style"], profile, base_dir,
+        res = fb.for_variant(req.get("notes", ""), style_mode(item), base["style"], profile, base_dir,
                              item_id=item["id"], client=ai_client)
         new = res["style"]
         spec = {"label": f"{base['label'][0]}{n}", "style": new, "preset": base.get("preset"),
                 "experimental": False, "texts": res["texts"], "from": base, "intents": res["intents"]}
         profile.feedback(item["id"], base["label"], req.get("notes", ""), res["intents"], base["style"], new,
-                         item["mode"])
+                         style_mode(item))
         profile.save()
         req["entries"] = [e["n"] for e in (res.get("rule") or {}).get("entries") or []]   # card gets on/off buttons
         return [spec], res["comment"]
     if kind == "preset":
         p = store.presets().load(req["name"])
-        ps = presets_.to_style(p, item["mode"])
+        ps = presets_.to_style(p, style_mode(item))
         new = json.loads(json.dumps(base["style"]))
         custom = dict(new.get("custom") or {}) | dict(ps.pop("custom", {}) or {})
         new.update(ps)
@@ -435,7 +441,7 @@ def _render_round(store, item_id, item, cfg, base, req, rcfg, now, adapter, seed
         v.pop("from", None)
         v.pop("texts", None)
     profile = store.profile()
-    profile.shown(item["mode"], variants, now)
+    profile.shown(style_mode(item), variants, now)
     profile.save()
     with store.edit(item_id) as item:
         r = add_round(item, req["kind"], variants, rcfg, now, comment)
@@ -721,7 +727,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "reject":
         profile = store.profile()
         r = latest_round(item)
-        profile.decide("reject", item["mode"], item["id"], r["variants"] if r else [])
+        profile.decide("reject", style_mode(item), item["id"], r["variants"] if r else [])
         profile.save()
         finish(store, cfg, base, item["id"], "rejected", why="rejected (CLI)")
         print(f"{item['id']}: rejected")
@@ -746,7 +752,7 @@ def main(argv: list[str] | None = None) -> int:
         with store.edit(item["id"]) as it:
             approve(it, n, label, settings(cfg), pub.available())
         profile = store.profile()
-        profile.decide("approve", item["mode"], item["id"], round_of(item, n)["variants"], label)
+        profile.decide("approve", style_mode(item), item["id"], round_of(item, n)["variants"], label)
         profile.save()
         print(f"{item['id']}: approved {label}. The bot posts it inside the windows; or run `publish`.")
         return 0
