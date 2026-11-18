@@ -1574,14 +1574,15 @@ def items_on(state: dict, day: str) -> int:
 
 def ensure_media(lcfg: dict, on_file=None) -> list[Shot]:
     """Usable shots on disk; runs `fetch` once first if there are none."""
-    shots = Library(lcfg).shots(on_file=on_file)
+    kw = {"on_file": on_file} if on_file else {}   # the /trend bar; daily runs call it plainly
+    shots = Library(lcfg).shots(**kw)
     if not shots:
         log.info("no usable media in %s yet, fetching official Rockstar media", lcfg["media_dir"])
         try:
             fetch(lcfg)
         except Exception as e:
             log.warning("fetch failed: %s", e)
-        shots = Library(lcfg).shots(on_file=on_file)
+        shots = Library(lcfg).shots(**kw)
     return shots
 
 
