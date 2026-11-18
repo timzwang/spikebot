@@ -164,7 +164,7 @@ def test_turn_off_buttons_on_feedback_reply_and_review_card(tmp_path):
 def test_feedback_round_records_its_entries(tmp_path):
     store, item = new_item(tmp_path)
     with store.edit(item["id"]) as it:
-        R.request(it, "feedback", round=1, label="A", notes="no captions")
+        R.request(it, "feedback", round=1, label="A", notes="no captions from now on")
     from .test_review import FakeAdapter
     it = R.render_round(store, item["id"], {}, tmp_path, adapter=FakeAdapter(), seed=2)
     rnd = it["rounds"][-1]

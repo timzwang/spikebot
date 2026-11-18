@@ -66,6 +66,12 @@ def song_of(text: str) -> str | None:
     return m.group(1).strip() if m else None
 
 
+# A Feedback press on one video is about THAT video. It becomes a saved rule only when Tim says so
+# in words (Tim, 18 Nov 2026: "stop making all feedback automatically new rules"). /feedback is the
+# way to add rules on purpose.
+ALWAYS = re.compile(r"(?i)\b(always|from now on|in (the )?future|going forward|every ?time|next time|"
+                    r"make (it|this|that) a rule|save (it|this|that)( as a rule)?|as a rule|by default|"
+                    r"(on|for|in) (all|every|future)\b.{0,14}\b(edits?|clips?|videos?|shorts?)|never)\b")
 ONLY_THIS = re.compile(r"(?i)\b(just|only) (for )?(this|that|here)\b|\b(this|that) one only\b|\bjust here\b|"
                        r"\bthis (edit|clip|video|one) only\b|\bnot (always|every time|in future)\b")
 
@@ -158,7 +164,7 @@ def learn(text: str, mode: str, profile: st.Profile, base: Path | None = None, n
 def for_variant(text: str, mode: str, style: dict, profile: st.Profile, base: Path | None = None,
                 item_id: str = "", now: float | None = None, client=None, sounds: list[str] | None = None) -> dict:
     """Feedback button: {style (new), texts, intents, comment, rule, footage, song}. Settings apply
-    to the re-render; the ones meant for future edits also become a rule. `footage` ("keep" unless
+    to the re-render. Nothing is saved as a rule unless the wording asks for it (`ALWAYS`). `footage` ("keep" unless
     Tim asks for new clips) and `song` (a sound to switch to) are for this edit only."""
     out = interpret(text, mode, profile, base, "review", current=style, client=client, sounds=sounds)
     footage = out.get("footage") if out.get("footage") in ("keep", "new") else "keep"
@@ -179,9 +185,10 @@ def for_variant(text: str, mode: str, style: dict, profile: st.Profile, base: Pa
             applied.append(f"{r['setting']} → {r['value']}")
         except ValueError as e:
             bad.append(str(e))
-    lasting = [dict(r) for r in ok if r.get("scope") != "this_edit"] + clear
+    keep = bool(ALWAYS.search(text or "")) and not ONLY_THIS.search(text or "")
+    lasting = ([dict(r) for r in ok if r.get("scope") != "this_edit"] + clear) if keep else []
     rule = None
-    if lasting or out.get("notes") or out.get("unsupported"):
+    if keep and (lasting or out.get("notes") or out.get("unsupported")):
         for r in lasting:
             r.pop("scope", None)
         rule = profile.add_rule(text, out.get("summary", ""), "all" if everywhere else mode, lasting,
@@ -193,7 +200,9 @@ def for_variant(text: str, mode: str, style: dict, profile: st.Profile, base: Pa
         bits.append("Changed: " + ", ".join(applied))
     if rule and rule["entries"]:
         bits.append("Saved to /rules as " + ", ".join(f"#{e['n']}" for e in rule["entries"]))
-    if len(applied) > len((rule or {}).get("settings") or []):
+    if applied and not keep:
+        bits.append("Only this video (say \"always\" or \"from now on\" to save it as a rule)")
+    elif len(applied) > len((rule or {}).get("settings") or []):
         bits.append("(some changes were only for this edit)")
     bits.append("Same clips as before" if footage == "keep" else "New clips")
     if song:

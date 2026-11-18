@@ -183,7 +183,10 @@ def test_review_feedback_is_kept_unless_it_says_only_this_one(tmp_path):
     prof = S.Profile(tmp_path / "p.json")
     style = S.default_style("lacy") | {"text_level": "full"}
     res = fb.for_variant("no captions", "lacy", style, prof, tmp_path, item_id="a")     # rule parser, no key
-    assert res["style"]["text_level"] == "none" and prof.pinned("lacy").get("text_level") == "none"
+    assert res["style"]["text_level"] == "none" and "text_level" not in prof.pinned("lacy")   # this video only
+    assert res["rule"] is None and "Only this video" in res["comment"]
+    res = fb.for_variant("no captions from now on", "lacy", style, prof, tmp_path, item_id="a")
+    assert prof.pinned("lacy").get("text_level") == "none"          # said so: saved
     res = fb.for_variant("full captions, just this one", "lacy", res["style"], prof, tmp_path, item_id="b")
     assert prof.pinned("lacy").get("text_level") == "none"          # not saved
 
@@ -321,13 +324,13 @@ def test_feedback_scope_is_explicit(tmp_path):
     assert prof.pinned("trend")["grade"] == "moody" and "grade" not in prof.pinned("tokyo_girl")
     # Feedback button on a trend clip: that kind only...
     style = S.default_style("trend")
-    res = fb.for_variant("warmer", "trend", style, prof, tmp_path, client=FakeClaude(answer([row("grade", "warm")])))
+    res = fb.for_variant("warmer, always", "trend", style, prof, tmp_path, client=FakeClaude(answer([row("grade", "warm")])))
     assert res["rule"]["entries"][0]["modes"] == ["trend"]
     # ...unless Tim says it's for everything, or names another kind himself
     res = fb.for_variant("cooler on all edits", "trend", style, prof, tmp_path,
                          client=FakeClaude(answer([row("grade", "cool")])))
     assert res["rule"]["entries"][0]["modes"] == ["lacy", "tokyo_girl", "trend"]
-    res = fb.for_variant("no zoom here and on Lacy clips too", "trend", style, prof, tmp_path,
+    res = fb.for_variant("no zoom here and on Lacy clips too from now on", "trend", style, prof, tmp_path,
                          client=FakeClaude(answer([row("motion", "none", mode="lacy"), row("transition", "cut")])))
     assert {e["setting"]: e["modes"] for e in res["rule"]["entries"]} == {"motion": ["lacy"], "transition": ["trend"]}
 
