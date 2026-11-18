@@ -56,7 +56,7 @@ W, H, FPS = 1080, 1920, 30   # 30 fps = the trailers' own rate; 60 doubled every
 
 DEFAULTS = {
     "enabled": True,
-    "per_day": 2,                       # edits made per UK day by `daily`
+    "per_day": 4,                       # edits made per UK day by `daily` (launch week: 4)
     "bpm": 120,
     "min_s": 15,
     "max_s": 30,
@@ -1704,7 +1704,8 @@ def main(argv: list[str] | None = None) -> None:
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("fetch")
     sub.add_parser("scan")
-    sub.add_parser("daily")
+    dl = sub.add_parser("daily")
+    dl.add_argument("--per-day", type=int, default=None, help="at least this many edits today (raises per_day)")
     sub.add_parser("stories")
     dv = sub.add_parser("deliver", help="send exports to Discord again (default: undelivered ones)")
     dv.add_argument("files", nargs="*")
@@ -1784,6 +1785,8 @@ def main(argv: list[str] | None = None) -> None:
         if failed:
             sys.exit(1)
     elif args.cmd == "daily":
+        if args.per_day:
+            lcfg["per_day"] = max(int(lcfg["per_day"]), args.per_day)
         for p in daily(lcfg):
             print(p)
 

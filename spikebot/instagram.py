@@ -371,49 +371,51 @@ def post_reel(ig: Instagram, host, path: Path, caption: str, icfg: dict,
 # Captions: a different hook from the YouTube title, plus GTA hashtags
 # --------------------------------------------------------------------------
 HOOKS = {
-    "funny": ["POV: you're in Lacy's chat for this one 💀",
-              "I can't stop replaying this Lacy moment 😭",
-              "Lacy was NOT ready for this 😂",
-              "Lacy's laugh at the end 😭",
-              "Lacy and chat lost it here 💀"],
-    "shock": ["Wait for Lacy's face at the end 😳",
-              "Lacy did not see this coming 😳",
-              "Nobody in Lacy's chat expected this",
-              "Watch Lacy's reaction 👀",
-              "Lacy's chat went silent after this 👀"],
-    "hype": ["Lacy actually pulled this off 🔥",
-             "Lacy made this look way too easy 🔥",
-             "Chat went crazy for Lacy here 🔥",
-             "This is why Lacy's chat goes wild 🔥"],
-    "neutral": ["Lacy's best GTA moment today 🎮",
-                "Lacy in GTA never misses 🎮",
-                "Lacy's stream had moments like this all day",
-                "Save this Lacy clip for later 🎮"],
+    "funny": ["POV: you're in {name}'s chat for this one 💀",
+              "I can't stop replaying this {name} moment 😭",
+              "{name} was NOT ready for this 😂",
+              "{name}'s laugh at the end 😭",
+              "{name} and chat lost it here 💀"],
+    "shock": ["Wait for {name}'s face at the end 😳",
+              "{name} did not see this coming 😳",
+              "Nobody in {name}'s chat expected this",
+              "Watch {name}'s reaction 👀",
+              "{name}'s chat went silent after this 👀"],
+    "hype": ["{name} actually pulled this off 🔥",
+             "{name} made this look way too easy 🔥",
+             "Chat went crazy for {name} here 🔥",
+             "This is why {name}'s chat goes wild 🔥"],
+    "neutral": ["{name}'s best GTA moment today 🎮",
+                "{name} in GTA never misses 🎮",
+                "{name}'s stream had moments like this all day",
+                "Save this {name} clip for later 🎮"],
 }
 HASHTAGS = {
-    "GTA 6": {"instagram": "#GTA6 #GTAVI #GrandTheftAuto6 #GTA6Clips #Lacy #GamingReels #Reels",
-              "tiktok": "#GTA6 #GTAVI #GTA6Clips #Lacy #gaming #fyp"},
-    "GTA 5": {"instagram": "#GTA5 #GTAV #GrandTheftAuto #GTAClips #Lacy #GamingReels #Reels",
-              "tiktok": "#GTA5 #GTAV #GTAClips #Lacy #gaming #fyp"},
+    "GTA 6": {"instagram": "#GTA6 #GTA6Gameplay #GTAVI #GrandTheftAuto6 #GTA6Clips #{tag} #GamingReels #Reels",
+              "tiktok": "#GTA6 #GTA6Gameplay #GTA6Clips #{tag} #gaming #fyp"},
+    "GTA 5": {"instagram": "#GTA5 #GTAV #GrandTheftAuto #GTAClips #{tag} #GamingReels #Reels",
+              "tiktok": "#GTA5 #GTAV #GTAClips #{tag} #gaming #fyp"},
 }
 
 
-def hook_ok(hook: str, youtube_title: str) -> bool:
+def hook_ok(hook: str, youtube_title: str, name: str = "Lacy") -> bool:
     from .lacy import BANNED
-    return ("lacy" in hook.lower() and not BANNED.search(hook)
+    return (name.lower() in hook.lower() and not BANNED.search(hook)
             and hook.strip().lower() != (youtube_title or "").strip().lower())
 
 
 def pick_hook(job: dict, used: set[str], rng: random.Random | None = None,
               tone: str | None = None) -> str:
     """A hook for the clip's mood (or `tone`), not the YouTube title, not used recently."""
-    from .lacy import mood
+    from .lacy import mood, who
+    name = who(job)[0]
     rng = rng or random.Random(job.get("id"))
     m = tone if tone in HOOKS else mood(job.get("vibe") or [])
     first, rest = HOOKS[m][:], [h for k, hs in HOOKS.items() if k != m for h in hs]
     rng.shuffle(first)
     rng.shuffle(rest)
-    ok = [h for h in first + rest if hook_ok(h, job.get("title") or "")]
+    ok = [h.format(name=name) for h in first + rest]
+    ok = [h for h in ok if hook_ok(h, job.get("title") or "", name)]
     for h in ok:
         if h not in used:
             return h
@@ -421,10 +423,12 @@ def pick_hook(job: dict, used: set[str], rng: random.Random | None = None,
 
 
 def captions(job: dict, hook: str) -> dict[str, str]:
-    from .lacy import game_tag
+    from .lacy import PLATFORM_NAME, PLATFORM_URL, game_tag, hashtag, who
+    name, platform = who(job)
     game = game_tag(job.get("category") or "")
-    tags = HASHTAGS[game]
-    ctx = f"Lacy playing {game} live on Twitch (twitch.tv/{job.get('channel') or 'lacy'})"
+    tags = {k: v.format(tag=hashtag(name)) for k, v in HASHTAGS[game].items()}
+    url = PLATFORM_URL.get(platform, PLATFORM_URL["twitch"]).format(job.get("channel") or "lacy")
+    ctx = f"{name} playing {game} live on {PLATFORM_NAME.get(platform, 'Twitch')} ({url.split('://', 1)[1].removeprefix('www.')})"
     return {"instagram": f"{hook}\n\n{ctx}. Follow for daily {game} clips.\n\n{tags['instagram']}"[:2200],
             "tiktok": f"{hook} {tags['tiktok']}"[:2200]}
 

@@ -48,7 +48,7 @@ def test_every_template_obeys_the_title_rules():
     for ts in L.TITLES.values():
         for t in ts:
             for game in ("GTA 5", "GTA 6"):
-                title = t.format(game=game)
+                title = t.format(game=game, name="Lacy")
                 assert L.title_ok(title), title
                 assert "Lacy" in title
 
@@ -63,7 +63,7 @@ def test_title_rules_reject_negative_or_non_english():
 def test_make_title_matches_mood_and_never_repeats():
     rng = random.Random(1)
     t = L.make_title(["LMAO", "💀"], "Grand Theft Auto VI", set(), rng)
-    assert t in [x.format(game="GTA 6") for x in L.TITLES["funny"]]
+    assert t in [x.format(game="GTA 6", name="Lacy") for x in L.TITLES["funny"]]
     used: set[str] = set()
     for _ in range(40):
         t = L.make_title(["NO WAY"], "Grand Theft Auto V", used, rng)
@@ -296,7 +296,7 @@ def test_render_job_guards(tmp_path):
     def boom(*a):
         raise AssertionError("must not download")
     for kw, why in ((dict(category="Just Chatting"), "not GTA"),
-                    (dict(channel="kaicenat"), "not the Lacy programme")):
+                    (dict(channel="kaicenat"), "not a clipping-programme channel")):
         job = L.render_job(job_for(tmp_path, jobs, **kw), L.settings({}), jobs, set(),
                            fetch=boom, transcribe=boom, now=T)
         assert job["status"] == "skipped" and why in job["reason"]
@@ -314,7 +314,8 @@ def make_bot(tmp_path, monkeypatch, category, live=True):
                         {"platform": "kick", "name": "adinross", "programme": "Adin Ross"}],
            "require_category_contains": ["Grand Theft Auto"], "min_score_to_alert": 3,
            "data_dir": str(tmp_path), "discord_webhook_url": "https://moments.invalid",
-           "twitch_client_id": "id", "twitch_client_secret": "secret", "lacy_mode": "true"}
+           "twitch_client_id": "id", "twitch_client_secret": "secret", "lacy_mode": "true",
+           "clips_mode": "false"}   # the other streamers' clips: tests/test_clips.py
     bot = m.Bot(cfg)
     calls = []
 

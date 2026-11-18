@@ -169,12 +169,14 @@ class Bot:
         self.live = st_.LiveWatch()
         self.status_events: asyncio.Queue | None = None
 
-        # Lacy mode: Shorts for the Lacy campaign (spikebot/lacy.py)
+        # Stream clips: Lacy mode + every other programme channel (spikebot/lacy.py)
         self.lacy = None
-        if lacy_.settings(cfg)["enabled"]:
+        profs = lacy_.profiles(cfg)
+        if profs:
             self.lacy = lacy_.LacyMode(cfg, self.data_dir, config_path)
-            if not self.helix:
-                log.warning("Lacy mode is on but Twitch keys are missing: no Lacy clips"
+            log.info("stream clips for: %s", ", ".join(f"{p['name']} ({k[0]}/{k[1]})" for k, p in profs.items()))
+            if not self.helix and any(k[0] == "twitch" for k in profs):
+                log.warning("Twitch keys are missing: no Twitch stream clips"
                             " (the GTA category can't be checked)")
 
         # Review queue + Discord approval bot (spikebot/review.py, spikebot/discord_bot.py)
@@ -323,6 +325,7 @@ class Bot:
             return
         lacy_key = bool(self.lacy and self.lacy.applies(key))
         lacy_ok = False
+        fresh = None
         if lacy_key:
             # Lacy mode: check his category with Helix Get Streams right now, not
             # the 2-minute poll. The polled value (closer to the chat onset) must
@@ -333,14 +336,16 @@ class Bot:
                 st = fresh
                 self.state[key] = fresh
             lacy_ok = (fresh is not None and fresh.get("live")
-                       and self.lacy.category_ok(fresh.get("category"))
-                       and (not polled or self.lacy.category_ok(polled)))
+                       and self.lacy.category_ok(fresh.get("category"), key)
+                       and (not polled or self.lacy.category_ok(polled, key)))
         start = parse_time(st.get("started_at"))
         category = st.get("category") or ""
         status = "candidate"
         if self.required and category and not any(r in category.lower() for r in self.required):
             status = "filtered_category"
-        elif lacy_key and category and not lacy_ok:
+        elif lacy_key and category and not lacy_ok and fresh is not None:
+            # checked right now and not GTA (or offline). If the check itself failed, the
+            # moment still goes to #moments, it just doesn't become a clip.
             status = "filtered_category"
         elif spike.score < self.min_score:
             status = "low_score"
@@ -371,14 +376,20 @@ class Bot:
                      spike.platform, spike.channel, spike.score, decision.rank, decision.total)
         if lacy_key and lacy_ok and status == "candidate":
             try:
-                self.lacy.enqueue(rec, st)
+                self.lacy.enqueue(rec, st, key)
             except Exception as e:  # noqa: BLE001 - never take the bot down
-                log.warning("lacy enqueue failed: %s", e)
+                log.warning("clip enqueue failed: %s", e)
         elif lacy_key:
-            log.info("lacy: no clip for this spike (status=%s, category=%r)", status, category)
+            log.info("%s/%s: no clip for this spike (status=%s, category=%r)", *key, status, category)
 
     async def fresh_state(self, key) -> dict | None:
-        """Live/category from Helix Get Streams at this moment, or None if unknown."""
+        """Live/category right now (Helix Get Streams / Kick channel info), or None if unknown."""
+        if key[0] == "kick":
+            try:
+                return kick_stream_state(await kick_channel_info(key[1]))
+            except Exception as e:  # noqa: BLE001
+                log.info("fresh Kick lookup %s failed: %s", key[1], e)
+                return None
         if not self.helix:
             return None
         try:
@@ -417,7 +428,7 @@ class Bot:
 
     # ---- Lacy mode ---------------------------------------------------------
     async def lacy_failed(self, job: dict) -> None:
-        await self.notifier.send("lacy_failed", f"🎬 Lacy clip `{job['id']}` failed:"
+        await self.notifier.send("lacy_failed", f"🎬 {lacy_.who(job)[0]} clip `{job['id']}` failed:"
                                  f" {msg_.escape(job.get('reason') or 'unknown error')}",
                                  kind="lacy")
 
@@ -635,19 +646,21 @@ class Bot:
                 print(f"  {key[0]}/{key[1]} info lookup failed: {e}")
         if self.lacy:
             lc = self.lacy.cfg
-            print(f"  Lacy mode ON: twitch/{lc['channel']}, categories {lc['allowed_categories']},"
-                  f" uploads today {self.lacy_uploads_today()}/{lc['max_uploads_per_day']}"
-                  " (every clip needs your approval in Discord)")
+            today = lacy_.uk_day(time.time())
+            for k, p in self.lacy.profiles.items():
+                n = lacy_.Submissions(Path(p["submissions_csv"])).uploads_on(today)
+                print(f"  {p['name']} clips ON: {k[0]}/{k[1]} ({p['programme']}), uploads today"
+                      f" {n}/{p['max_uploads_per_day']} (every clip needs your approval in Discord)")
             print(f"    ffmpeg: {'OK' if shutil.which('ffmpeg') else 'MISSING (apt install ffmpeg)'}")
             print(f"    yt-dlp: {'OK' if _has('yt_dlp') else 'MISSING (pip install -r requirements.txt)'}")
             print(f"    faster-whisper: {'OK' if _has('faster_whisper') else 'MISSING (pip install -r requirements.txt)'}")
             yt = all(self.cfg.get(k) for k in ("youtube_client_id", "youtube_client_secret",
                                                 "youtube_refresh_token"))
             print(f"    YouTube keys: {'set' if yt else 'MISSING (see README: Lacy mode)'}")
-            if not self.helix:
-                print("    WARNING: Twitch keys missing, so no Lacy clips will be made")
+            if not self.helix and any(k[0] == "twitch" for k in self.lacy.profiles):
+                print("    WARNING: Twitch keys missing, so no Twitch clips will be made")
         else:
-            print("  Lacy mode off")
+            print("  Stream clips off (LACY_MODE / CLIPS_MODE)")
         if self.ig:
             ic, tok = self.ig.icfg, self.ig.token
             today = self.ig.posts.published_on(lacy_.uk_day(time.time()))
@@ -707,6 +720,7 @@ ENV_KEYS = {"TWITCH_CLIENT_ID": "twitch_client_id",
             "LACY_MODE": "lacy_mode",
             "LACY_MAX_UPLOADS_PER_DAY": "lacy_max_uploads_per_day",
             "LACY_AUTO_UPLOAD": "lacy_auto_upload",  # ignored now: every clip needs approval
+            "CLIPS_MODE": "clips_mode",   # stream clips for the other programme channels (default on)
             "DISCORD_BOT_TOKEN": "discord_bot_token",
             "DISCORD_REVIEW_CHANNEL_ID": "discord_channel_id",
             "DISCORD_TIKTOK_CHANNEL_ID": "discord_tiktok_channel_id",

@@ -45,9 +45,18 @@
     "submissions_csv": "logs/lacy_submissions.csv"
   },
 
+  "clips": {
+    "enabled": true,
+    "max_uploads_per_day": 3,
+    "streamers": {
+      "adinross": {"name": "Adin Ross", "facecam": {"x": 0.0, "y": 0.0, "w": 0.25, "h": 0.30}},
+      "sealstats": {"name": "Seal", "facecam": {"x": 0.0, "y": 0.0, "w": 0.25, "h": 0.30}}
+    }
+  },
+
   "tokyo_girl": {
     "enabled": true,
-    "per_day": 2,
+    "per_day": 4,
     "bpm": 120,
     "min_s": 15,
     "max_s": 30,

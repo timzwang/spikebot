@@ -37,9 +37,8 @@ per phase).
   already has a Lacy-only version in `editor.py`/`lacy.py`; captions follow `text_level`:
   `minimal` = 2.5 s hook + captions only around the payoff, `none` = no text),
   optional AI voiceover hook.
-- **Stream-clip editor** for the other programme channels: plug it into the review queue
-  with a `ReviewAdapter` (see `review.adapter_for`), like Lacy and Tokyo Girl.
-- (Done: review queue + Discord approval bot, uploader with windows/caps, #inspiration presets.)
+- (Done: review queue + Discord approval bot, uploader with windows/caps, #inspiration presets,
+  stream-clip editor for every programme channel via `lacy.profiles`.)
 
 ## Deadlines
 
@@ -145,6 +144,25 @@ it in sync when behaviour or config changes.
   path (`review_store=None`) and `lacy approve ID` / `upload_job` remain for old `ready` jobs.
   Titles come from `TITLES` and must pass `title_ok` (contains Lacy, no `BANNED` words,
   English). Never add a watermark/logo in Lacy mode (`build_ass(watermark=None)`).
+- **Stream clips for the other programme channels** (Adin Ross, Seal; `clips` block, `CLIPS_MODE`, on
+  by default) run through the Lacy pipeline. `lacy.profiles(cfg)` = (platform, channel) -> full settings
+  + `name`/`platform`/`hashtag`/`programme` (Lacy from the `lacy` block; every other `channels` entry with
+  a programme from `clips` + `clips.streamers.<channel>` overrides; never a `programme: null` channel).
+  `profile_for(cfg, job)` (old jobs = twitch/lacy), `who(job)` = (streamer, platform); jobs carry
+  `platform`/`streamer`, ids `<channel>-YYYYMMDD-HHMMSS`; titles/hooks/captions/hashtags use the name
+  (`TITLES`/`instagram.HOOKS` hold `{name}`); per-streamer cap + `logs/<channel>_submissions.csv`
+  (`Publisher.clip_profile`); Kick: fresh category from Kick channel info, VOD via `kick_stream_vod`
+  (yt-dlp `kick:vod`), missing VOD = `waiting_vod` (every `VOD_RETRY_S` for `VOD_WAIT_S`). Review item
+  mode stays `lacy` (style mode too); `discord_bot.mode_label` shows the streamer. A failed fresh
+  lookup still alerts #moments but makes no clip. YouTube tags/descriptions/hashtags target launch-week
+  searches ("gta 6 gameplay", "gta 6 clips", "<streamer> gta 6"). Tested in `tests/test_clips.py`.
+- **Text rules** (`style.LOCKED` / `enforce`, applied to every rendered spec in `review.specs_for`; saved
+  rules and `dims` are unchanged):
+  stream clips always captioned (text_level full|minimal, the adapter turns none into full), Tokyo Girl
+  and trend edits never have on-screen text (text_level none).
+- Whisper never decodes through PyAV: `editor.decode_audio` (ffmpeg -> 16 kHz float32) is handed to
+  faster-whisper (PyAV 19 broke `av.open(metadata_errors=)`). `lacy.retry_after_fix` re-runs renders
+  that crashed on that once.
 - `spikebot/editor.py`: ffmpeg/yt-dlp helpers: `fetch_segment` (only the clip range of a
   VOD), `layout` (facecam stacked over gameplay for the whole clip), `away_reason`,
   `build_ass(style=)` (word captions, font/size/position/colours, hook length, end card;
@@ -300,7 +318,8 @@ it in sync when behaviour or config changes.
   gets `compile_notice`. **When you build a new editor capability, expose it in `settings_menu` (or add a
   `BUILT_IN` line) so saved notes upgrade themselves.**
 - `spikebot/deploy_requests.json`: one-off actions run once by `ReviewBot.run_deploy_requests` after the
-  restart that deploys them (whitelist: `trend`; `until` = expiry; done ids in `data/deploy_requests.json`).
+  restart that deploys them (whitelist: `trend`, `feedback`, `repost`, `daily` {per_day} = Tokyo Girl
+  top-up now; `until` = expiry; done ids in `data/deploy_requests.json`).
   Use it when Tim asks for e.g. "/trend after the restart".
 - `spikebot/feedback.py`: `learn()` (/feedback -> `Profile.add_rule`: entries in the rules list) and
   `for_variant()` (review Feedback button: re-render changes; saved as entries too unless the wording

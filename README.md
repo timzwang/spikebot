@@ -201,6 +201,38 @@ Clips live in `data/lacy/jobs/<id>/`; the cut segment is kept while the clip is 
 (Redo/Feedback re-render from it) and deleted once it is posted, rejected or expired.
 The Whisper model (~150 MB) downloads on the first render.
 
+## Stream clips for the other programme channels (Adin Ross, Seal...)
+
+The same pipeline as Lacy mode, for **every channel in `config.json` `channels` that has a
+`programme`** (today: `kick/adinross`, `kick/sealstats`). On by default; `CLIPS_MODE=false`
+in `.env` switches it off. Channels with `"programme": null` (and auto-watch channels) never
+get clips: check clipping permission first, then give the channel its programme.
+
+- Chat spike -> the category is checked **right then** (Kick channel info / Helix): only GTA V
+  or VI (Kick's "GTA V"/"GTA VI" names too). Gambling and anything else: no clip.
+- The clip is cut from the streamer's VOD. Kick often publishes the VOD only when the stream
+  ends, so a job without one waits (`waiting_vod`, checked every 10 min for up to 14 h)
+  instead of failing.
+- Same render as Lacy: facecam top third, gameplay below, BRB/non-English skipped, 3 variants
+  in #ready-to-post (labelled with the streamer's name), nothing posted until you Approve.
+- **Captions are always on** for stream clips (`text_level` full or minimal; "none" is never
+  used). Titles, hooks and hashtags use the streamer's name (`#AdinRoss`, `#Seal`).
+- Each streamer has its own daily cap (`max_uploads_per_day`, default 3) and its own
+  submissions CSV for the programme: `logs/<channel>_submissions.csv`.
+- Facecam: the default box is the top-left quarter. Check it on a real clip and set it per
+  streamer in `config.json`:
+
+```json
+"clips": {"streamers": {"adinross": {"name": "Adin Ross", "facecam": {"x": 0.75, "y": 0.0, "w": 0.25, "h": 0.3}}}}
+```
+
+```bash
+cd /opt/spikebot && sudo -u spikebot venv/bin/python -m spikebot.lacy layout clip.mp4 --streamer adinross --out /tmp/check.jpg
+```
+
+`lacy list` shows today's uploads per streamer. Job ids are `<channel>-YYYYMMDD-HHMMSS`
+(Lacy keeps `YYYYMMDD-HHMMSS`).
+
 ## Instagram Reels (auto-post) and the TikTok folder
 
 After you approve a clip in Discord (see "Approval in Discord"), for Lacy Shorts and any mode
@@ -273,7 +305,9 @@ use the same file as YouTube: 1080x1920 H.264/AAC, under 60 s, no watermark.
 ## Tokyo Girl mode (TikTok / Instagram campaign edits)
 
 Makes short, **silent** GTA 6 edits for the Tokyo Girl sound campaign, which you post by
-hand. On by default, 2 a day (`TOKYO_GIRL_PER_DAY` in `.env`, or `tokyo_girl.per_day`).
+hand. On by default, 4 a day (`TOKYO_GIRL_PER_DAY` in `.env`, or `tokyo_girl.per_day`).
+**No on-screen text**: Tokyo Girl and trending-sound edits are always clean (`text_level` none;
+no captions, story cards or hook box), whatever a rule or preset says.
 
 **What each edit is**
 

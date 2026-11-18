@@ -78,6 +78,91 @@ def settings(cfg: dict) -> dict:
     return out
 
 
+# --------------------------------------------------------------------------
+# Stream-clip editor for the other programme channels (Adin Ross, Seal...).
+# Same pipeline as Lacy (chat spike -> VOD segment -> 3 captioned variants -> review),
+# one *profile* per streamer. Lacy's profile comes from the "lacy" block; every other
+# channel in config "channels" with a programme gets one from the "clips" block
+# (CLIPS_MODE=false switches them off). A channel without a programme never does:
+# Tim has to check clipping permission first.
+# --------------------------------------------------------------------------
+CLIP_DEFAULTS = {
+    "enabled": True,
+    # per-streamer overrides keyed by channel name, e.g.
+    #   "adinross": {"name": "Adin Ross", "facecam": {"x": 0.75, "y": 0.0, "w": 0.25, "h": 0.3}}
+    "streamers": {},
+}
+# Display names used in titles and captions when config gives no `display`.
+KNOWN_NAMES = {"adinross": "Adin Ross", "sealstats": "Seal", "lacy": "Lacy", "kaicenat": "Kai Cenat"}
+# Kick names its categories a little differently from Twitch.
+KICK_GTA = ["GTA V", "GTA VI", "GTA 5", "GTA 6", "Grand Theft Auto 5", "Grand Theft Auto 6"]
+PLATFORM_URL = {"twitch": "https://www.twitch.tv/{}", "kick": "https://kick.com/{}"}
+PLATFORM_NAME = {"twitch": "Twitch", "kick": "Kick"}
+
+
+def clip_settings(cfg: dict) -> dict:
+    out = json.loads(json.dumps(CLIP_DEFAULTS))
+    for k, v in (cfg.get("clips") or {}).items():
+        out[k] = v
+    if cfg.get("clips_mode") not in (None, ""):
+        out["enabled"] = str(cfg["clips_mode"]).strip().lower() in TRUE
+    return out
+
+
+def hashtag(name: str) -> str:
+    return re.sub(r"[^A-Za-z0-9]", "", name) or "GTA"
+
+
+def profiles(cfg: dict, enabled_only: bool = True) -> dict[tuple[str, str], dict]:
+    """(platform, channel) -> settings for every streamer whose clips get made.
+    Each profile is a full Lacy-style settings dict plus name / platform / hashtag / programme."""
+    out: dict[tuple[str, str], dict] = {}
+    chans = {(c.get("platform"), str(c.get("name", "")).lower()): c for c in cfg.get("channels") or []}
+    lacy = settings(cfg)
+    lkey = ("twitch", lacy["channel"])
+    if lacy["enabled"] or not enabled_only:
+        prog = (chans.get(lkey) or {}).get("programme") or "Lacy (Reach pool)"
+        out[lkey] = lacy | {"name": "Lacy", "platform": "twitch", "hashtag": "Lacy", "programme": prog}
+    cs = clip_settings(cfg)
+    if not cs["enabled"] and enabled_only:
+        return out
+    common = {k: v for k, v in cs.items() if k not in ("enabled", "streamers")}
+    for key, c in chans.items():
+        if key in out or key == lkey or not c.get("programme") or key[0] not in PLATFORM_URL:
+            continue
+        p = json.loads(json.dumps(DEFAULTS))
+        if key[0] == "kick":
+            p["allowed_categories"] = p["allowed_categories"] + KICK_GTA
+        for src in (common, (cs.get("streamers") or {}).get(key[1]) or {}):
+            for k, v in src.items():
+                p[k] = (p[k] | v) if isinstance(p.get(k), dict) and isinstance(v, dict) else v
+        p["enabled"] = True
+        p["auto_upload"] = False
+        if p["min_score"] is None:
+            p["min_score"] = float(cfg.get("min_score_to_alert", 0))
+        name = p.get("name") or c.get("display") or KNOWN_NAMES.get(key[1]) or key[1]
+        p.update(channel=key[1], platform=key[0], name=name, hashtag=hashtag(name), programme=c["programme"])
+        p.setdefault("submissions_csv", f"logs/{key[1]}_submissions.csv")
+        if p["submissions_csv"] == DEFAULTS["submissions_csv"]:   # never mix with Lacy's CSV
+            p["submissions_csv"] = f"logs/{key[1]}_submissions.csv"
+        out[key] = p
+    return out
+
+
+def job_key(job: dict) -> tuple[str, str]:
+    """(platform, channel) of a job or a review item's source (old Lacy jobs have no platform)."""
+    return (job.get("platform") or "twitch", str(job.get("channel") or "lacy").lower())
+
+
+def profile_for(cfg: dict, job: dict) -> dict:
+    """The streamer profile a job/item belongs to, even if that mode was switched off since."""
+    key = job_key(job)
+    p = profiles(cfg, enabled_only=False).get(key)
+    if p is None:
+        raise ValueError(f"{key[0]}/{key[1]} has no clipping programme in config")
+    return p
+
+
 def is_gta(category: str | None, allowed: list[str]) -> bool:
     """Exact (case-insensitive) match, so GTA IV, San Andreas or 'GTA RP' style
     categories don't sneak in."""
@@ -93,25 +178,25 @@ def game_tag(category: str) -> str:
 # Titles: always "Lacy", neutral or funny, never mocking or drama
 # --------------------------------------------------------------------------
 TITLES = {
-    "funny": ["Lacy can't stop laughing at this {game} moment",
-              "Lacy's chat lost it over this",
-              "Lacy did NOT expect this in {game}",
-              "This {game} moment had Lacy in tears laughing",
-              "Lacy and chat could not keep it together"],
-    "shock": ["Lacy can't believe this happened in GTA",
-              "Lacy's reaction to this {game} moment",
-              "Wait for Lacy's reaction",
-              "Lacy was not ready for this in {game}",
-              "Nobody saw this coming, not even Lacy"],
-    "hype": ["Lacy actually pulled this off in {game}",
-             "Lacy's cleanest {game} moment yet",
-             "Chat went wild for Lacy here",
-             "Lacy made this look easy in {game}",
-             "Lacy's {game} run just hit different"],
-    "neutral": ["Lacy's best {game} moment today",
-                "Lacy in {game} never disappoints",
-                "Lacy and chat react to this {game} moment",
-                "This is why we watch Lacy play {game}"],
+    "funny": ["{name} can't stop laughing at this {game} moment",
+              "{name}'s chat lost it over this",
+              "{name} did NOT expect this in {game}",
+              "This {game} moment had {name} in tears laughing",
+              "{name} and chat could not keep it together"],
+    "shock": ["{name} can't believe this happened in GTA",
+              "{name}'s reaction to this {game} moment",
+              "Wait for {name}'s reaction",
+              "{name} was not ready for this in {game}",
+              "Nobody saw this coming, not even {name}"],
+    "hype": ["{name} actually pulled this off in {game}",
+             "{name}'s cleanest {game} moment yet",
+             "Chat went wild for {name} here",
+             "{name} made this look easy in {game}",
+             "{name}'s {game} run just hit different"],
+    "neutral": ["{name}'s best {game} moment today",
+                "{name} in {game} never disappoints",
+                "{name} and chat react to this {game} moment",
+                "This is why we watch {name} play {game}"],
 }
 VIBES = {"funny": {"LOL", "LMAO", "LUL", "KEKW", "OMEGALUL", "ICANT", "💀", "😂", "🤣", "😭"},
          "shock": {"NO WAY", "WTF", "HOLY", "OOO", "NAH", "BRO", "MONKAS"},
@@ -126,8 +211,8 @@ BANNED = re.compile(
 ENGLISH = re.compile(r"^[A-Za-z0-9 '’!?.,:&()\-]+$")
 
 
-def title_ok(title: str) -> bool:
-    return ("lacy" in title.lower() and 10 <= len(title) <= 100
+def title_ok(title: str, name: str = "Lacy") -> bool:
+    return (name.lower() in title.lower() and 10 <= len(title) <= 100
             and not BANNED.search(title) and bool(ENGLISH.match(title)))
 
 
@@ -140,7 +225,7 @@ def mood(vibe: list[str]) -> str:
 
 
 def make_title(vibe: list[str], category: str, used: set[str], rng: random.Random | None = None,
-               tone: str | None = None, hook_style: str | None = None) -> str:
+               tone: str | None = None, hook_style: str | None = None, name: str = "Lacy") -> str:
     """A title for this clip's mood (or the given tone) that hasn't been used on an
     earlier upload. `hook_style` (from a preset: pov / wait / question...) moves
     templates of that kind to the front."""
@@ -154,31 +239,42 @@ def make_title(vibe: list[str], category: str, used: set[str], rng: random.Rando
     rng.shuffle(rest)
     order = first + rest
     if hook_style:
-        order.sort(key=lambda t: classify(t.format(game=game)) != hook_style)
+        order.sort(key=lambda t: classify(t.format(game=game, name=name)) != hook_style)
     used_l = {u.lower() for u in used}
     for tpl in order:
-        t = tpl.format(game=game)
-        if title_ok(t) and t.lower() not in used_l:
+        t = tpl.format(game=game, name=name)
+        if title_ok(t, name) and t.lower() not in used_l:
             return t
-    base = first[0].format(game=game)
+    base = first[0].format(game=game, name=name)
     for n in range(2, 1000):  # every template used: number them
         t = f"{base} (part {n})"
-        if title_ok(t) and t.lower() not in used_l:
+        if title_ok(t, name) and t.lower() not in used_l:
             return t
     raise ValueError("no title available")
 
 
-def description(title: str, category: str, channel: str) -> str:
+def description(title: str, category: str, channel: str, name: str = "Lacy", platform: str = "twitch") -> str:
     game = game_tag(category)
     tag = "#GTA6" if game == "GTA 6" else "#GTA5"
+    url = PLATFORM_URL.get(platform, PLATFORM_URL["twitch"]).format(channel)
     return (f"{title}\n\n"
-            f"Lacy playing {category} live on Twitch: https://www.twitch.tv/{channel}\n"
-            f"Clipped from Lacy's stream as part of the Lacy clipping programme.\n\n"
-            f"#Lacy #Shorts {tag} #GTA")
+            f"{name} playing {category} live on {PLATFORM_NAME.get(platform, 'Twitch')}: {url}\n"
+            f"Clipped from {name}'s stream as part of the {name} clipping programme.\n\n"
+            f"{name} {game} stream clips: the best {game} gameplay moments, every day.\n\n"
+            f"#{hashtag(name)} #Shorts {tag} {tag}Gameplay {tag}Clips #GTA")
 
 
-def tags(category: str) -> list[str]:
-    return ["Lacy", "Lacy GTA", "Shorts", game_tag(category), category, "Twitch clips"]
+def tags(category: str, name: str = "Lacy", platform: str = "twitch") -> list[str]:
+    # What people search in launch week (vidIQ, 18 Nov 2026): "gta 6 gameplay", "gta 6 clips",
+    # "<streamer> gta 6", "gta 6 stream".
+    game = game_tag(category)
+    return [name, f"{name} {game}", f"{name} GTA", "Shorts", game, f"{game} gameplay", f"{game} clips",
+            f"{game} stream", category, f"{PLATFORM_NAME.get(platform, 'Twitch')} clips"]
+
+
+def who(job: dict) -> tuple[str, str]:
+    """(display name, platform) of a job; old Lacy jobs have neither."""
+    return job.get("streamer") or "Lacy", job.get("platform") or "twitch"
 
 
 # --------------------------------------------------------------------------
@@ -304,8 +400,9 @@ class Jobs:
                 continue
         return out
 
-    def renders_on(self, day: str) -> int:
-        return sum(1 for j in self.all() if j.get("rendered_day") == day)
+    def renders_on(self, day: str, key: tuple[str, str] | None = None) -> int:
+        """Clips rendered on a UK day (for one streamer if `key` is given)."""
+        return sum(1 for j in self.all() if j.get("rendered_day") == day and (key is None or job_key(j) == key))
 
     def used_hashes(self) -> list[int]:
         try:
@@ -332,9 +429,13 @@ def clip_window(rec: dict, max_s: float) -> tuple[float, float]:
 def new_job(rec: dict, state: dict, lcfg: dict) -> dict:
     start, end = clip_window(rec, lcfg["max_clip_s"])
     job_id = datetime.fromtimestamp(rec["onset"], UK).strftime("%Y%m%d-%H%M%S")
+    platform = lcfg.get("platform", "twitch")
+    if lcfg.get("name", "Lacy") != "Lacy":   # Lacy keeps the old ids
+        job_id = f"{lcfg['channel']}-{job_id}"
     return {
         "id": job_id, "status": "queued", "reason": None, "created": time.time(),
-        "channel": lcfg["channel"], "programme": rec.get("programme"),
+        "channel": lcfg["channel"], "platform": platform, "streamer": lcfg.get("name", "Lacy"),
+        "programme": rec.get("programme"),
         "score": rec["score"], "onset": rec["onset"], "onset_uk": rec.get("onset_uk"),
         "peak_time": rec.get("peak_time"), "vibe": rec.get("vibe") or [],
         "sample": rec.get("sample") or [], "category": state.get("category") or "",
@@ -363,7 +464,7 @@ def render_job(job: dict, lcfg: dict, jobs: Jobs, used_titles: set[str],
     from . import progress
     pj = None
     if review_store is not None:
-        pj = progress.Job.create(review_store.data_dir, f"Lacy clip {job['id']} ({job.get('category') or '?'})",
+        pj = progress.Job.create(review_store.data_dir, f"{who(job)[0]} clip {job['id']} ({job.get('category') or '?'})",
                                  channel="review", icon="🎮", meta={"lacy_job": job["id"]})
 
     def finish(status: str, reason: str | None = None) -> dict:
@@ -376,20 +477,23 @@ def render_job(job: dict, lcfg: dict, jobs: Jobs, used_titles: set[str],
         return job
 
     # Hard guards, whatever the job file says.
-    if job.get("channel") != lcfg["channel"] or not job.get("programme"):
-        return finish("skipped", "not the Lacy programme channel")
+    platform = lcfg.get("platform", "twitch")
+    if (job_key(job) != (platform, lcfg["channel"]) or not job.get("programme")
+            or not lcfg.get("programme", True)):
+        return finish("skipped", f"not a clipping-programme channel ({job_key(job)[0]}/{job_key(job)[1]})")
     if not is_gta(job.get("category"), lcfg["allowed_categories"]):
         return finish("skipped", f"category {job.get('category')!r} is not GTA V/VI")
     if not job.get("vod_url") or not job.get("vod_started_at"):
-        return finish("failed", "no Twitch VOD for this stream (VODs off or not published)")
+        return finish("failed", f"no {PLATFORM_NAME.get(platform, platform)} VOD for this stream"
+                                " (VODs off or not published)")
     day = uk_day(now)
-    if jobs.renders_on(day) >= lcfg["max_renders_per_day"]:
+    if jobs.renders_on(day, job_key(job)) >= lcfg["max_renders_per_day"]:
         return finish("skipped", f"render limit {lcfg['max_renders_per_day']}/day reached")
 
     from .main import parse_time
     from .messages import vod_offset
     vod_start = parse_time(job["vod_started_at"])
-    job["vod_link"] = job["vod_url"] + vod_offset(job["clip_start"] - vod_start, "twitch")
+    job["vod_link"] = job["vod_url"] + vod_offset(job["clip_start"] - vod_start, platform)
     duration = job["clip_end"] - job["clip_start"]
     seg = d / "segment.mp4"
     with progress.tracking(pj) if pj else contextlib.nullcontext():
@@ -431,9 +535,11 @@ def _render_job_body(job, lcfg, jobs, used_titles, fetch, transcribe, now, revie
                    src_w=info["width"], src_h=info["height"], src_fps=info.get("fps"), audio=info.get("audio", True))
         jobs.save(job)
         from . import review
+        name, platform = who(job)
         item = review_store.create("lacy", {"job_id": job["id"], "vod_link": job.get("vod_link"),
-                                            "channel": job["channel"], "category": job["category"]},
-                                   now, title=f"Lacy {job['id']} ({job['category']})")
+                                            "channel": job["channel"], "platform": platform, "streamer": name,
+                                            "category": job["category"]},
+                                   now, title=f"{name} {job['id']} ({job['category']})")
         job["review_item"] = item["id"]
         jobs.save(job)
         with track.span(0.4, 1.0):
@@ -454,10 +560,11 @@ def _render_job_body(job, lcfg, jobs, used_titles, fetch, transcribe, now, revie
 
 def _render_single(job, lcfg, jobs, used_titles, seg, lay, words, lang, duration, day, finish):
     d = jobs.dir(job["id"])
-    title = make_title(job["vibe"], job["category"], used_titles)
+    name, platform = who(job)
+    title = make_title(job["vibe"], job["category"], used_titles, name=name)
     job["title"] = title
-    job["description"] = description(title, job["category"], job["channel"])
-    job["tags"] = tags(job["category"])
+    job["description"] = description(title, job["category"], job["channel"], name, platform)
+    job["tags"] = tags(job["category"], name, platform)
     ass = d / "captions.ass"
     # Lacy mode: never a watermark, channel logo or "6" overlay.
     ass.write_text(editor.build_ass(words, title, duration, lay.cam_h, watermark=None), encoding="utf-8")
@@ -473,17 +580,26 @@ def _render_single(job, lcfg, jobs, used_titles, seg, lay, words, lang, duration
 
 
 class ReviewAdapter:
-    """Renders review variants of a Lacy job from its kept segment + transcript.
-    Every variant obeys the Lacy rules: facecam on top, no watermark/logo, English
-    title containing "Lacy" with no banned words."""
+    """Renders review variants of a stream clip (Lacy, Adin Ross, Seal...) from its kept
+    segment + transcript. Every variant obeys the clip rules: facecam on top, word captions,
+    no watermark/logo, English title containing the streamer's name with no banned words."""
 
     def __init__(self, cfg: dict, base: Path, lcfg: dict | None = None, jobs: Jobs | None = None,
                  used_titles: set[str] | None = None):
         self.cfg, self.base = cfg, base
+        self._given = lcfg
         self.lcfg = lcfg or settings(cfg)
         data_dir = Path(cfg.get("data_dir", "data"))
         self.jobs = jobs or Jobs(data_dir if data_dir.is_absolute() else base / data_dir)
         self.used_titles = used_titles
+
+    def _profile(self, job: dict) -> dict:
+        if self._given is not None:
+            return self._given
+        try:
+            return profile_for(self.cfg, job)
+        except ValueError:
+            return self.lcfg
 
     def _used(self) -> set[str]:
         if self.used_titles is not None:
@@ -493,6 +609,8 @@ class ReviewAdapter:
     def render(self, item: dict, specs: list[dict], n: int, folder: Path, preview_bytes: int) -> list[dict]:
         from . import instagram, style as st
         job = self.jobs.load(item["source"]["job_id"])
+        self.lcfg = self._profile(job)
+        name, platform = who(job)
         d = self.jobs.dir(job["id"])
         seg = d / "segment.mp4"
         if not seg.exists():
@@ -519,15 +637,16 @@ class ReviewAdapter:
             texts = spec.get("texts") or {}
             if texts.get("hook"):
                 title = texts["hook"].strip()
-                if not title_ok(title):
-                    raise ValueError(f"new hook {title!r} breaks the Lacy title rules (must contain"
-                                     " 'Lacy', 10-100 English characters, no negative words)")
+                if not title_ok(title, name):
+                    raise ValueError(f"new hook {title!r} breaks the clip title rules (must contain"
+                                     f" '{name}', 10-100 English characters, no negative words)")
             elif base_v:
                 title = base_v["title"]
             else:
                 tone = spec["style"].get("hook")
                 title = make_title(job["vibe"], job["category"], used, random.Random(f"{item['id']}{n}{spec['label']}"),
-                                   tone=None if tone == "matched" else tone, hook_style=r.get("hook_style"))
+                                   tone=None if tone == "matched" else tone, hook_style=r.get("hook_style"),
+                                   name=name)
             used.add(title)
             if base_v and not texts.get("hook"):
                 caps = dict(base_v["captions"])
@@ -551,6 +670,8 @@ class ReviewAdapter:
                     if a <= peak < b:
                         peak_cut = off + peak - a
                     off += b - a
+            if r["text_level"] == "none":   # stream clips always carry word captions (Tim's rule)
+                r["text_level"] = "full"
             ass = None
             if r["text_level"] != "none" or r["ending"] != "none":
                 ass = folder / f"{stem}.ass"
@@ -572,23 +693,24 @@ class ReviewAdapter:
             prev = editor.preview(mp4, folder / f"{stem}_preview.mp4", preview_bytes, length)
             out.append({"label": spec["label"], "style": spec["style"], "preset": spec.get("preset"),
                         "experimental": spec.get("experimental", False), "title": title,
-                        "description": description(title, job["category"], job["channel"]),
-                        "tags": tags(job["category"]), "hook": social, "captions": caps,
+                        "description": description(title, job["category"], job["channel"], name, platform),
+                        "tags": tags(job["category"], name, platform), "hook": social, "captions": caps,
                         "file": mp4.name, "preview": prev.name, "duration": round(length, 1),
                         "cuts": len(segs) - 1, "peak": peak_cut})
         return out
 
     def validate(self, item: dict, v: dict) -> None:
         job = self.jobs.load(item["source"]["job_id"])
-        if not title_ok(v["title"]):
-            raise ValueError("Lacy titles must contain 'Lacy', be 10-100 English characters"
+        name, platform = who(job)
+        if not title_ok(v["title"], name):
+            raise ValueError(f"clip titles must contain '{name}', be 10-100 English characters"
                              " and avoid negative words")
         for k, text in v["captions"].items():
             if BANNED.search(text):
-                raise ValueError(f"the {k} caption has a word the Lacy rules ban: {BANNED.search(text).group(0)!r}")
-            if "lacy" not in text.lower():
-                raise ValueError(f"the {k} caption must mention Lacy")
-        v["description"] = description(v["title"], job["category"], job["channel"])
+                raise ValueError(f"the {k} caption has a word the clip rules ban: {BANNED.search(text).group(0)!r}")
+            if name.lower() not in text.lower():
+                raise ValueError(f"the {k} caption must mention {name}")
+        v["description"] = description(v["title"], job["category"], job["channel"], name, platform)
 
     def finish(self, item: dict, status: str) -> None:
         job_id = item["source"].get("job_id")
@@ -616,15 +738,16 @@ def upload_job(job: dict, lcfg: dict, jobs: Jobs, subs: Submissions, yt,
     now = now or time.time()
     if job.get("status") != "ready":
         raise ValueError(f"job {job['id']} is {job.get('status')}, not ready")
-    if not title_ok(job.get("title") or ""):
-        raise ValueError(f"title {job.get('title')!r} breaks the Lacy title rules")
-    for t in ("#Lacy", "#Shorts"):
+    name, _ = who(job)
+    if not title_ok(job.get("title") or "", name):
+        raise ValueError(f"title {job.get('title')!r} breaks the clip title rules")
+    for t in (f"#{hashtag(name)}", "#Shorts"):
         if t not in job.get("description", ""):
             raise ValueError(f"description is missing {t}")
     day = uk_day(now)
     done = subs.uploads_on(day)
     if done >= lcfg["max_uploads_per_day"]:
-        raise ValueError(f"already {done} Lacy uploads today (max {lcfg['max_uploads_per_day']});"
+        raise ValueError(f"already {done} {name} uploads today (max {lcfg['max_uploads_per_day']});"
                          " approve it again tomorrow")
     d = jobs.dir(job["id"])
     from .youtube import YouTubeError, shorts_url
@@ -683,7 +806,7 @@ def deliver_job(job: dict, jobs: Jobs, send) -> str | None:
 
 def crosspost_caption(job: dict) -> str:
     tag = "#GTA6" if game_tag(job.get("category") or "") == "GTA 6" else "#GTA5"
-    return f"{job['title']} #Lacy {tag} #GTA"
+    return f"{job['title']} #{hashtag(who(job)[0])} {tag} #GTA"
 
 
 def video_blocks(job: dict) -> list[tuple[str, str]]:
@@ -719,31 +842,53 @@ def send_video(dcfg: dict, path: Path, job: dict, **kw) -> str:
     return delivery.send(dcfg, path, "lacy", bits, video_blocks(job), name=f"lacy_{job['id']}.mp4", **kw)
 
 
+VOD_RETRY_S = 600          # look for a missing VOD again every 10 min...
+VOD_WAIT_S = 14 * 3600     # ...for up to 14 h (Kick publishes VODs when the stream ends)
+# Renders that crashed on the PyAV/faster-whisper break (fixed): run them again once.
+FIXED_CRASHES = ("metadata_errors",)
+
+
+def retry_after_fix(job: dict, now: float | None = None) -> bool:
+    return (job.get("status") == "failed" and not job.get("retried")
+            and any(m in (job.get("reason") or "") for m in FIXED_CRASHES)
+            and (now or time.time()) - float(job.get("created") or 0) < 2 * 86400)
+
+
 # --------------------------------------------------------------------------
 # In-bot side: queue jobs, run renders, post review cards
 # --------------------------------------------------------------------------
 class LacyMode:
+    """Stream-clip jobs for every programme streamer (Lacy + the `clips` channels)."""
+
     def __init__(self, cfg: dict, data_dir: Path, config_path: str | None = None):
         self.cfg = settings(cfg)
+        self.profiles = profiles(cfg)
         self.jobs = Jobs(data_dir)
         self.data_dir = Path(data_dir)
         self.config_path = config_path
         self.queue: asyncio.Queue | None = None
 
+    def profile(self, key: tuple[str, str]) -> dict | None:
+        return self.profiles.get((key[0], key[1].lower()))
+
     def applies(self, key: tuple[str, str]) -> bool:
-        return key == ("twitch", self.cfg["channel"])
+        return self.profile(key) is not None
 
-    def category_ok(self, category: str | None) -> bool:
-        return is_gta(category, self.cfg["allowed_categories"])
+    def category_ok(self, category: str | None, key: tuple[str, str] | None = None) -> bool:
+        p = self.profile(key) if key else None
+        return is_gta(category, (p or self.cfg)["allowed_categories"])
 
-    def enqueue(self, rec: dict, state: dict) -> dict | None:
-        if rec.get("score", 0) < self.cfg["min_score"]:
+    def enqueue(self, rec: dict, state: dict, key: tuple[str, str] | None = None) -> dict | None:
+        p = self.profile(key or (rec.get("platform") or "twitch", rec.get("channel") or self.cfg["channel"]))
+        if p is None or not rec.get("programme"):
             return None
-        job = new_job(rec, state, self.cfg)
+        if rec.get("score", 0) < p["min_score"]:
+            return None
+        job = new_job(rec, state, p)
         self.jobs.save(job)
         if self.queue is not None:
             self.queue.put_nowait(job["id"])
-        log.info("lacy job %s queued (render after %s)", job["id"], uk_stamp(job["ready_at"]))
+        log.info("clip job %s (%s) queued (render after %s)", job["id"], p["name"], uk_stamp(job["ready_at"]))
         return job
 
     def _cli(self, *args: str) -> list[str]:
@@ -768,7 +913,7 @@ class LacyMode:
         take the chat bot down. Finished variants wait in the review queue."""
         self.queue = asyncio.Queue()
         for j in self.jobs.all():  # jobs left waiting by a restart
-            if j.get("status") in ("queued", "rendering"):
+            if j.get("status") in ("queued", "rendering", "waiting_vod") or retry_after_fix(j):
                 self.queue.put_nowait(j["id"])
         while True:
             job_id = await self.queue.get()
@@ -777,15 +922,42 @@ class LacyMode:
             except Exception as e:  # noqa: BLE001
                 log.warning("lacy job %s error: %s", job_id, e)
 
+    async def _later(self, job_id: str, delay: float) -> None:
+        await asyncio.sleep(delay)
+        if self.queue is not None:
+            self.queue.put_nowait(job_id)
+
+    async def find_vod(self, job: dict, helix) -> dict | None:
+        platform = job_key(job)[0]
+        if platform == "kick":
+            from .sources import kick_stream_vod
+            return await kick_stream_vod(job["channel"], job.get("stream_id"))
+        if helix:
+            return await helix.stream_vod(job.get("user_id"), job.get("stream_id"))
+        return None
+
     async def _process(self, job_id, helix, post_status) -> None:
         job = self.jobs.load(job_id)
+        if retry_after_fix(job):
+            job.update(status="queued", reason=None, retried=time.time())
+            self.jobs.save(job)
         wait = job["ready_at"] - time.time()
         if wait > 0:
             await asyncio.sleep(wait)
-        if helix and not job.get("vod_url"):
-            vod = await helix.stream_vod(job.get("user_id"), job.get("stream_id"))
+        if not job.get("vod_url"):
+            try:
+                vod = await self.find_vod(job, helix)
+            except Exception as e:  # noqa: BLE001 - Kick/Twitch hiccup: try again later
+                log.info("clip job %s: VOD lookup failed: %s", job_id, e)
+                vod = None
             if vod:
                 job["vod_url"], job["vod_started_at"] = vod.get("url"), vod.get("started_at")
+            elif time.time() - job["ready_at"] < VOD_WAIT_S:
+                # Kick often publishes the VOD only when the stream ends: check again later.
+                job["status"] = "waiting_vod"
+                self.jobs.save(job)
+                asyncio.create_task(self._later(job_id, VOD_RETRY_S))
+                return
         job["status"] = "rendering"
         self.jobs.save(job)
         code, out = await self._run("render", job_id)
@@ -831,6 +1003,7 @@ def main(argv: list[str] | None = None) -> int:
     lay.add_argument("video")
     lay.add_argument("--at", type=float, default=5.0)
     lay.add_argument("--out", default="layout_check.jpg")
+    lay.add_argument("--streamer", default=None, help="channel whose facecam box to use (default lacy)")
     args = ap.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
@@ -844,6 +1017,10 @@ def main(argv: list[str] | None = None) -> int:
         today = uk_day(time.time())
         print(f"Lacy mode {'ON' if lcfg['enabled'] else 'OFF'} · uploads today "
               f"{subs.uploads_on(today)}/{lcfg['max_uploads_per_day']}")
+        for (plat, chan), p in profiles(cfg).items():
+            if p["name"] != "Lacy":
+                print(f"{p['name']} ({plat}/{chan}) clips ON · uploads today "
+                      f"{Submissions(Path(p['submissions_csv'])).uploads_on(today)}/{p['max_uploads_per_day']}")
         for j in jobs.all()[-30:]:
             todo = missing_platforms(j)
             print(f"  {j['id']}  {j['status']:<9} score {j.get('score', '-'):<5} "
@@ -853,6 +1030,12 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "layout":
         src = Path(args.video)
         info = editor.probe(src)
+        if args.streamer:
+            match = [p for (_, c), p in profiles(cfg, enabled_only=False).items() if c == args.streamer.lower()]
+            if not match:
+                print(f"{args.streamer} has no clipping programme in config")
+                return 1
+            lcfg = match[0]
         lay_ = editor.layout(info["width"], info["height"], lcfg["facecam"], src_fps=info.get("fps"))
         tmp = Path(args.out).with_suffix(".tmp.mp4")
         editor.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-ss", str(args.at),
@@ -861,10 +1044,17 @@ def main(argv: list[str] | None = None) -> int:
         editor.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-i", str(tmp),
                     "-frames:v", "1", args.out])
         tmp.unlink(missing_ok=True)
-        print(f"Wrote {args.out}. If his face isn't filling the top part, change lacy.facecam.")
+        where = (f"clips.streamers.{lcfg['channel']}.facecam" if lcfg.get("name", "Lacy") != "Lacy"
+                 else "lacy.facecam")
+        print(f"Wrote {args.out}. If the face isn't filling the top part, change {where}.")
         return 0
 
     job = jobs.load(args.job)
+    try:
+        lcfg = profile_for(cfg, job)
+    except ValueError:
+        pass   # old job of a channel no longer in config: Lacy's settings
+    subs = Submissions(Path(lcfg["submissions_csv"]))
     if args.cmd == "render":
         from . import progress
         progress.arm_cancel()

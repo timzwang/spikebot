@@ -32,13 +32,13 @@ def img_shot(name: str, tags: list[str]) -> TG.Shot:
 def test_settings_defaults_env_and_paths(tmp_path):
     from spikebot.main import apply_env
     s = TG.settings({})
-    assert s["per_day"] == 2 and s["bpm"] == 120 and (s["min_s"], s["max_s"]) == (15, 30)
+    assert s["per_day"] == 4 and s["bpm"] == 120 and (s["min_s"], s["max_s"]) == (15, 30)
     assert s["enabled"] is True
     c = apply_env({"tokyo_girl": {"per_day": 5}}, [], {"TOKYO_GIRL_PER_DAY": "3", "TOKYO_GIRL_MODE": "false"})
     s = TG.settings(c, tmp_path)
     assert s["per_day"] == 3 and s["enabled"] is False
     assert s["export_dir"] == str(tmp_path / "exports/tokyo_girl")
-    assert TG.settings({"tokyo_girl": {"per_day": 4}})["per_day"] == 4
+    assert TG.settings({"tokyo_girl": {"per_day": 6}})["per_day"] == 6
 
 
 def test_caption_templates_are_exact():

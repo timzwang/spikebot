@@ -175,7 +175,7 @@ def test_hook_differs_from_youtube_title_and_has_gta6_tags():
     assert "#GTA6" in caps["instagram"] and "#GTAVI" in caps["instagram"] and "#Lacy" in caps["instagram"]
     assert "#GTA6" in caps["tiktok"] and caps["tiktok"] != caps["instagram"]
     assert "#GTA5" in I.captions(dict(job, category="Grand Theft Auto V"), "Lacy x")["instagram"]
-    every = {h for hs in I.HOOKS.values() for h in hs}
+    every = {h.format(name="Lacy") for hs in I.HOOKS.values() for h in hs}
     assert all(I.hook_ok(h, "") for h in every)
     assert I.pick_hook(job, every - {"Lacy's laugh at the end 😭"}) == "Lacy's laugh at the end 😭"
 
