@@ -574,13 +574,37 @@ def file_sha256(path: Path) -> str:
 # --------------------------------------------------------------------------
 # Speech to text (English check + word timings)
 # --------------------------------------------------------------------------
+WHISPER_RATE = 16000
+
+
+def decode_audio(path: Path, rate: int = WHISPER_RATE):
+    """The file's audio as mono float32 at `rate` Hz (what Whisper wants), decoded by ffmpeg.
+    A file without audio gives an empty array."""
+    import numpy as np
+    p = subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-i", str(path),
+                        "-vn", "-ac", "1", "-ar", str(rate), "-f", "f32le", "-acodec", "pcm_f32le", "-"],
+                       capture_output=True, timeout=600)
+    if p.returncode != 0:
+        err = p.stderr.decode(errors="replace").strip()
+        if "does not contain any stream" in err or "matches no streams" in err:
+            return np.zeros(0, dtype=np.float32)
+        raise EditError(f"could not decode the audio: {err[-300:]}")
+    return np.frombuffer(p.stdout, dtype=np.float32).copy()
+
+
 def transcribe(path: Path, model_name: str = "base") -> tuple[list[Word], str, float]:
     """Word timings, detected language and its probability, via faster-whisper
     (CPU, int8). Imported here so the chat bot never loads it."""
     from faster_whisper import WhisperModel  # heavy import, render subprocess only
 
+    audio = decode_audio(path)
+    if not len(audio):
+        return [], "none", 0.0
     model = WhisperModel(model_name, device="cpu", compute_type="int8")
-    segments, info = model.transcribe(str(path), word_timestamps=True, vad_filter=True)
+    # The audio is decoded by ffmpeg, never by faster-whisper: its decoder goes through PyAV,
+    # whose API keeps changing under it (PyAV 19 dropped `metadata_errors` and every render
+    # crashed). A numpy array skips PyAV completely.
+    segments, info = model.transcribe(audio, word_timestamps=True, vad_filter=True)
     words = [Word(w.start, w.end, w.word) for seg in segments for w in (seg.words or [])
              if w.word.strip()]
     return words, info.language, float(info.language_probability)

@@ -437,3 +437,38 @@ def test_lacy_output_is_60_fps_or_the_sources_own_rate():
     assert editor.layout(1920, 1080, box, src_fps=59.94).filter().endswith("fps=60000/1001")
     assert editor.layout(1920, 1080, box).filter().endswith("fps=30")
     assert editor.CRF == 18
+
+
+# ---- speech to text never goes through PyAV ------------------------------------
+@needs_ffmpeg
+def test_transcribe_hands_whisper_a_decoded_array(tmp_path, monkeypatch):
+    """faster-whisper's own decoder uses PyAV, whose API changes broke every render
+    (PyAV 19: open() got an unexpected keyword argument 'metadata_errors'). We decode
+    with ffmpeg and give Whisper the samples, so PyAV is never called."""
+    import sys
+    import types
+    import numpy as np
+    src = tmp_path / "talk.mp4"
+    subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "sine=f=300:d=2",
+                    "-f", "lavfi", "-i", "testsrc=d=2:s=320x240", "-shortest", str(src)], check=True)
+    seen = {}
+
+    class FakeModel:
+        def __init__(self, *a, **k):
+            pass
+
+        def transcribe(self, audio, **kw):
+            seen["audio"] = audio
+            w = types.SimpleNamespace(start=0.1, end=0.4, word=" hello")
+            return iter([types.SimpleNamespace(words=[w])]), types.SimpleNamespace(language="en", language_probability=0.97)
+
+    monkeypatch.setitem(sys.modules, "faster_whisper", types.SimpleNamespace(WhisperModel=FakeModel))
+    words, lang, prob = editor.transcribe(src, "tiny")
+    assert isinstance(seen["audio"], np.ndarray) and seen["audio"].dtype == np.float32
+    assert abs(len(seen["audio"]) / editor.WHISPER_RATE - 2.0) < 0.1
+    assert [w.text for w in words] == [" hello"] and lang == "en" and prob == 0.97
+
+    silent = tmp_path / "silent.mp4"
+    subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i",
+                    "testsrc=d=1:s=320x240", str(silent)], check=True)
+    assert editor.transcribe(silent, "tiny") == ([], "none", 0.0)   # no audio track: no crash
