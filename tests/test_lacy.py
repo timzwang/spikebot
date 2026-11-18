@@ -380,7 +380,7 @@ def test_bot_checks_lacy_category_at_spike_time(tmp_path, monkeypatch, category,
     if queued:
         j = jobs[0]
         assert j["category"] == category and j["status"] == "queued"
-        assert j["clip_end"] - j["clip_start"] <= 59 and j["ready_at"] > j["clip_end"]
+        assert j["clip_end"] - j["clip_start"] <= 150 and j["ready_at"] > j["clip_end"]   # sample to pick from
 
 
 def test_bot_lacy_needs_polled_category_to_be_gta_too(tmp_path, monkeypatch):

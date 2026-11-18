@@ -25,7 +25,9 @@ CHANNELS = [{"platform": "kick", "name": "adinross", "programme": "Adin Ross cli
 
 def test_profiles_cover_programme_channels_only():
     p = L.profiles({"channels": CHANNELS, "lacy_mode": "true", "min_score_to_alert": 3})
-    assert set(p) == {("kick", "adinross"), ("kick", "sealstats"), ("twitch", "lacy")}   # never kaicenat
+    assert set(p) == {("kick", "adinross"), ("kick", "sealstats"), ("twitch", "lacy"), ("twitch", "kaicenat")}
+    assert p[("twitch", "kaicenat")]["name"] == "Kai Cenat"          # no programme, cleared by Tim (clips.allow)
+    assert ("twitch", "kaicenat") not in L.profiles({"channels": CHANNELS, "clips": {"allow": []}})   # not cleared
     adin = p[("kick", "adinross")]
     assert adin["name"] == "Adin Ross" and adin["hashtag"] == "AdinRoss" and adin["platform"] == "kick"
     assert adin["submissions_csv"] == "logs/adinross_submissions.csv" and adin["min_score"] == 3
@@ -45,7 +47,7 @@ def test_profiles_cover_programme_channels_only():
     assert a["facecam"] == {"x": 0.75, "y": 0.0, "w": 0.25, "h": 0.30}
     # a job of a channel that lost its programme has no profile
     with pytest.raises(ValueError):
-        L.profile_for({"channels": CHANNELS}, {"platform": "twitch", "channel": "kaicenat"})
+        L.profile_for({"channels": CHANNELS, "clips": {"allow": []}}, {"platform": "twitch", "channel": "kaicenat"})
     assert L.profile_for({"channels": CHANNELS}, {"channel": "lacy"})["name"] == "Lacy"   # old Lacy job
 
 
@@ -243,3 +245,32 @@ def test_failed_kick_lookup_still_alerts_but_makes_no_clip(tmp_path, monkeypatch
                   clip_start=T - 30, clip_end=T + 15)
     asyncio.run(bot.handle(("kick", "adinross"), spike))
     assert posts == ["https://moments.invalid"] and bot.lacy.jobs.all() == []
+
+
+def test_bigger_sample_around_the_spike():
+    prof = L.profiles({"channels": CHANNELS})[("kick", "adinross")]
+    rec = {"onset": T, "clip_start": T - 30, "clip_end": T + 15, "peak_time": T + 5, "score": 6.0,
+           "programme": "x", "vibe": []}
+    a, b = L.sample_window(rec, prof)
+    assert (a, b) == (T - 60, T + 45)                         # 30 s more each side
+    long = dict(rec, clip_start=T - 200, clip_end=T + 200)
+    a, b = L.sample_window(long, prof)
+    assert b - a == prof["sample_s"] and a < T + 5 < b       # capped, around the peak
+
+
+def test_facecam_is_the_face_that_stays_put():
+    from spikebot import safety as SF
+    size = (1920, 1080)
+    cam = {"class": "FACE_MALE", "score": 0.9, "box": [1700, 60, 100, 100]}       # webcam top right
+    frames = [([cam] + ([{"class": "FACE_FEMALE", "score": 0.8, "box": [200 + 90 * i, 500, 60, 60]}] if i % 2 else []),
+               size) for i in range(8)]                                          # a game character moving
+    box = SF.facecam_from_faces(frames)
+    assert box and 0.8 < box["x"] < 0.95 and box["y"] < 0.1 and box["x"] + box["w"] <= 1.0
+    assert SF.facecam_from_faces([([], size)] * 8) is None
+    # the auto box becomes the layout of that clip
+    lay = editor.layout(1920, 1080, box)
+    assert lay.cam[2] > 1400
+    prof = L.profiles({"channels": CHANNELS})[("kick", "adinross")]
+    assert prof["facecam_auto"] is True
+    fixed = L.profiles({"channels": CHANNELS, "clips": {"streamers": {"adinross": {"facecam": {"x": 0.7}}}}})
+    assert fixed[("kick", "adinross")]["facecam_auto"] is False

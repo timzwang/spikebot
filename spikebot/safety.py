@@ -213,3 +213,57 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+
+
+# --------------------------------------------------------------------------
+# Facecam finder (same detector: it also finds faces)
+# --------------------------------------------------------------------------
+FACES = {"FACE_FEMALE", "FACE_MALE"}
+
+
+def facecam_from_faces(per_frame: list[tuple[list[dict], tuple[int, int]]], min_share: float = 0.5) -> dict | None:
+    """The streamer's camera box (fractions x, y, w, h) from face detections in sampled frames:
+    the face that sits in the same place in most frames (game characters move, the webcam
+    doesn't), widened to a head-and-shoulders box. None if no steady face. Pure."""
+    found = []
+    for dets, (w, h) in per_frame:
+        for d in dets:
+            if d.get("class") in FACES and float(d.get("score") or 0) >= 0.4:
+                x, y, bw, bh = d["box"]
+                found.append(((x + bw / 2) / w, (y + bh / 2) / h, bw / w, bh / h))
+    if not found or not per_frame:
+        return None
+    best = []
+    for cx, cy, _, _ in found:   # the biggest group of faces within 4% of each other
+        near = [f for f in found if abs(f[0] - cx) < 0.04 and abs(f[1] - cy) < 0.06]
+        if len(near) > len(best):
+            best = near
+    if len(best) < max(2, min_share * len(per_frame)):
+        return None
+    cx = sorted(f[0] for f in best)[len(best) // 2]
+    cy = sorted(f[1] for f in best)[len(best) // 2]
+    fw = sorted(f[2] for f in best)[len(best) // 2]
+    fh = sorted(f[3] for f in best)[len(best) // 2]
+    bw, bh = min(1.0, fw * 3.4), min(1.0, fh * 3.0)          # head and shoulders
+    x0 = min(max(0.0, cx - bw / 2), 1.0 - bw)
+    y0 = min(max(0.0, cy - bh * 0.42), 1.0 - bh)
+    return {"x": round(x0, 3), "y": round(y0, 3), "w": round(bw, 3), "h": round(bh, 3)}
+
+
+def find_facecam(path: Path, samples: int = 10) -> dict | None:
+    """Look at `samples` frames spread over the video and find the webcam. Raises Unavailable."""
+    _detector()
+    dur = 0.0
+    probe = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "json",
+                            str(path)], capture_output=True, text=True, timeout=60)
+    try:
+        dur = float(json.loads(probe.stdout)["format"]["duration"])
+    except (ValueError, KeyError, TypeError):
+        return None
+    fps = max(samples / max(dur, 1.0), 0.05)
+    rows = []
+    for _, f in frames(Path(path), fps=fps, width=960):
+        rows.append((detect(f), (f.shape[1], f.shape[0])))
+        if len(rows) >= samples:
+            break
+    return facecam_from_faces(rows)

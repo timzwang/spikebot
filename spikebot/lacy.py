@@ -48,6 +48,11 @@ DEFAULTS = {
     "min_score": None,                       # None = use min_score_to_alert
     "vod_delay_s": 300,                      # wait for the VOD to contain the moment
     "max_clip_s": 59,
+    # How much of the VOD is cut around each spike for the editor to choose from: the chat
+    # window plus this much before/after, at most `sample_s` in all (centred on the peak).
+    "sample_before_s": 30,
+    "sample_after_s": 30,
+    "sample_s": 150,
     "privacy": "public",
     "facecam": {"x": 0.0, "y": 0.0, "w": 0.25, "h": 0.30},  # fractions of the frame
     "whisper_model": "base",
@@ -88,6 +93,9 @@ def settings(cfg: dict) -> dict:
 # --------------------------------------------------------------------------
 CLIP_DEFAULTS = {
     "enabled": True,
+    # Channels without a programme that Tim has cleared for clipping himself (his call,
+    # 18 Nov 2026: "Use Kai stream clips anyway"). They need to be in "channels" too.
+    "allow": ["kaicenat"],
     # per-streamer overrides keyed by channel name, e.g.
     #   "adinross": {"name": "Adin Ross", "facecam": {"x": 0.75, "y": 0.0, "w": 0.25, "h": 0.3}}
     "streamers": {},
@@ -126,9 +134,11 @@ def profiles(cfg: dict, enabled_only: bool = True) -> dict[tuple[str, str], dict
     cs = clip_settings(cfg)
     if not cs["enabled"] and enabled_only:
         return out
-    common = {k: v for k, v in cs.items() if k not in ("enabled", "streamers")}
+    common = {k: v for k, v in cs.items() if k not in ("enabled", "streamers", "allow")}
+    allow = {str(a).lower() for a in cs.get("allow") or []}
     for key, c in chans.items():
-        if key in out or key == lkey or not c.get("programme") or key[0] not in PLATFORM_URL:
+        cleared = key[1] in allow
+        if key in out or key == lkey or not (c.get("programme") or cleared) or key[0] not in PLATFORM_URL:
             continue
         p = json.loads(json.dumps(DEFAULTS))
         if key[0] == "kick":
@@ -138,10 +148,14 @@ def profiles(cfg: dict, enabled_only: bool = True) -> dict[tuple[str, str], dict
                 p[k] = (p[k] | v) if isinstance(p.get(k), dict) and isinstance(v, dict) else v
         p["enabled"] = True
         p["auto_upload"] = False
+        # no box in config for this streamer: find the webcam in each clip (safety.find_facecam)
+        p["facecam_auto"] = "facecam" not in ((cs.get("streamers") or {}).get(key[1]) or {}) \
+            and "facecam" not in common
         if p["min_score"] is None:
             p["min_score"] = float(cfg.get("min_score_to_alert", 0))
         name = p.get("name") or c.get("display") or KNOWN_NAMES.get(key[1]) or key[1]
-        p.update(channel=key[1], platform=key[0], name=name, hashtag=hashtag(name), programme=c["programme"])
+        p.update(channel=key[1], platform=key[0], name=name, hashtag=hashtag(name),
+                 programme=c.get("programme") or "cleared by Tim (no programme)")
         p.setdefault("submissions_csv", f"logs/{key[1]}_submissions.csv")
         if p["submissions_csv"] == DEFAULTS["submissions_csv"]:   # never mix with Lacy's CSV
             p["submissions_csv"] = f"logs/{key[1]}_submissions.csv"
@@ -426,8 +440,16 @@ def clip_window(rec: dict, max_s: float) -> tuple[float, float]:
     return start, start + max_s
 
 
+def sample_window(rec: dict, lcfg: dict) -> tuple[float, float]:
+    """The part of the VOD to cut: the spike's window widened by sample_before_s/after_s,
+    at most sample_s long around the chat peak. The editor picks the Short from inside it."""
+    widened = dict(rec, clip_start=rec["clip_start"] - float(lcfg.get("sample_before_s", 0)),
+                   clip_end=rec["clip_end"] + float(lcfg.get("sample_after_s", 0)))
+    return clip_window(widened, max(float(lcfg.get("sample_s") or 0), float(lcfg["max_clip_s"])))
+
+
 def new_job(rec: dict, state: dict, lcfg: dict) -> dict:
-    start, end = clip_window(rec, lcfg["max_clip_s"])
+    start, end = sample_window(rec, lcfg)
     job_id = datetime.fromtimestamp(rec["onset"], UK).strftime("%Y%m%d-%H%M%S")
     platform = lcfg.get("platform", "twitch")
     if lcfg.get("name", "Lacy") != "Lacy":   # Lacy keeps the old ids
@@ -435,7 +457,7 @@ def new_job(rec: dict, state: dict, lcfg: dict) -> dict:
     return {
         "id": job_id, "status": "queued", "reason": None, "created": time.time(),
         "channel": lcfg["channel"], "platform": platform, "streamer": lcfg.get("name", "Lacy"),
-        "programme": rec.get("programme"),
+        "programme": rec.get("programme") or lcfg.get("programme"),
         "score": rec["score"], "onset": rec["onset"], "onset_uk": rec.get("onset_uk"),
         "peak_time": rec.get("peak_time"), "vibe": rec.get("vibe") or [],
         "sample": rec.get("sample") or [], "category": state.get("category") or "",
@@ -493,6 +515,8 @@ def render_job(job: dict, lcfg: dict, jobs: Jobs, used_titles: set[str],
     from .main import parse_time
     from .messages import vod_offset
     vod_start = parse_time(job["vod_started_at"])
+    if vod_start and job["clip_start"] < vod_start:   # the sample can't start before the VOD does
+        job["clip_start"] = vod_start
     job["vod_link"] = job["vod_url"] + vod_offset(job["clip_start"] - vod_start, platform)
     duration = job["clip_end"] - job["clip_start"]
     seg = d / "segment.mp4"
@@ -518,7 +542,20 @@ def _render_job_body(job, lcfg, jobs, used_titles, fetch, transcribe, now, revie
         track.update(0.2, "Checking the facecam (BRB / away)")
         info = editor.probe(seg)
         duration = info["duration"] or duration
-        lay = editor.layout(info["width"], info["height"], lcfg["facecam"], src_fps=info.get("fps"))
+        facecam = lcfg["facecam"]
+        if lcfg.get("facecam_auto"):
+            track.update(0.15, "Finding the facecam")
+            try:
+                from . import safety
+                found = safety.find_facecam(seg)
+            except Exception as e:  # noqa: BLE001 - fall back to the default box
+                log.info("clip job %s: facecam search failed: %s", job["id"], e)
+                found = None
+            if found:
+                facecam = found
+                job["facecam"] = found
+                log.info("clip job %s: facecam found at %s", job["id"], found)
+        lay = editor.layout(info["width"], info["height"], facecam, src_fps=info.get("fps"))
         away = editor.away_reason(seg, lay, duration)
         if away:
             return finish("skipped", f"BRB/away: {away}")
@@ -618,7 +655,7 @@ class ReviewAdapter:
         words = [editor.Word(a, b, t) for a, b, t in json.loads((d / "words.json").read_text(encoding="utf-8"))]
         w, h = int(job["src_w"]), int(job["src_h"])
         fps = job.get("src_fps") or editor.probe(seg).get("fps")   # jobs from before #39 lack it
-        lay = editor.layout(w, h, self.lcfg["facecam"], src_fps=fps)
+        lay = editor.layout(w, h, job.get("facecam") or self.lcfg["facecam"], src_fps=fps)
         duration = float(job["duration"])
         peak = (job["peak_time"] - job["clip_start"]) if job.get("peak_time") else None
         used = self._used() | {v["title"] for r in item["rounds"] for v in r["variants"]}
@@ -880,7 +917,7 @@ class LacyMode:
 
     def enqueue(self, rec: dict, state: dict, key: tuple[str, str] | None = None) -> dict | None:
         p = self.profile(key or (rec.get("platform") or "twitch", rec.get("channel") or self.cfg["channel"]))
-        if p is None or not rec.get("programme"):
+        if p is None or not (rec.get("programme") or p.get("programme")):
             return None
         if rec.get("score", 0) < p["min_score"]:
             return None
@@ -1000,7 +1037,7 @@ def main(argv: list[str] | None = None) -> int:
     for name, (label, _) in CROSSPOST.items():
         sub.choices["posted"].add_argument(f"--{name}", metavar="URL", help=f"{label} post link")
     lay = sub.add_parser("layout", help="still image of the vertical layout, to check the facecam box")
-    lay.add_argument("video")
+    lay.add_argument("video", nargs="?", help="a clip file or a VOD link; leave out to grab the live stream")
     lay.add_argument("--at", type=float, default=5.0)
     lay.add_argument("--out", default="layout_check.jpg")
     lay.add_argument("--streamer", default=None, help="channel whose facecam box to use (default lacy)")
@@ -1028,14 +1065,33 @@ def main(argv: list[str] | None = None) -> int:
                   + (f"  NOT YET ON: {', '.join(todo)}" if todo else ""))
         return 0
     if args.cmd == "layout":
-        src = Path(args.video)
-        info = editor.probe(src)
         if args.streamer:
             match = [p for (_, c), p in profiles(cfg, enabled_only=False).items() if c == args.streamer.lower()]
             if not match:
                 print(f"{args.streamer} has no clipping programme in config")
                 return 1
             lcfg = match[0]
+        src_arg = args.video
+        tmp_src = None
+        if not src_arg or "://" in src_arg:
+            # no file: a few seconds of the live stream (or of the VOD link given)
+            url = src_arg or PLATFORM_URL.get(lcfg.get("platform", "twitch"), PLATFORM_URL["twitch"]).format(lcfg["channel"])
+            tmp_src = Path(args.out).with_suffix(".src.mp4")
+            print(f"Grabbing a few seconds of {url} ...")
+            try:
+                editor.fetch_segment(url, args.at if src_arg else 0.0, 4.0, tmp_src)
+            except editor.EditError as e:
+                print(f"Couldn't grab it ({e}). If they're offline, pass a VOD link instead.")
+                return 1
+            args.at = 1.0
+        src = tmp_src or Path(src_arg)
+        info = editor.probe(src)
+        if lcfg.get("facecam_auto"):
+            from . import safety
+            found = safety.find_facecam(src, samples=4)
+            print(f"Auto-found facecam: {found}" if found else "No steady face found: using the default box.")
+            if found:
+                lcfg = dict(lcfg, facecam=found)
         lay_ = editor.layout(info["width"], info["height"], lcfg["facecam"], src_fps=info.get("fps"))
         tmp = Path(args.out).with_suffix(".tmp.mp4")
         editor.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-ss", str(args.at),
@@ -1044,9 +1100,19 @@ def main(argv: list[str] | None = None) -> int:
         editor.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-i", str(tmp),
                     "-frames:v", "1", args.out])
         tmp.unlink(missing_ok=True)
+        # the whole frame with the facecam box drawn on, to read the right x/y/w/h off
+        fc = lcfg["facecam"]
+        frame_out = str(Path(args.out).with_name(Path(args.out).stem + "_frame.jpg"))
+        editor.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-ss", str(args.at), "-i", str(src),
+                    "-frames:v", "1", "-vf",
+                    f"drawbox=x=iw*{fc['x']}:y=ih*{fc['y']}:w=iw*{fc['w']}:h=ih*{fc['h']}:color=invert:t=8,"
+                    "drawgrid=w=iw/10:h=ih/10:t=1:c=white@0.35", frame_out])
+        if tmp_src:
+            tmp_src.unlink(missing_ok=True)
         where = (f"clips.streamers.{lcfg['channel']}.facecam" if lcfg.get("name", "Lacy") != "Lacy"
                  else "lacy.facecam")
-        print(f"Wrote {args.out}. If the face isn't filling the top part, change {where}.")
+        print(f"Wrote {args.out} (the Short's layout) and {frame_out} (whole frame: outlined box = facecam,"
+              f" grid = tenths). If the face isn't in the box, change {where} (x, y, w, h as fractions).")
         return 0
 
     job = jobs.load(args.job)
