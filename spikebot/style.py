@@ -124,6 +124,8 @@ BUILT_IN = (
     " the bottom 320 px",
     "Lacy: BRB / away / camera-off moments and non-English clips are skipped; never a watermark or logo",
     "Lacy: no end card unless asked for (ending setting)",
+    "Stream clips (Lacy, Adin Ross, Seal): always word captions; text_level none is never used",
+    "Tokyo Girl / trend: never any on-screen text (no captions, story cards or hook box); text_level is always none",
     "Tokyo Girl / trend: silent files (no audio track); the sound is added in the app",
     "Tokyo Girl / trend: cuts land on the song's beats; text cards sit on whole bars",
     "Tokyo Girl / trend: trailer heads/tails, dark shots and excluded tags are never used; least-used footage first",
@@ -137,6 +139,25 @@ BUILT_IN = (
     " (\"switch the song to impulsive\"); later re-renders of it keep that sound",
 )
 CUSTOM_STR = {"text_colour", "highlight", "hook_style"}
+
+
+# Hard rules per kind (Tim, 18 Nov 2026): stream clips always carry word captions; trailer
+# edits (Tokyo Girl and trending-sound) never carry on-screen text. No pin, preset or
+# feedback can break these: rules are stored as written, but `enforce` (review.specs_for) puts
+# every style that gets rendered back inside them.
+LOCKED: dict[str, dict[str, tuple[str, ...]]] = {
+    "lacy": {"text_level": ("full", "minimal")},
+    "tokyo_girl": {"text_level": ("none",)},
+    "trend": {"text_level": ("none",)},
+}
+
+
+def enforce(style: dict, mode: str) -> dict:
+    """The style with every LOCKED setting of this mode inside its allowed values."""
+    for dim, allowed in LOCKED.get(mode, {}).items():
+        if dim in style and style[dim] not in allowed:
+            style[dim] = allowed[0]
+    return style
 
 
 def dims(mode: str) -> dict[str, tuple[str, ...]]:

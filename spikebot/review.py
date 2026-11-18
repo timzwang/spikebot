@@ -55,7 +55,7 @@ DEFAULTS = {
     "expire_hours": 48,
     "inspiration_archive_hours": 12,
     # automatic trending-sound edits: one per slot (UK times), rotating through the sounds
-    "trend": {"enabled": True, "times": ["07:20", "15:50", "19:40"]},
+    "trend": {"enabled": True, "times": ["07:20", "12:10", "15:50", "19:40"]},
     # info-only voice channels at the top of the server, renamed every 10 min (Discord
     # allows 2 renames per channel per 10 min). Needs the bot's Manage Channels permission.
     "stats": {"enabled": True, "category": "📊 Stats", "every_s": 600},   # #inspiration threads quiet this long are archived (0 = off)
@@ -338,7 +338,7 @@ def style_mode(item: dict) -> str:
 def adapter_for(mode: str, cfg: dict, base: Path):
     """The mode's renderer: .render(item, specs, round_n, folder, preview_bytes) -> variants,
     .validate(item, variant) for caption edits, .finish(item, status) when it closes."""
-    if mode == "lacy":
+    if mode == "lacy":   # every stream clip (Lacy, Adin Ross, Seal...): one renderer, per-streamer profile
         from .lacy import ReviewAdapter
     elif mode == "tokyo_girl":
         from .tokyo_girl import ReviewAdapter
@@ -349,7 +349,17 @@ def adapter_for(mode: str, cfg: dict, base: Path):
 
 def specs_for(item: dict, req: dict, store: Store, rng: random.Random,
               base_dir: Path | None = None, ai_client=None, sounds: list[str] | None = None) -> tuple[list[dict], str]:
-    """Styles (and text overrides) to render for a request, and a comment for Discord."""
+    """Styles (and text overrides) to render for a request, and a comment for Discord.
+    Every style is kept inside the kind's hard rules (style.LOCKED: captions on stream
+    clips, no on-screen text on trailer edits)."""
+    specs, comment = _specs_for(item, req, store, rng, base_dir, ai_client, sounds)
+    for spec in specs:
+        st.enforce(spec["style"], style_mode(item))
+    return specs, comment
+
+
+def _specs_for(item: dict, req: dict, store: Store, rng: random.Random,
+               base_dir: Path | None, ai_client, sounds: list[str] | None) -> tuple[list[dict], str]:
     profile = store.profile()
     presets = store.presets().all()
     kind = req["kind"]
@@ -497,6 +507,14 @@ class Publisher:
         self.youtube_factory = youtube_factory or self._youtube
         self.ig = ig if ig is not None else instagram.crossposter(cfg, base)
 
+    def clip_profile(self, item: dict) -> dict:
+        """Streamer settings of a stream-clip item (Lacy's for old items)."""
+        from . import lacy
+        try:
+            return lacy.profile_for(self.cfg, item.get("source") or {})
+        except ValueError:
+            return self.lcfg
+
     def _youtube(self):
         from .youtube import YouTube
         return YouTube(self.cfg.get("youtube_client_id", ""), self.cfg.get("youtube_client_secret", ""),
@@ -528,9 +546,10 @@ class Publisher:
                 return f"YouTube daily cap {self.rcfg['youtube_max_per_day']} reached"
             if item["mode"] == "lacy":
                 from .lacy import Submissions
-                done = Submissions(Path(self.lcfg["submissions_csv"])).uploads_on(day)
-                if done >= self.lcfg["max_uploads_per_day"]:
-                    return f"Lacy daily cap {self.lcfg['max_uploads_per_day']} reached"
+                prof = self.clip_profile(item)
+                done = Submissions(Path(prof["submissions_csv"])).uploads_on(day)
+                if done >= prof["max_uploads_per_day"]:
+                    return f"{prof.get('name', 'Lacy')} daily cap {prof['max_uploads_per_day']} reached"
         if platform == "instagram":
             if self.ig.posts.published_on(day) >= int(self.ig.icfg["max_per_day"]):
                 return f"Instagram daily cap {self.ig.icfg['max_per_day']} reached"
@@ -585,11 +604,12 @@ class Publisher:
     def _youtube_upload(self, item: dict, v: dict, path: Path, now: float) -> dict:
         from .youtube import YouTubeError, shorts_url
         yt = self.youtube_factory()
-        privacy = self.lcfg["privacy"] if item["mode"] == "lacy" else self.rcfg["privacy"]
+        privacy = self.clip_profile(item)["privacy"] if item["mode"] == "lacy" else self.rcfg["privacy"]
         if item["mode"] == "lacy":
             from . import lacy
-            if not lacy.title_ok(v["title"]):
-                raise ValueError(f"title {v['title']!r} breaks the Lacy title rules")
+            name = self.clip_profile(item).get("name", "Lacy")
+            if not lacy.title_ok(v["title"], name):
+                raise ValueError(f"title {v['title']!r} breaks the clip title rules (must contain {name!r})")
         vid = yt.upload(path, v["title"], v["description"], v.get("tags") or [], privacy)
         url = shorts_url(vid)
         out = {"url": url, "video_id": vid}
@@ -612,7 +632,7 @@ class Publisher:
         from . import lacy
         jobs = lacy.Jobs(self.store.data_dir)
         job_id = item["source"].get("job_id")
-        lacy.Submissions(Path(self.lcfg["submissions_csv"])).append(
+        lacy.Submissions(Path(self.clip_profile(item)["submissions_csv"])).append(
             {"uploaded_uk": lacy.uk_stamp(now), "youtube_url": url, "title": v["title"], "video_id": vid,
              "job_id": job_id or item["id"], "source_vod": item["source"].get("vod_link") or ""})
         if job_id:
@@ -634,7 +654,8 @@ class Publisher:
         if item["mode"] == "lacy" and res["permalink"]:
             from . import lacy
             job_id = item["source"].get("job_id") or item["id"]
-            lacy.Submissions(Path(self.lcfg["submissions_csv"])).set_links(job_id, {"instagram": res["permalink"]})
+            lacy.Submissions(Path(self.clip_profile(item)["submissions_csv"])).set_links(
+                job_id, {"instagram": res["permalink"]})
             try:
                 jobs = lacy.Jobs(self.store.data_dir)
                 job = jobs.load(job_id)

@@ -188,7 +188,7 @@ FEEDBACK_SCHEMA = {
 
 FEEDBACK_SYSTEM = """You turn a YouTube Shorts creator's feedback into concrete settings for an automated
 video editor. The channel posts GTA 6 Shorts in two modes:
-- lacy: clips of the streamer Lacy playing GTA (facecam stacked over gameplay, his voice audio).
+- lacy: stream clips of streamers playing GTA (Lacy, Adin Ross, Seal; facecam stacked over gameplay, their voice audio).
 - tokyo_girl: silent cinematic edits cut from official Rockstar GTA VI trailers and screenshots,
   with text cards; the creator adds the music in the TikTok/Instagram app.
 - trend: the same kind of silent trailer edit, cut to a trending sound instead of the Tokyo Girl song

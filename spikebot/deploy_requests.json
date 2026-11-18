@@ -22,5 +22,19 @@
   "item": "tokyogirl-20261118-004557",
   "until": "2026-11-19T12:00:00+00:00",
   "why": "Tim: the re-render finished but he can't see it"
+ },
+ {
+  "id": "tg-daily-2026-11-18-more",
+  "action": "daily",
+  "until": "2026-11-18T23:00:00+00:00",
+  "why": "Tim: dish out more edits ASAP (per_day 2 -> 4, top up today's now)",
+  "per_day": 4
+ },
+ {
+  "id": "trend-2026-11-18-more",
+  "action": "trend",
+  "per_song": 1,
+  "until": "2026-11-19T06:00:00+00:00",
+  "why": "Tim: dish out more edits ASAP (one trending-sound edit per sound now)"
  }
 ]

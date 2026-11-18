@@ -96,7 +96,7 @@ def test_lacy_job_becomes_three_reviewed_variants(tmp_path):
         R.request(it, "feedback", round=2, label="A2", notes="hook: this is so cringe")
     item = R.render_round(store, item["id"], {"data_dir": str(tmp_path)}, tmp_path, now=T + 90,
                           adapter=L.ReviewAdapter({"data_dir": str(tmp_path)}, tmp_path, lcfg, jobs, set()))
-    assert item["request"]["status"] == "failed" and "Lacy title rules" in item["request"]["error"]
+    assert item["request"]["status"] == "failed" and "clip title rules" in item["request"]["error"]
     # closing the item frees the segment
     L.ReviewAdapter({"data_dir": str(tmp_path)}, tmp_path, lcfg, jobs).finish(item, "rejected")
     assert not (d / "segment.mp4").exists() and jobs.load(job["id"])["status"] == "rejected"

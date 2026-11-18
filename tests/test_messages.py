@@ -125,7 +125,8 @@ def test_bot_moment_gets_vod_link_at_clip_start(tmp_path, monkeypatch):
     monkeypatch.setattr(m, "kick_stream_vod", fake_vod)
     bot = m.Bot({"channels": [{"platform": "kick", "name": "adinross", "programme": "Adin Ross",
                                "display": "Adin Ross"}],
-                 "data_dir": str(tmp_path), "discord_webhook_url": "https://moments.invalid"})
+                 "data_dir": str(tmp_path), "discord_webhook_url": "https://moments.invalid",
+                 "clips_mode": "false"})   # stream clips (and their Kick lookups): tests/test_clips.py
     key = ("kick", "adinross")
     start = m.parse_time("2026-11-19T05:00:00Z")
     bot.state[key] = {"live": True, "started_at": "2026-11-19T05:00:00Z",

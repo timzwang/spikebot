@@ -51,6 +51,9 @@ def mode_label(item: dict) -> tuple[str, int]:
     but are not Tokyo Girl edits."""
     if (item.get("source") or {}).get("kind") == "trend":
         return TREND_LABEL
+    src = item.get("source") or {}
+    if item["mode"] == "lacy" and src.get("streamer") and src["streamer"] != "Lacy":   # Adin Ross, Seal...
+        return src["streamer"], (0x53FC18 if src.get("platform") == "kick" else 0x9146FF)
     return MODE_LABEL.get(item["mode"], (item["mode"], 0x5865F2))
 VARIANT_COLOUR = {"A": 0x3BA55D, "B": 0x5865F2, "C": 0xFAA61A, "P": 0xEB459E}
 SEP = "|"
@@ -185,7 +188,7 @@ MAX_COMPONENTS = 40     # per message, nested ones included
 MAX_TEXT = 3800         # Discord allows 4000 characters of text per message
 
 
-SCOPE_LABEL = {"lacy": "Lacy clips", "tokyo_girl": "Tokyo Girl edits", "trend": "Trend edits"}
+SCOPE_LABEL = {"lacy": "Stream clips (Lacy, Adin Ross, Seal)", "tokyo_girl": "Tokyo Girl edits", "trend": "Trend edits"}
 
 
 def rule_line(e: dict, over: dict[int, int]) -> str:
@@ -1641,6 +1644,25 @@ class ReviewBot:
         asyncio.create_task(self.run_trend(None, "auto", 1))
         return slot
 
+    async def run_daily(self, per_day: int = 0) -> None:
+        """`python -m spikebot.tokyo_girl daily` in a subprocess (what the 06:47 timer runs);
+        `per_day` raises today's target."""
+        cmd = [sys.executable, "-m", "spikebot.tokyo_girl", "--config", self.config_path, "daily"] + \
+            (["--per-day", str(per_day)] if per_day else [])
+        try:
+            p = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE,
+                                                     stderr=asyncio.subprocess.STDOUT, start_new_session=True)
+            try:
+                out, _ = await asyncio.wait_for(p.communicate(), 3 * 3600)
+            except asyncio.TimeoutError:
+                p.kill()
+                await p.wait()
+                raise RuntimeError("Tokyo Girl top-up took over 3 h and was stopped")
+            log.info("tokyo girl daily: %s", out.decode(errors="replace")[-500:].strip())
+            self.wake.set()
+        except Exception as e:  # noqa: BLE001 - never crash the bot
+            log.warning("Tokyo Girl top-up failed: %s", e)
+
     async def run_trend(self, inter, song: str | None, per_song: int) -> None:
         """`python -m spikebot.tokyo_girl trend` in a subprocess; the scan loop posts the rounds."""
         cmd = [sys.executable, "-m", "spikebot.tokyo_girl", "--config", self.config_path, "trend",
@@ -1794,7 +1816,7 @@ class ReviewBot:
     # ---- one-off requests shipped with a deploy (spikebot/deploy_requests.json) -------------
     async def run_deploy_requests(self, now: float | None = None, path: Path | None = None) -> list[str]:
         """Run each request in the deployed code once, after the restart, if it hasn't expired.
-        Only whitelisted actions: `trend`, and `feedback` (a Feedback re-render of one version,
+        Only whitelisted actions: `trend`, `daily` (top up today's Tokyo Girl edits), and `feedback` (a Feedback re-render of one version,
         as if Tim had pressed the button: {item, round, label, notes}; the result posts in that
         item's thread in #ready-to-post). Done ids live in data/deploy_requests.json."""
         path = path or Path(__file__).with_name("deploy_requests.json")
@@ -1811,7 +1833,7 @@ class ReviewBot:
         ran = []
         for r in reqs if isinstance(reqs, list) else []:
             rid = str(r.get("id") or "")
-            if not rid or rid in done or r.get("action") not in ("trend", "feedback", "repost"):
+            if not rid or rid in done or r.get("action") not in ("trend", "feedback", "repost", "daily"):
                 continue
             done.add(rid)   # once, even if it is stale or fails
             until = r.get("until")
@@ -1822,6 +1844,8 @@ class ReviewBot:
             ran.append(rid)
             if r["action"] == "trend":
                 asyncio.create_task(self.run_trend(None, r.get("song"), int(r.get("per_song") or 1)))
+            elif r["action"] == "daily":   # top today's Tokyo Girl edits up to per_day now
+                asyncio.create_task(self.run_daily(int(r.get("per_day") or 0)))
             elif r["action"] == "repost":
                 try:
                     await self.repost_latest(r["item"])
