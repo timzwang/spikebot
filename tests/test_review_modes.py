@@ -165,7 +165,9 @@ def test_trending_sound_edits_use_each_sound_and_not_tokyo_girl(tmp_path):
         assert v["music"]["start_s"] + v["duration"] <= trend["duration"] + 0.5   # fits inside the sound
         assert "Tokyo Girl" not in v["captions"]["tiktok"] and "tiktok.com/music" in v["music_note"]
     assert DB.mode_label(item)[0] == "Trending sound"
-    assert "trending sound" in DB.round_payload(item, item["rounds"][0])["content"]
+    card = DB.round_payload(item, item["rounds"][0])
+    assert "Trending sound" in card["content"]
+    assert all(trend["name"] in e["description"] and "start" in e["description"] for e in card["embeds"])
     assert TG.items_on(TG.load_state(Path(s["state_file"])), "2026-11-17") == 0   # not Tokyo Girl's quota
 
 

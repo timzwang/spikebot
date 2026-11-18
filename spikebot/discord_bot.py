@@ -84,39 +84,60 @@ def ts(t: float, style: str = "f") -> str:
     return f"<t:{int(t)}:{style}>"
 
 
+def vod_time(link: str | None) -> str | None:
+    """"1:02:03" from a VOD link's ?t= (Twitch 1h02m03s / Kick seconds)."""
+    m = re.search(r"[?&]t=(?:(\d+)h)?(?:(\d+)m)?(\d+)s?\b", link or "")
+    if not m:
+        return None
+    sec = int(m.group(1) or 0) * 3600 + int(m.group(2) or 0) * 60 + int(m.group(3) or 0)
+    h, rest = divmod(sec, 3600)
+    return f"{h}:{rest // 60:02d}:{rest % 60:02d}" if h else f"{rest // 60}:{rest % 60:02d}"
+
+
+def song_line(v: dict) -> str | None:
+    """"🎵 Tokyo Girl · start 0:42" (+ the sound's link) for a silent edit."""
+    m = v.get("music") or {}
+    if not m.get("song"):
+        return None
+    start = float(m.get("start_s") or 0)
+    link = re.search(r"<(https?://[^>]+)>", v.get("music_note") or "")
+    return (f"🎵 **{m['song']}** · start **{int(start // 60)}:{int(start % 60):02d}**"
+            + (f" · [sound]({link.group(1)})" if link else ""))
+
+
 def round_payload(item: dict, rnd: dict, extra: str = "", entry_on: dict | None = None) -> dict:
-    """Message for one review round: header + one embed per variant + button rows."""
+    """Message for one review round, kept short so several can be reviewed at once: who / which
+    song and where to start it, length, and the buttons. Nothing about styles or settings."""
     label, colour = mode_label(item)
-    kind = {"initial": "", "redo": " · redo", "feedback": " · after your feedback",
-            "preset": " · preset"}.get(rnd["kind"], "")
-    head = [f"**{label}** · `{item['id']}` · round {rnd['n']}{kind}"]
     src = item.get("source") or {}
+    kind = {"redo": " · redo", "feedback": " · after feedback", "preset": " · preset"}.get(rnd["kind"], "")
+    bits = [f"**{label}**" + (f" · {src['category'].replace('Grand Theft Auto ', 'GTA ')}"
+                              if src.get("category") else "")]
     if src.get("vod_link"):
-        head.append(f"Source: <{src['vod_link']}>")
-    if rnd.get("comment"):
-        head.append(rnd["comment"])
-    if item.get("expires"):
-        head.append(f"Expires {ts(item['expires'], 'R')} if not approved.")
-    if any(v.get("silent") for v in rnd["variants"]):
-        head.append("Silent edits: add the trending sound in each app when posting (the link and start point"
-                    " are on each card)." if src.get("kind") == "trend"
-                    else "Silent edits: add the official sound in each app when posting.")
+        t = vod_time(src["vod_link"])
+        bits.append(f"[VOD{' at ' + t if t else ''}](<{src['vod_link']}>)")
+    head = [" · ".join(bits) + kind + f" · `{item['id']}`"]
+    if rnd.get("comment") and rnd["kind"] != "initial":
+        head.append(rnd["comment"][:300])
+    elif rnd.get("comment") and "🔞" in rnd["comment"]:
+        head.append(rnd["comment"][rnd["comment"].index("🔞"):][:300])
+    if any(v.get("safety") == "unchecked" for v in rnd["variants"]):
+        head.append("⚠️ Nudity check couldn't run: look before approving (it re-checks before posting).")
     if extra:
         head.append(extra)
     embeds = []
     for v in rnd["variants"]:
-        name = f"{v['label']}" + (" · 🧪 experimental" if v.get("experimental") else "") + \
-               (f" · preset {v['preset']}" if v.get("preset") else "") + (" · ✏️ edited" if v.get("edited") else "")
-        caps = v.get("captions") or {}
-        embeds.append({
-            "title": name[:250], "color": VARIANT_COLOUR.get(v["label"][0], 0x99AAB5),
-            "description": (f"{v.get('duration', '?')}s · {v.get('cuts', 0)} cuts\n{st.describe(v['style'])}"
-                            + (f"\n{v['music_note']}" if v.get("music_note") else "")
-                            + (f"\n🎞️ {v['footage_note']}" if v.get("footage_note") else ""))[:1500],
-            "fields": [{"name": "YouTube title", "value": code(v.get("title", ""), 120), "inline": False},
-                       {"name": "Instagram caption", "value": code(caps.get("instagram", "")), "inline": False},
-                       {"name": "TikTok caption", "value": code(caps.get("tiktok", "")), "inline": False}],
-        })
+        lines = [f"{v.get('duration', '?')}s" + (" · ✏️ edited" if v.get("edited") else "")]
+        song = song_line(v)
+        if song:
+            lines.append(song)
+        elif v.get("silent"):
+            lines.append("🎵 add the official sound in the app")
+        if item["mode"] == "lacy" and v.get("title"):
+            lines.append(f"“{v['title'][:100]}”")
+        embeds.append({"title": v["label"] + (" · 🧪" if v.get("experimental") else ""),
+                       "color": VARIANT_COLOUR.get(v["label"][0], 0x99AAB5),
+                       "description": "\n".join(lines)[:600]})
     return {"content": "\n".join(head)[:1900], "embeds": embeds[:9],
             "rows": buttons(item, rnd),
             "allowed_mentions": {"parse": []}}

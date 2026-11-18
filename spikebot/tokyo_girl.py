@@ -420,7 +420,10 @@ def build_shots(rel: str, entry: dict, override: dict, lcfg: dict) -> list[Shot]
     if override.get("skip"):
         return []
     tags = sorted(set(override.get("tags") or []) | set(tags_for(rel)))
+    bad = [t for t, _ in entry.get("nsfw") or []]
     if entry["kind"] == "image":
+        if bad:   # nudity / sexual content: never used
+            return []
         return [Shot(rel, "image", 0.0, math.inf, tags, None, entry["w"], entry["h"])]
     dur = entry["duration"]
     lo, hi = lcfg["trailer_head_s"], dur - lcfg["trailer_tail_s"]
@@ -439,6 +442,8 @@ def build_shots(rel: str, entry: dict, override: dict, lcfg: dict) -> list[Shot]
             continue
         if any(s < b and e > a for a, b in excl):
             continue
+        if any(s - 1.0 <= t <= e + 1.0 for t in bad):   # nudity / sexual content nearby
+            continue
         ys = [y for t, y in entry["yavg"] if s <= t < e]
         if not ys and entry["yavg"]:
             ys = [min(entry["yavg"], key=lambda p: abs(p[0] - (s + e) / 2))[1]]
@@ -453,6 +458,23 @@ def build_shots(rel: str, entry: dict, override: dict, lcfg: dict) -> list[Shot]
         out.append(Shot(rel, "video", round(s, 3), round(e, 3), sorted(stags), entry.get("crop"),
                         entry["w"], entry["h"], round(statistics.mean(mv), 2) if mv else None))
     return out
+
+
+def nudity_scan(path: Path, entry: dict, rel: str) -> None:
+    """Once per file: the times showing nudity / sexual framing (spikebot/safety.py), stored as
+    entry["nsfw"]; build_shots never uses a shot that contains one. Without NudeNet nothing is
+    stored, so it runs again next time."""
+    from . import safety
+    try:
+        log.info("nudity check of %s (once)", rel)
+        entry["nsfw"] = safety.flag_times(path, fps=1.0)
+        if entry["nsfw"]:
+            log.warning("%s: %d frame(s) with nudity/sexual content, those shots are never used",
+                        rel, len(entry["nsfw"]))
+    except safety.Unavailable as e:
+        log.error("%s: %s", rel, e)
+    except Exception as e:  # noqa: BLE001 - try again next scan
+        log.warning("nudity check of %s failed: %s", rel, e)
 
 
 class Library:
@@ -484,6 +506,8 @@ class Library:
             sig = [st.st_size, int(st.st_mtime)]
             if rel in cache and cache[rel].get("sig") == sig:
                 out[rel] = cache[rel]
+                if "nsfw" not in cache[rel]:
+                    nudity_scan(p, out[rel], rel)
                 if cache[rel].get("kind") == "video" and "motion" not in cache[rel]:
                     try:   # files analysed before the motion measure: add it once
                         log.info("measuring motion in %s (once)", rel)
@@ -507,6 +531,7 @@ class Library:
                 log.warning("skipping %s: too small (%sx%s)", rel, entry["w"], entry["h"])
                 continue
             entry["sig"] = sig
+            nudity_scan(p, entry, rel)
             out[rel] = entry
         self.root.mkdir(parents=True, exist_ok=True)
         self.cache_file.write_text(json.dumps(out, indent=1), encoding="utf-8")

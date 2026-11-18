@@ -466,6 +466,15 @@ def _render_round(store, item_id, item, cfg, base, req, rcfg, now, adapter, seed
         variants = adapter.render(item, specs, n, store.dir(item_id), budget)
         if not variants:
             raise RuntimeError("nothing could be rendered")
+        # Nudity check on every version before anyone sees it (spikebot/safety.py)
+        from . import safety, progress as _p
+        _p.current().update(0.97, "Checking for nudity")
+        variants, blocked = safety.screen_variants(variants, store.dir(item_id))
+        if blocked:
+            comment = (comment + " " if comment else "") + "🔞 Blocked: " + "; ".join(
+                f"{b['label']} ({b['reason']})" for b in blocked)
+        if not variants:
+            raise RuntimeError("🔞 blocked: " + "; ".join(b["reason"] for b in blocked))
     except Exception as e:  # noqa: BLE001 - reported to Tim in Discord
         log.warning("review %s: render failed: %s", item_id, e)
         with store.edit(item_id) as item:
@@ -606,6 +615,10 @@ class Publisher:
         a = item["approved"]
         v = variant_of(item, a["round"], a["label"])
         path = make_final(self.store, item)
+        unsafe = self.safety_check(v, path)
+        if unsafe:
+            row.update(status="failed" if unsafe.startswith("🔞") else "waiting", reason=unsafe)
+            return self._store_row(item_id, platform, row)
         row["attempts"] = int(row.get("attempts") or 0) + 1
         try:
             if platform == "youtube":
@@ -621,6 +634,20 @@ class Publisher:
             row.update(status="failed" if final else "retry", error=err)
             log.warning("review %s: %s failed (try %s): %s", item_id, platform, row["attempts"], err)
         return self._store_row(item_id, platform, row)
+
+    def safety_check(self, v: dict, path: Path) -> str | None:
+        """Last gate before a platform: a version never scanned (or scanned while the check was
+        unavailable) is scanned now. Nudity = never posted; no checker = wait (fail closed)."""
+        if v.get("safety") == "ok":
+            return None
+        from . import safety
+        try:
+            res = safety.scan(path)
+        except safety.Unavailable as e:
+            return f"not posted: {e}"
+        except Exception as e:  # noqa: BLE001
+            return f"not posted: nudity check failed ({e})"
+        return None if res["ok"] else f"🔞 blocked: {res['reason']}"
 
     def _store_row(self, item_id: str, platform: str, row: dict) -> dict:
         with self.store.edit(item_id) as item:

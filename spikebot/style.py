@@ -125,6 +125,10 @@ BUILT_IN = (
     "Lacy: BRB / away / camera-off moments and non-English clips are skipped; never a watermark or logo",
     "Lacy: no end card unless asked for (ending setting)",
     "Stream clips (Lacy, Adin Ross, Seal): always word captions; text_level none is never used",
+    "Every video: nudity / sexual content check before review and again before posting; anything flagged is"
+    " blocked and deleted, and Tokyo Girl / trend never use trailer shots with nudity, strip-club or twerking framing",
+    "Stream clips: the clip never starts or ends mid-word or mid-sentence",
+    "Captions sit at one fixed spot, one line at a time, never jumping up or down",
     "Tokyo Girl / trend: never any on-screen text (no captions, story cards or hook box); text_level is always none",
     "Tokyo Girl / trend: silent files (no audio track); the sound is added in the app",
     "Tokyo Girl / trend: cuts land on the song's beats; text cards sit on whole bars",
