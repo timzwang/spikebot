@@ -625,6 +625,50 @@ class ReviewBot:
                 return None
         return ch
 
+    async def announcements(self):
+        """#announcements: the configured id, else the server's text channel with "announcement"
+        in its name. None if there isn't one (callers fall back to #status)."""
+        cid_ = self.rcfg.get("announcements_channel_id")
+        if cid_:
+            return await self.channel(cid_)
+        if getattr(self, "_announce_id", None):
+            return await self.channel(self._announce_id)
+        guilds = ([self.client.get_guild(self.rcfg["guild_id"])] if self.rcfg.get("guild_id")
+                  else list(getattr(self.client, "guilds", []) or []))
+        for g in guilds:
+            for ch in getattr(g, "text_channels", []) or []:
+                if "announcement" in (ch.name or "").lower():
+                    self._announce_id = ch.id
+                    return ch
+        return None
+
+    async def announce(self, key: str, text: str) -> None:
+        """Key news for Tim (new rules, what the rule compiler built, videos going live, blocked
+        videos, what a deploy changed) goes to #announcements; #status keeps bot health.
+        Never raises."""
+        import discord
+        try:
+            ch = await self.announcements()
+            if ch is not None:
+                await ch.send(text[:1990], allowed_mentions=discord.AllowedMentions.none())
+                return
+        except Exception as e:  # noqa: BLE001
+            log.warning("#announcements post failed: %s", e)
+        if self.notifier:
+            await self.notifier.send(key, text[:1900], kind="start")
+
+    async def announce_new_rules(self, seen: int) -> int:
+        """Post rules added since entry `seen` (/feedback, or Feedback said "always") to
+        #announcements. Returns the newest entry number."""
+        new = [e for e in self.store.profile().entries() if e["n"] > seen]
+        if new:
+            lines = [f"**#{e['n']}** {st.entry_text(e, where=False)} → {st.modes_label(st.entry_modes(e))}"
+                     for e in new[:15]]
+            await self.announce(f"newrules:{new[-1]['n']}", "📝 **New rule" + ("s" if len(new) > 1 else "")
+                                + "** (turn off with /rules):\n" + "\n".join(lines))
+            seen = max(e["n"] for e in new)
+        return seen
+
     async def say(self, item: dict, text: str, file=None) -> None:
         """Message in the clip's thread (or #ready-to-post if it has none)."""
         ch = await self.channel(item.get("thread_id") or self.rcfg["channel_id"])
@@ -839,7 +883,12 @@ class ReviewBot:
             if req.get("status") == "queued" and item["id"] not in self.queued and st_ == "open":
                 self.queued.add(item["id"])
                 self.render_q.put_nowait(item["id"])
-            if st_ == "failed" and not item.get("told"):
+            if st_ == "failed" and not item.get("told") and "🔞" in (item.get("error") or ""):
+                await self.announce(f"blocked:{item['id']}", f"🔞 `{item['id']}` ({mode_label(item)[0]}) was blocked"
+                                    f" and deleted before review: {item.get('error')}")
+                with self.store.edit(item["id"]) as it:
+                    it["told"] = True
+            elif st_ == "failed" and not item.get("told"):
                 if self.notifier:
                     await self.notifier.send(f"review_failed:{item['id']}",
                                              f"🎬 `{item['id']}` could not be rendered: {item.get('error')}", kind="lacy")
@@ -917,6 +966,8 @@ class ReviewBot:
             if row["status"] == "done":
                 extra = f" ({row['note']})" if row.get("note") else ""
                 await self.say(item, f"✅ **{name}** is live: {row.get('url')}{extra}")
+                await self.announce(f"live:{item_id}:{platform}",
+                                    f"✅ {mode_label(item)[0]} `{item_id}` is live on **{name}**: {row.get('url')}")
             elif row["status"] == "failed":
                 await self.say(item, f"❌ **{name}** failed {row.get('attempts')}×, giving up: {row.get('error')}")
                 if self.notifier:
@@ -1878,15 +1929,19 @@ class ReviewBot:
         every few minutes (Feedback-button notes, newly deployed editor settings)."""
         from . import rules as rules_
         backoff = every
+        seen = max((e["n"] for e in self.store.profile().entries()), default=0)   # announce only new ones
         while True:
+            try:
+                seen = await self.announce_new_rules(seen)
+            except Exception as e:  # noqa: BLE001
+                log.warning("announcing new rules failed: %s", e)
             try:
                 changes = await asyncio.to_thread(self.compile_rules)
                 backoff = every
                 text = self.compile_notice(changes, bool(rules_.github_token(self.base)))
                 if text:
                     log.info("rules compiled:\n%s", text)
-                    if self.notifier:
-                        await self.notifier.send(f"rules:{time.time():.0f}", text[:1900], kind="start")
+                    await self.announce(f"rules:{time.time():.0f}", text)
             except ai.AIError as e:
                 backoff = min(backoff * 2, 3600)
                 log.warning("rule compiler: %s (next try in %.0f s)", e, backoff)
@@ -1919,7 +1974,7 @@ class ReviewBot:
         ran = []
         for r in reqs if isinstance(reqs, list) else []:
             rid = str(r.get("id") or "")
-            if not rid or rid in done or r.get("action") not in ("trend", "feedback", "repost", "daily"):
+            if not rid or rid in done or r.get("action") not in ("trend", "feedback", "repost", "daily", "announce"):
                 continue
             done.add(rid)   # once, even if it is stale or fails
             until = r.get("until")
@@ -1930,6 +1985,8 @@ class ReviewBot:
             ran.append(rid)
             if r["action"] == "trend":
                 asyncio.create_task(self.run_trend(None, r.get("song"), int(r.get("per_song") or 1)))
+            elif r["action"] == "announce":   # what a deploy changed, for Tim
+                await self.announce(f"deploy:{rid}", str(r.get("text") or ""))
             elif r["action"] == "daily":   # top today's Tokyo Girl edits up to per_day now
                 asyncio.create_task(self.run_daily(int(r.get("per_day") or 0)))
             elif r["action"] == "repost":

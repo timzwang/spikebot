@@ -50,6 +50,7 @@ DEFAULTS = {
     "channel_id": "",              # #ready-to-post
     "tiktok_channel_id": "",       # #tiktok-queue
     "inspiration_channel_id": "",  # #inspiration
+    "announcements_channel_id": "",  # #announcements (empty = the server's channel named "announcements")
     "guild_id": "",                # makes slash commands appear at once
     "approver_ids": [],            # Discord user ids allowed to press buttons; empty = server managers
     "expire_hours": 48,
@@ -82,7 +83,7 @@ def settings(cfg: dict) -> dict:
     out = json.loads(json.dumps(DEFAULTS))
     for k, v in (cfg.get("review") or {}).items():
         out[k] = (out[k] | v) if isinstance(out.get(k), dict) and isinstance(v, dict) else v
-    for env_key in ("channel_id", "tiktok_channel_id", "inspiration_channel_id", "guild_id"):
+    for env_key in ("channel_id", "tiktok_channel_id", "inspiration_channel_id", "announcements_channel_id", "guild_id"):
         if cfg.get(f"discord_{env_key}") not in (None, ""):
             out[env_key] = cfg[f"discord_{env_key}"]
     if cfg.get("discord_approver_ids") not in (None, ""):
@@ -90,7 +91,7 @@ def settings(cfg: dict) -> dict:
     if isinstance(out["approver_ids"], str):
         out["approver_ids"] = [x for x in re.split(r"[,\s]+", out["approver_ids"]) if x]
     out["approver_ids"] = [int(x) for x in out["approver_ids"]]
-    for k in ("channel_id", "tiktok_channel_id", "inspiration_channel_id", "guild_id"):
+    for k in ("channel_id", "tiktok_channel_id", "inspiration_channel_id", "announcements_channel_id", "guild_id"):
         out[k] = int(out[k]) if str(out[k]).strip().isdigit() else 0
     if cfg.get("review_enabled") not in (None, ""):
         out["enabled"] = str(cfg["review_enabled"]).strip().lower() in TRUE

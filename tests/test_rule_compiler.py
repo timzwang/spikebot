@@ -162,3 +162,42 @@ def test_deploy_request_reposts_the_latest_round(tmp_path):
     assert asyncio.run(b.run_deploy_requests(now=1_800_000_000, path=reqs)) == ["r1"]
     m = reg[100].sent[-1]
     assert item["id"] in m.content and len(m.kw["files"]) == 3
+
+
+def test_key_news_goes_to_announcements_not_status(tmp_path):
+    from .test_review import FakeChannel
+    store, _ = new_item(tmp_path)
+    b, reg = bot_for(tmp_path, store)
+    ann = FakeChannel(300, reg)
+    ann.name = "📢-announcements"
+
+    class Guild:
+        text_channels = [ann]
+
+    class Client:
+        guilds = [Guild()]
+    b.client = Client()
+    status = []
+
+    class Notifier:
+        async def send(self, key, text, **kw):
+            status.append(text)
+    b.notifier = Notifier()
+    # new rules saved since the last look
+    prof = store.profile()
+    seen = max((e["n"] for e in prof.entries()), default=0)
+    prof.pin("grade", "moody", "lacy")
+    prof.save()
+    seen2 = asyncio.run(b.announce_new_rules(seen))
+    assert seen2 == seen + 1 and "New rule" in ann.sent[-1].content and "moody" in ann.sent[-1].content
+    assert asyncio.run(b.announce_new_rules(seen2)) == seen2 and len(ann.sent) == 1   # once
+    # a deploy can tell Tim what changed
+    reqs = tmp_path / "reqs.json"
+    reqs.write_text(json.dumps([{"id": "x", "action": "announce", "text": "🚀 New: Kick clips"}]))
+    asyncio.run(b.run_deploy_requests(now=1_800_000_000, path=reqs))
+    assert ann.sent[-1].content == "🚀 New: Kick clips" and not status
+    # no #announcements channel: falls back to #status
+    b.client = type("C", (), {"guilds": []})()
+    b._announce_id = None
+    asyncio.run(b.announce("k", "fallback"))
+    assert status == ["fallback"]
