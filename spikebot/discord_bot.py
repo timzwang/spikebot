@@ -175,7 +175,10 @@ def rules_text(entries: list[dict]) -> str:
         es = [e for e in entries if st.category_of(e) == key]
         if es:
             lines.append(name)
-            lines += [f"  #{e['n']} {'ON ' if e.get('on', True) else 'OFF'} {st.entry_text(e)}" for e in es]
+            for g in rule_groups(es):
+                title, what = rule_title(g["e"])
+                nums = ", ".join(f"#{n}" for n in g["ns"])
+                lines.append(f"  {nums} {'ON ' if g['on'] else 'OFF'} {title}" + (f"  ({what})" if what else ""))
             lines.append("")
     return "\n".join(lines) or "No rules yet."
 
@@ -188,11 +191,44 @@ MAX_TEXT = 3800         # Discord allows 4000 characters of text per message
 SCOPE_LABEL = {"lacy": "Lacy clips", "tokyo_girl": "Tokyo Girl edits", "trend": "Trend edits"}
 
 
-def rule_line(e: dict, over: dict[int, int]) -> str:
-    text = st.entry_text(e, where=False)   # what it applies to is in the dropdown under it
-    if not e.get("on", True):
+def rule_groups(entries: list[dict]) -> list[dict]:
+    """Entries that say the same thing (style.rule_key) merged into one line, in the order the
+    first of them was saved: {"e": newest entry, "ns": all numbers, "on": any of them on}."""
+    groups: dict[tuple, dict] = {}
+    for e in entries:
+        g = groups.setdefault(st.rule_key(e), {"e": e, "ns": [], "on": False})
+        g["ns"].append(e["n"])
+        if e["n"] >= g["e"]["n"]:
+            g["e"] = e
+        g["on"] = g["on"] or e.get("on", True)
+    return list(groups.values())
+
+
+def rule_title(e: dict) -> tuple[str, str]:
+    """(headline, explanation) of one rule in plain English."""
+    if e.get("kind") == "setting":
+        title, what = st.describe_setting(e.get("setting"), e.get("value"))
+        return title, what
+    return e.get("text", ""), ""
+
+
+def rule_search_text(e: dict) -> str:
+    title, what = rule_title(e)
+    return " ".join([title, what, st.entry_text(e), st.CATEGORY_NAME.get(st.category_of(e), "")]).lower()
+
+
+def rule_line(e: dict, over: dict[int, int], ns: list[int] | None = None, on: bool | None = None) -> str:
+    """One rule: its number(s) and plain name, and underneath what it does."""
+    ns = ns or [e["n"]]
+    on = e.get("on", True) if on is None else on
+    nums = " · ".join(f"#{n}" for n in ns)
+    title, what = rule_title(e)
+    sub = f"\n-# {what}" if what else ""
+    if len(ns) > 1:
+        sub += f"\n-# saved {len(ns)} times, shown once"
+    if not on:
         why = f"_{e['upgraded']}_" if e.get("upgraded") else "_off_"
-        return f"~~**#{e['n']}** {text}~~ · {why}"[:500]
+        return f"~~**{nums}** {title}~~ · {why}{sub}"[:500]
     tag = f" · _replaced by #{over[e['n']]}_" if e["n"] in over else ""
     if e.get("status") == "needs_code":
         tag += " · _needs new editor code" + (f" (issue #{e['issue']})" if e.get("issue") else "") + \
@@ -201,79 +237,108 @@ def rule_line(e: dict, over: dict[int, int]) -> str:
         tag += " · _not about the edit itself_"
     elif e.get("kind") in ("note", "unsupported") and not e.get("checked"):
         tag += " · _being turned into settings…_"
-    return f"**#{e['n']}** {text}{tag}"[:500]
+    return f"**{nums}** {title}{tag}{sub}"[:500]
 
 
 PER_RULE = 5   # components per rule: section + text + button, row + "applies to" menu
 
 
-def rule_block(e: dict, over: dict[int, int], where: str, page: int) -> dict:
-    """One rule: its line, a Turn off / Turn on button beside it and an "Applies to" menu
-    (ticks for Lacy / Tokyo Girl / Trend edits; only the kinds where the setting exists).
-    `where` = "-" for the /rules pages, else the dot-joined numbers of a feedback reply."""
-    on = e.get("on", True)
+def rule_block(g: dict, over: dict[int, int], where: str, page: int) -> dict:
+    """One rule line (merged duplicates included): a Turn off / Turn on button beside it and an
+    "Applies to" menu (ticks for Lacy / Tokyo Girl / Trend edits; only the kinds where the
+    setting exists). `where` = "-" for the /rules pages, "s:<words>" for a search, else the
+    dot-joined numbers of a feedback reply."""
+    if "ns" not in g:                       # a bare entry
+        g = {"e": g, "ns": [g["n"]], "on": g.get("on", True)}
+    e, on = g["e"], g["on"]
+    label = ".".join(str(n) for n in g["ns"])
     current = st.entry_modes(e)
     opts = st.valid_modes(e.get("setting"), e.get("value"))
-    return {"type": "rule", "n": e["n"], "content": rule_line(e, over),
+    return {"type": "rule", "n": e["n"], "ns": g["ns"], "content": rule_line(e, over, g["ns"], on),
             "button": {"label": "Turn off" if on else "Turn on", "style": "secondary" if on else "success",
-                       "custom_id": cid("rulep", where, page, str(e["n"])), "disabled": False},
-            "scope": {"type": "select", "custom_id": cid("rulem", where, page, str(e["n"])),
+                       "custom_id": cid("rulep", where, page, label), "disabled": False},
+            "scope": {"type": "select", "custom_id": cid("rulem", where, page, label),
                       "placeholder": "Applies to…", "min": 1, "max": len(opts),
                       "options": [{"label": f"Applies to {SCOPE_LABEL[m]}", "value": m, "default": m in current}
                                   for m in opts]}}
 
 
-def rules_pages(entries: list[dict]) -> list[list[tuple[str, dict]]]:
-    """Split the list (category order, oldest first) into pages that fit one message.
-    Each page is [(category key, entry)]."""
+def search_where(query: str) -> str:
+    """The `where` of a search page (kept in the buttons' ids, so it survives clicks)."""
+    q = re.sub(r"\s+", " ", (query or "").replace(SEP, " ")).strip().lower()[:40]
+    return f"s:{q}" if q else "-"
+
+
+def find_rules(groups: list[dict], query: str) -> list[dict]:
+    words = (query or "").lower().split()
+    if not words:
+        return groups
+    return [g for g in groups if all(w in rule_search_text(g["e"]) or w.lstrip("#") in
+                                     [str(n) for n in g["ns"]] for w in words)]
+
+
+def rules_pages(entries: list[dict], query: str = "") -> list[list[tuple[str, dict]]]:
+    """Merge duplicates, filter by `query`, split the list (category order) into pages that
+    fit one message. Each page is [(category key, group)]."""
     over = replaced_by(entries)
-    flat = [(key, e) for key, _, _ in st.CATEGORIES for e in entries if st.category_of(e) == key]
+    groups = find_rules(rule_groups(entries), query)
+    flat = [(key, g) for key, _, _ in st.CATEGORIES for g in groups if st.category_of(g["e"]) == key]
     pages: list[list[tuple[str, dict]]] = []
     page: list[tuple[str, dict]] = []
-    comps, chars, last = 6, 300, None      # header + nav row (4) reserved; header text
-    for key, e in flat:
+    comps, chars, last = 6, 400, None      # header + nav row (4) reserved; header text
+    for key, g in flat:
+        line = len(rule_line(g["e"], over, g["ns"], g["on"]))
         need_c = PER_RULE + (1 if key != last else 0)
-        need_t = len(rule_line(e, over)) + (len(st.CATEGORY_NAME[key]) + 8 if key != last else 0)
+        need_t = line + (len(st.CATEGORY_NAME[key]) + 8 if key != last else 0)
         if page and (comps + need_c > MAX_COMPONENTS or chars + need_t > MAX_TEXT):
             pages.append(page)
-            page, comps, chars, last = [], 6, 300, None
+            page, comps, chars, last = [], 6, 400, None
             need_c = PER_RULE + 1
-            need_t = len(rule_line(e, over)) + len(st.CATEGORY_NAME[key]) + 8
-        page.append((key, e))
+            need_t = line + len(st.CATEGORY_NAME[key]) + 8
+        page.append((key, g))
         comps, chars, last = comps + need_c, chars + need_t, key
     if page:
         pages.append(page)
     return pages
 
 
-def rules_page(entries: list[dict], page: int = 0, notice: str = "") -> dict:
+def rules_page(entries: list[dict], page: int = 0, notice: str = "", query: str = "") -> dict:
     """One page of /rules as layout blocks: header, category headings, one block per rule
-    with its Turn off / Turn on button, and Prev / Next."""
-    on = sum(1 for e in entries if e.get("on", True))
-    pages = rules_pages(entries)
+    (duplicates merged) with its Turn off / Turn on button, and Prev / Next. `query` = search."""
+    groups = rule_groups(entries)
+    on = sum(1 for g in groups if g["on"])
+    where = search_where(query)
+    query = where[2:] if where != "-" else ""
+    pages = rules_pages(entries, query)
     page = max(0, min(page, len(pages) - 1)) if pages else 0
-    head = (f"## Your rules\n{on} on · {len(entries) - on} off · for each setting the newest entry that's on"
-            " wins. Turning one off brings back the one before it.")
+    head = (f"## Your rules\n{on} on · {len(groups) - on} off · for each setting the newest rule that's on"
+            " wins; turning one off brings back the one before it. Find one with `/rules search:`.")
+    if query:
+        n_found = sum(len(p) for p in pages)
+        head += f"\n🔎 **{n_found}** matching “{query}” · `/rules` shows them all."
     if notice:
         head += f"\n{notice}"
-    blocks: list[dict] = [{"type": "text", "content": head[:300]}]
+    blocks: list[dict] = [{"type": "text", "content": head[:400]}]
     if not entries:
         blocks[0]["content"] += "\nNo rules yet: use `/feedback` or the Feedback button on a clip."
         return {"page": 0, "pages": 1, "blocks": blocks}
+    if not pages:
+        blocks[0]["content"] += "\nNothing matches. Try another word (e.g. `cut`, `text`, `colour`, `logo`)."
+        return {"page": 0, "pages": 1, "blocks": blocks}
     over = replaced_by(entries)
     last = None
-    for key, e in pages[page]:
+    for key, g in pages[page]:
         if key != last:
             blocks.append({"type": "text", "content": f"### {st.CATEGORY_NAME[key]}"})
             last = key
-        blocks.append(rule_block(e, over, "-", page))
+        blocks.append(rule_block(g, over, where, page))
     if len(pages) > 1:
         blocks.append({"type": "row", "buttons": [
-            {"label": "◀ Prev", "style": "primary", "custom_id": cid("rulesp", "-", page - 1),
+            {"label": "◀ Prev", "style": "primary", "custom_id": cid("rulesp", where, page - 1),
              "disabled": page == 0},
             {"label": f"Page {page + 1}/{len(pages)}", "style": "secondary",
-             "custom_id": cid("rulesp", "-", page, "here"), "disabled": True},
-            {"label": "Next ▶", "style": "primary", "custom_id": cid("rulesp", "-", page + 1),
+             "custom_id": cid("rulesp", where, page, "here"), "disabled": True},
+            {"label": "Next ▶", "style": "primary", "custom_id": cid("rulesp", where, page + 1),
              "disabled": page >= len(pages) - 1}]})
     return {"page": page, "pages": len(pages), "blocks": blocks}
 
@@ -1888,7 +1953,7 @@ class ReviewBot:
         await inter.response.defer()   # answer within Discord's 3 s; the message is edited below
         if act == "rulesp":
             entries = list((await asyncio.to_thread(self.store.profile)).entries())
-            await inter.edit_original_response(view=self.layout(rules_page(entries, data["round"])))
+            await inter.edit_original_response(view=self.layout(self.rules_view(entries, data, "")))
             return
         if act in ("rules_off", "rules_on"):   # menus on /rules messages from before the buttons
             values = [int(v) for v in (getattr(inter, "data", None) or {}).get("values") or [] if str(v).isdigit()]
@@ -1896,23 +1961,28 @@ class ReviewBot:
             await inter.followup.send(self.toggle_notice(changed, missing, act == "rules_on")
                                       + " · run `/rules` for the new list with a button on each rule.", ephemeral=True)
             return
-        n = int(data["label"])
-        e = (await asyncio.to_thread(self.store.profile)).entry(n)
-        if e is None:
-            await inter.followup.send(f"No entry #{n}.", ephemeral=True)
+        ns = [int(x) for x in str(data["label"]).split(".") if x.isdigit()]   # merged duplicates: all of them
+        prof = await asyncio.to_thread(self.store.profile)
+        group = [x for x in (prof.entry(k) for k in ns) if x]
+        if not group:
+            await inter.followup.send(f"No entry #{data['label']}.", ephemeral=True)
             return
+        e = max(group, key=lambda x: x["n"])
+        n = e["n"]
         if act == "rulem":   # "Applies to" ticks
             values = [v for v in (getattr(inter, "data", None) or {}).get("values") or [] if v in st.STYLE_MODES]
             try:
-                modes, entries = await asyncio.to_thread(self.scope_entry, n, values)
-                notice = f"✅ #{n} now applies to **{st.modes_label(modes)}**"
+                for x in group:
+                    modes, entries = await asyncio.to_thread(self.scope_entry, x["n"], values)
+                nums = ", ".join(f"#{x['n']}" for x in group)
+                notice = f"✅ {nums} now applies to **{st.modes_label(modes)}**"
             except ValueError as err:
                 entries, notice = list(self.store.profile().entries()), f"⚠️ {err}"
             await inter.edit_original_response(view=self.layout(self.rules_view(entries, data, notice)))
             return
-        on = not e.get("on", True)
-        changed, missing, entries = await asyncio.to_thread(self.toggle_entries, [n], on)
-        notice = self.toggle_notice(changed, missing, on) + f": {st.entry_text(e)}"
+        on = not any(x.get("on", True) for x in group)
+        changed, missing, entries = await asyncio.to_thread(self.toggle_entries, [x["n"] for x in group], on)
+        notice = self.toggle_notice(changed, missing, on) + f": {rule_title(e)[0]}"
         if act == "rulep":
             await inter.edit_original_response(view=self.layout(self.rules_view(entries, data, notice)))
             return
@@ -1932,13 +2002,16 @@ class ReviewBot:
         """Redraw what was clicked: a /rules page, or a feedback reply's own rules."""
         if data["item"] in ("-", ""):
             return rules_page(entries, data["round"], notice)
+        if data["item"].startswith("s:"):
+            return rules_page(entries, data["round"], notice, data["item"][2:])
         nums = [int(x) for x in data["item"].split(".") if x.isdigit()]
         return rules_subset(entries, nums, notice)
 
     def saved_rules_view(self, rule: dict, head: str) -> dict:
         return rules_subset(list(self.store.profile().entries()), [e["n"] for e in rule["entries"]], head)
 
-    async def rules_command(self, inter, disable: str | None = None, enable: str | None = None) -> None:
+    async def rules_command(self, inter, disable: str | None = None, enable: str | None = None,
+                            search: str | None = None) -> None:
         """/rules: the list with a button beside every rule. Answers straight away (no
         "thinking"); disable:/enable: switch several at once first."""
         notice = []
@@ -1953,7 +2026,7 @@ class ReviewBot:
                 changed, missing, _ = await asyncio.to_thread(self.toggle_entries, nums, on)
                 notice.append(self.toggle_notice(changed, missing, on))
         entries = list(self.store.profile().entries())
-        await self.send_rules(inter, rules_page(entries, 0, " · ".join(notice)), entries)
+        await self.send_rules(inter, rules_page(entries, 0, " · ".join(notice), search or ""), entries)
 
     async def send_rules(self, inter, spec: dict, entries: list[dict]) -> None:
         """Send one page; if Discord refuses it, send the whole list as a text file instead."""
@@ -2100,11 +2173,13 @@ class ReviewBot:
             await bot.cancel_command(inter, run)
 
         @tree.command(name="rules", description="Every instruction the editor follows, numbered; turn any off or on")
-        @app_commands.describe(disable="Numbers to turn off, e.g. 3, 5-7", enable="Numbers to turn back on")
-        async def rules_cmd(inter: discord.Interaction, disable: str | None = None, enable: str | None = None):
+        @app_commands.describe(search="Words to find, e.g. cut, text, colour, logo, #12",
+                               disable="Numbers to turn off, e.g. 3, 5-7", enable="Numbers to turn back on")
+        async def rules_cmd(inter: discord.Interaction, search: str | None = None, disable: str | None = None,
+                            enable: str | None = None):
             if not await guard(inter):
                 return
-            await bot.rules_command(inter, disable, enable)
+            await bot.rules_command(inter, disable, enable, search)
 
         group = app_commands.Group(name="preset", description="Style presets from #inspiration")
 

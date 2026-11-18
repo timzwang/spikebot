@@ -320,7 +320,9 @@ it in sync when behaviour or config changes.
   `style_overview`; custom ids `rv|action|item|round|label` handled in `on_interaction` (survive
   restarts). Loops: `scan` (post ready rounds + thread, queue requests, report failures, expire,
   #tiktok-queue, finish), `render_worker` (one subprocess at a time), `publish_loop` (60 s, under
-  `publish_lock`). Feedback/Edit caption use modals. `/style [setting] [value]`, `/feedback text [mode]`, `/rules [disable] [enable]` (Components V2 `LayoutView`
+  `publish_lock`). Feedback/Edit caption use modals. `/style [setting] [value]`, `/feedback text [mode]`, `/rules [search] [disable] [enable]` (Components V2; `rule_groups` merges entries with the same
+  `style.rule_key` into one line (button/menu label = dot-joined numbers, acts on all), `rule_title` = plain
+  name + explanation from `style.SETTING_INFO` / `VALUE_INFO` (`describe_setting`), search where = `s:<words>` `LayoutView`
   via `ReviewBot.layout`: `rules_pages` / `rules_page` = category headings + a `Section` per rule with its
   Turn off/on button `rv|rulep|-|<page>|<n>`, pages `rv|rulesp|-|<page>|` within 40 components / 4000
   chars; answered without deferring; Discord refusal -> `rules.txt`; old `rules_off`/`rules_on` menus still
@@ -341,7 +343,7 @@ it in sync when behaviour or config changes.
 - `spikebot/progress.py`: live progress for long jobs. `Job.create` writes data/progress/<id>.json;
   `current()` (contextvar, or `SPIKEBOT_PROGRESS` env from the bot for subprocesses), `update`,
   nested `span(lo, hi)`, `finish(ok, text, state)`; `review.render_round` makes one unless a
-  job is active (Lacy `render_job` has its own); `text(d, now, render_bar)` / `bar()` (text fallback, 1/8 cells) / `eta()` (time left) for the message;
+  job is active (Lacy `render_job` has its own); `text(d, now, render_bar)` / `bar()` (text fallback, 1/8 cells) / `eta()` (time left) for the message (`NN% | ⏱ m:ss spent | m:ss remaining` beside the bar);
   rounded bar = `bar_pieces()` (9 PNG pieces, pure-Python encoder) uploaded once as application emojis
   by `ReviewBot.ensure_bar_emojis` (`EMOJI_PREFIX`), drawn by `emoji_bar`; `progress_loop` every 2 s,
   each bar edited at most every 2 s x ceil(bars in channel / 2); each write stores the worker `pid`, and `state_of` shows a job whose process died as stopped at once. Never raises,

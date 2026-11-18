@@ -505,7 +505,7 @@ def text(d: dict, now: float, render_bar=None) -> str:
         stage, detail = "cancelling", ""
     run = f" · run `{short(d['id'])}`" if d.get("id") else ""
     left = eta(d, now) if not d.get("cancel") else None
-    left_txt = f" · about {clock(left)} left" if left is not None else (" · estimating time left" if not
-                                                                       d.get("cancel") else "")
+    left_txt = f" | {clock(left)} remaining" if left is not None else (" | estimating time left" if not
+                                                                      d.get("cancel") else "")
     drawn = (render_bar(d.get("frac", 0)) if render_bar else None) or bar(d.get("frac", 0))
-    return f"{head}\n{drawn} **{pct}%**\n{stage}{detail} · ⏱ {took}{left_txt}{run}"[:1900]
+    return f"{head}\n{drawn} **{pct}%** | ⏱ {took} spent{left_txt}\n{stage}{detail}{run}"[:1900]

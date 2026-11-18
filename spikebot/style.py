@@ -292,16 +292,112 @@ def _blank() -> dict:
 CATEGORIES = (
     ("look", "🎨 Colour & look", ("grade", "saturation", "contrast", "brightness", "warmth", "grain",
                                  "vignette", "letterbox")),
-    ("pace", "✂️ Pace & cuts", ("pace", "shot_s", "payoff", "transition")),
+    ("pace", "✂️ Pace & cuts", ("pace", "shot_s", "payoff", "transition", "hold_beats", "fade_s", "max_s")),
+    ("footage", "🎬 Footage & camera", ("motion", "framing", "media")),
     ("text", "🔤 Text & captions", ("text_level", "font", "size", "position", "colour", "text_px", "text_y",
                                    "outline", "shadow", "words", "text_colour", "highlight")),
-    ("hook", "🪝 Hook, intro & ending", ("hook", "hook_s", "hook_style", "intro", "ending")),
+    ("hook", "🪝 Hook, intro & ending", ("hook", "hook_s", "hook_style", "intro", "ending", "logo_s",
+                                        "logo_size")),
     ("sound", "🔊 Sound", ("sfx",)),
     ("note", "📝 Notes (being turned into settings, or waiting for new editor code)", ()),
     ("unsupported", "🚫 Asked for, not possible yet", ()),
 )
 CATEGORY_NAME = {k: name for k, name, _ in CATEGORIES}
 MODE_NAME = {"all": "all edits", "lacy": "Lacy", "tokyo_girl": "Tokyo Girl", "trend": "Trend edits"}
+
+
+# Plain-English names and explanations for /rules (what a setting actually does on screen).
+SETTING_INFO = {
+    "grade": ("Colour grade", "the overall colour look applied to the whole edit"),
+    "saturation": ("Saturation", "how strong the colours are (1 = untouched, lower = greyer, higher = more vivid)"),
+    "contrast": ("Contrast", "difference between darks and lights (1 = untouched)"),
+    "brightness": ("Brightness", "lifts or darkens the whole picture (0 = untouched)"),
+    "warmth": ("Warmth", "shifts colours towards orange (+) or blue (-)"),
+    "grain": ("Film grain", "adds film-style noise (0 = none)"),
+    "vignette": ("Vignette", "darkens the corners (0 = off, 1 = on)"),
+    "letterbox": ("Cinema bars", "black bars top and bottom like a film (0 = off, 1 = on)"),
+    "pace": ("Pace", "how quickly the edit moves overall"),
+    "shot_s": ("Seconds per shot", "roughly how long each clip stays on screen before the next cut"),
+    "payoff": ("Payoff point", "where the big moment lands, as a share of the clip (0.5 = halfway)"),
+    "transition": ("Transition", "what happens between two clips"),
+    "hold_beats": ("Beats per clip", "minimum music beats each clip is held for (higher = calmer, fewer cuts)"),
+    "fade_s": ("Crossfade length", "seconds two clips overlap when the transition is fade"),
+    "max_s": ("Max length", "longest the edit may be, in seconds (logo intro included)"),
+    "motion": ("Camera motion", "slow pans and push-in zooms on each clip"),
+    "framing": ("Framing", "how a wide trailer shot fits the tall 9:16 screen"),
+    "media": ("Footage", "which official Rockstar media the edit may use"),
+    "text_level": ("Amount of text", "how much on-screen text the edit shows"),
+    "font": ("Font", "the typeface of the on-screen text"),
+    "size": ("Text size", "s / m / l / xl preset sizes"),
+    "position": ("Text position", "where on screen the text sits"),
+    "colour": ("Text colours", "colour of the text and of the highlighted word"),
+    "text_px": ("Text size (px)", "exact text height in pixels"),
+    "text_y": ("Text height on screen", "0 = top, 1 = bottom"),
+    "outline": ("Text outline", "thickness of the dark outline around letters (0 = none)"),
+    "shadow": ("Text shadow", "drop shadow behind letters (0 = none)"),
+    "words": ("Words per caption", "how many words appear at once"),
+    "text_colour": ("Text colour", "exact colour of the main text"),
+    "highlight": ("Highlight colour", "exact colour of the highlighted word"),
+    "hook": ("Hook tone", "the kind of opening line the edit starts with"),
+    "hook_s": ("Hook length", "seconds the opening line stays on screen"),
+    "hook_style": ("Hook style", "how the opening line is written"),
+    "intro": ("Intro", "what plays before the first beat drop"),
+    "ending": ("Ending", "what the edit ends on"),
+    "logo_s": ("Logo build-up", "beats the GTA VI logo builds before it bursts on the drop"),
+    "logo_size": ("Logo size", "logo width as a share of the screen"),
+    "sfx": ("Sound effects", "volume of whooshes and hits on Lacy clips (0 = off)"),
+}
+VALUE_INFO = {
+    ("transition", "cut"): "a straight cut, no effect: one clip simply replaces the other",
+    ("transition", "flash"): "a quick white flash on each new text card",
+    ("transition", "zoom"): "a punch-in zoom on the first clip of each text card",
+    ("transition", "fade"): "a soft crossfade: the clips blend into each other on the beat",
+    ("motion", "none"): "clips stay still: no pans, no zooms",
+    ("motion", "subtle"): "slow, gentle pans and zooms",
+    ("motion", "full"): "clear pans and push-in zooms on every clip",
+    ("framing", "fill"): "the shot is cropped to fill the whole tall screen (sides cut off)",
+    ("framing", "fit"): "the whole wide shot is shown, over a blurred copy of itself",
+    ("media", "clips"): "trailer video only, never screenshots",
+    ("media", "mixed"): "trailer video and official screenshots",
+    ("text_level", "none"): "no text at all",
+    ("text_level", "minimal"): "a short hook at the start, little else",
+    ("text_level", "full"): "every text card / caption",
+    ("text_level", "plain"): "one plain fact line (e.g. days until GTA 6), no question",
+    ("intro", "none"): "straight into the footage",
+    ("intro", "logo"): "the GTA VI logo builds up and bursts on the drop",
+    ("intro", "countdown"): "a days-to-launch countdown before the drop",
+    ("ending", "none"): "no special ending",
+    ("ending", "question"): "ends on a question to get comments",
+    ("ending", "cta"): "ends with a call to action (follow / comment)",
+    ("pace", "slow"): "longer clips, fewer cuts",
+    ("pace", "normal"): "medium cuts",
+    ("pace", "fast"): "short clips, many cuts",
+    ("position", "high"): "near the top", ("position", "middle"): "centre of the screen",
+    ("position", "low"): "lower third",
+    ("grade", "natural"): "untouched colours", ("grade", "clean"): "slightly brighter and more colourful",
+    ("grade", "punchy"): "strong colours and contrast", ("grade", "vivid"): "very saturated colours",
+    ("grade", "muted"): "washed-out, softer colours", ("grade", "moody"): "darker, high contrast, a bit cold",
+    ("grade", "warm"): "orange / golden tint", ("grade", "cool"): "blue tint",
+}
+
+
+def describe_setting(setting: str | None, value=None) -> tuple[str, str]:
+    """(plain name, explanation) for a setting and value, for /rules."""
+    name, what = SETTING_INFO.get(setting or "", ((setting or "").replace("_", " ").capitalize(), ""))
+    if value is not None:
+        v = str(int(value) if isinstance(value, float) and value.is_integer() else value)
+        detail = VALUE_INFO.get((setting, v))
+        return f"{name}: {v}", (detail or what)
+    return f"{name}: auto", "let the editor learn from what you approve"
+
+
+def rule_key(e: dict) -> tuple:
+    """Entries that say the same thing (same setting and value, or the same note text) for the
+    same kinds of edit share a key, so /rules shows them as one line."""
+    modes = tuple(entry_modes(e))
+    if e.get("kind") == "setting":
+        return ("setting", e.get("setting"), str(e.get("value")), modes)
+    return (e.get("kind"), re.sub(r"[^a-z0-9]+", " ", (e.get("text") or "").lower()).strip(), modes)
 
 
 def expand_modes(mode) -> list[str]:

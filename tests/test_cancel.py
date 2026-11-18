@@ -307,7 +307,7 @@ def test_time_left_and_message_layout():
     assert P.eta(d, 1060.0) == 180.0
     assert P.eta(dict(d, frac=0.02), 1060.0) is None and P.eta(d, 1004.0) is None
     t = P.text(d, 1060.0, lambda f: "[BAR]")
-    assert t.splitlines()[1] == "[BAR] **25%**" and "about 3:00 left" in t and "run `abc123`" in t
+    assert t.splitlines()[1] == "[BAR] **25%** | ⏱ 1:00 spent | 3:00 remaining" and "run `abc123`" in t
     assert "estimating time left" in P.text(dict(d, frac=0.01), 1060.0)
     assert P.text(d, 1060.0, lambda f: None).splitlines()[1].startswith("`")      # text bar fallback
 

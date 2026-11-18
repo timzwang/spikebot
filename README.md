@@ -474,8 +474,12 @@ reply to `/feedback` (pick *Trend edits*, *Lacy*, *Tokyo Girl* or all) and the m
 Feedback re-render list each saved rule with what it applies to and the same ticks. The Feedback
 button on a clip applies to that kind of clip only, unless you say "all edits" or name another kind.
 
-**`/rules`** shows the whole list by category (🎨 colour & look, ✂️ pace & cuts, 🔤 text, 🪝
-hook/intro/ending, 🔊 sound, 📝 notes, 🚫 not possible yet). Off ones are ~~crossed out~~, and _replaced by
+**`/rules`** shows the whole list by category (🎨 colour & look, ✂️ pace & cuts, 🎬 footage &
+camera, 🔤 text, 🪝 hook/intro/ending, 🔊 sound, 📝 notes, 🚫 not possible yet). Each rule has a plain
+name and a line saying what it does on screen (e.g. **Transition: cut**, "a straight cut, no effect").
+Rules saved more than once (same setting and value, or the same note) show as one line (`#3 · #9`);
+its button switches all of them. `/rules search:cut` (words, or a number like `#12`) shows only the
+matches, and paging/buttons keep the search. Off ones are ~~crossed out~~, and _replaced by
 #N_ marks a setting a newer entry overrides. Every rule has its own **Turn off / Turn on**
 button beside it (long lists have ◀ Prev / Next ▶ pages, about 11 rules each: Discord's
 limit). For several at once: `/rules disable:3, 5-7` / `/rules enable:4`. Turning an entry
