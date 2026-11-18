@@ -150,3 +150,21 @@ def test_window_keeps_the_edit_inside_the_sound():
     long = {"duration": 120.0, "drop_s": 30.0, "beats": [i * 0.5 for i in range(240)]}
     assert M.window(long, 15, 30) == (M.start_for(long), 30)
     assert "<https://x>" in M.note(dict(long, name="s", bpm=120, url="https://x"), 28.0)
+
+
+@needs_ffmpeg
+def test_rename_keeps_the_beat_map_and_the_old_name(tmp_path, capsys):
+    lib = M.Library(tmp_path / "music")
+    a = lib.add(song(tmp_path / "a.wav"), "original sound")
+    lib.add(song(tmp_path / "b.wav", seconds=20), "impulsive")
+    row = lib.rename("original-sound", "Dragonfly")
+    assert row["name"] == "dragonfly" and row["file"] == "dragonfly.wav" and row["aliases"] == ["original-sound"]
+    assert row["beats"] == a["beats"] and not (tmp_path / "music" / "original-sound.wav").exists()
+    assert lib.current("dragonfly")["file"] == "dragonfly.wav"
+    assert lib.current("original-sound")["file"] == "dragonfly.wav"     # old edits still find it
+    assert lib.current("original-sound.wav")["file"] == "dragonfly.wav"   # trend items save the file name
+    assert lib.get(tmp_path / "music" / "dragonfly.wav")["aliases"] == ["original-sound"]   # cache still valid
+    with pytest.raises(M.MusicError, match="already"):
+        lib.rename("dragonfly", "impulsive")
+    with pytest.raises(M.MusicError):
+        lib.rename("not-there", "x")

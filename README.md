@@ -321,7 +321,10 @@ no captions, story cards or hook box), whatever a rule or preset says.
   exactly on it) and every card says **where to start the sound** in the app, e.g. "start
   it at 0:42". Tokyo Girl edits **only** use the Tokyo Girl song: a sound titled
   "Tokyo Girl", or anything posted with `name: tokyo-girl` (`tokyo_girl.song` changes the
-  name). Any other sound is saved as a trending sound and never touches these edits. No
+  name). Any other sound is saved as a trending sound and never touches these edits.
+  A sound saved as "original-sound" can get its real name (the beat map is kept and edits that
+  used the old name still find it):
+  `cd /opt/spikebot && sudo -u spikebot venv/bin/python -m spikebot.music rename original-sound Dragonfly`. No
   Tokyo Girl song yet = an even 120 BPM grid. The song itself is only measured, never put in the file.
 - **Rendered with Remotion** (motion design) when it's installed: eased push-ins and
   drifts, spring punch-ins with motion blur, eased flashes, words popping in one by one,

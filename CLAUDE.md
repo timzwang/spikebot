@@ -213,7 +213,7 @@ it in sync when behaviour or config changes.
   drop = biggest loudness rise), `Library` (`data/music/`, cache `library.json`; Tokyo Girl uses only `tokyo_girl.song`
   (default `tokyo-girl`, `TOKYO_GIRL_SONG`), other songs are trending sounds and never replace it),
   `start_for` (one bar before the drop), `grid` (beat times from the start), `note` (where to
-  start the sound). Audio uploaded in #inspiration -> `python -m spikebot.music add`; TikTok sound
+  start the sound), `Library.rename` / CLI `music rename OLD NEW` (old names kept as `aliases`, matched by `current`). Audio uploaded in #inspiration -> `python -m spikebot.music add`; TikTok sound
   links (`/music/`, vm.tiktok short links resolved by `resolve_short`) or `sound:` + a video link
   -> `add --url` (`song_links`, `fetch`: sound page `playUrl` via curl_cffi, else yt-dlp `-x` audio only). Tokyo Girl
   `plan_clip(beats=)` cuts on it; edits stay silent.

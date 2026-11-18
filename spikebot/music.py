@@ -168,6 +168,10 @@ class Library:
             return None
         if name:
             pick = [p for p in files if p.name == name or clean_name(p.stem) == clean_name(name)]
+            if not pick:   # a renamed sound still answers to its old name (edits saved before the rename)
+                idx = self._load()
+                keys = {clean_name(name), clean_name(Path(name).stem)}   # a name or an old file name
+                pick = [p for p in files if keys & set((idx.get(p.name) or {}).get("aliases", []))]
             if not pick:
                 raise MusicError(f"no song called {name!r} in {self.root}")
             return self.get(pick[0])
@@ -181,6 +185,30 @@ class Library:
             tmp = self.index.with_suffix(".tmp")
             tmp.write_text(json.dumps(idx), encoding="utf-8")
             tmp.replace(self.index)
+
+    def rename(self, old: str, new: str) -> dict:
+        """Give a sound a proper name ("original-sound" -> "dragonfly"): the file and its row move,
+        the beat map is kept, and the old name stays as an alias so earlier edits still find it.
+        Raises MusicError."""
+        row = self.current(old)
+        if row is None:
+            raise MusicError("the music library is empty")
+        src = self.root / row["file"]
+        stem = clean_name(new)
+        if not stem:
+            raise MusicError("the new name has no letters or numbers")
+        dest = self.root / f"{stem}{src.suffix.lower()}"
+        if dest.exists() and dest.resolve() != src.resolve():
+            raise MusicError(f"there is already a sound called {stem!r}")
+        idx = self._load()
+        old_row = idx.pop(src.name, row)
+        aliases = sorted(set(old_row.get("aliases", [])) | {clean_name(src.stem)} - {stem})
+        src.rename(dest)
+        idx[dest.name] = old_row | {"name": stem, "file": dest.name, "aliases": aliases}
+        tmp = self.index.with_suffix(".tmp")
+        tmp.write_text(json.dumps(idx), encoding="utf-8")
+        tmp.replace(self.index)
+        return idx[dest.name]
 
     def trending(self, tokyo_song: str = TOKYO_GIRL_SONG) -> list[dict]:
         """Every song except the Tokyo Girl one, newest first (unreadable files skipped)."""
@@ -414,12 +442,23 @@ def main(argv: list[str] | None = None) -> int:
     a.add_argument("--name")
     a.add_argument("--json")
     sub.add_parser("list")
+    r = sub.add_parser("rename", help="give a sound a proper name (the old one keeps working)")
+    r.add_argument("old")
+    r.add_argument("new")
     args = ap.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     from . import tokyo_girl
     from .review import load_cfg
     cfg, base = load_cfg(args.config)
     lib = Library(tokyo_girl.settings(cfg, base)["music_dir"])
+    if args.cmd == "rename":
+        try:
+            row = lib.rename(args.old, args.new)
+        except MusicError as e:
+            print(f"Couldn't rename: {e}")
+            return 1
+        print(f"Renamed to {row['name']} ({row['file']}); old name(s) still work: {', '.join(row['aliases'])}")
+        return 0
     if args.cmd == "add":
         if not args.file and not args.url:
             ap.error("add needs FILE or --url")
