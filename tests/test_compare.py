@@ -98,6 +98,8 @@ def test_labels_are_cached_and_only_new_shots_are_asked(tmp_path, monkeypatch):
 @needs_ffmpeg
 def test_comparison_item_renders_three_versions(tmp_path, monkeypatch):
     s = make_libraries(tmp_path)
+    from spikebot import ai
+    monkeypatch.setattr(ai, "available", lambda base=None: True)    # labels come from fake_ask below
     real = C.label_shots
     monkeypatch.setattr(C, "label_shots", lambda shots, media, path, base=None, **kw: real(shots, media, path,
                                                                                          ask=fake_ask))
