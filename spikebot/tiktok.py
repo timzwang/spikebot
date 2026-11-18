@@ -34,6 +34,7 @@ API = "https://open.tiktokapis.com"
 AUTH_URL = "https://www.tiktok.com/v2/auth/authorize/"
 TOKEN_URL = API + "/v2/oauth/token/"
 SCOPES = "user.info.basic,video.upload,video.publish"
+INBOX_SCOPES = "user.info.basic,video.upload"   # TIKTOK_MODE=inbox: no Direct Post needed
 MIN_CHUNK = 5 * 1024 * 1024
 MAX_CHUNK = 64 * 1024 * 1024
 CHUNK = 10 * 1024 * 1024
@@ -191,7 +192,8 @@ def auth(env_path: Path, tcfg: dict, ask=input, http=None) -> None:
                          " (the redirect URI must match the one in your TikTok app).")
     state = secrets.token_urlsafe(16)
     url = AUTH_URL + "?" + urllib.parse.urlencode({
-        "client_key": tcfg["client_key"], "scope": SCOPES, "response_type": "code",
+        "client_key": tcfg["client_key"], "scope": INBOX_SCOPES if tcfg.get("mode") == "inbox" else SCOPES,
+        "response_type": "code",
         "redirect_uri": tcfg["redirect_uri"], "state": state})
     print("1. Open this link, log in as the TikTok account and allow access:\n")
     print(url + "\n")

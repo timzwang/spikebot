@@ -116,3 +116,16 @@ def test_publisher_posts_approved_clip_to_tiktok(tmp_path):
     row = pub.publish(item["id"], "tiktok", T)
     assert row["status"] == "done" and row["url"] == "https://www.tiktok.com/video/1"
     assert posted and posted[0][2] is False and "#GTA6" in posted[0][1]
+
+
+def test_inbox_mode_asks_only_for_upload_scopes(tmp_path, capsys):
+    seen = []
+
+    def ask(prompt):
+        url = [l for l in capsys.readouterr().out.splitlines() if l.startswith("https://www.tiktok.com/")][0]
+        seen.append(url)
+        raise SystemExit("stop")
+    cfg = dict(CFG, redirect_uri="https://gta6-clipped.vercel.app/tiktok/callback.html", mode="inbox")
+    with pytest.raises(SystemExit):
+        TT.auth(tmp_path / ".env", cfg, ask=ask)
+    assert "video.upload" in seen[0] and "video.publish" not in seen[0]
