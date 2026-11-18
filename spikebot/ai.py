@@ -126,8 +126,12 @@ def settings_menu() -> str:
         " movement); Tokyo Girl and trend edits also have fade  (a soft crossfade; length fade_s)",
         "motion: none, subtle, full  (camera movement the editor adds: none = every shot completely still,"
         " no pans, push-ins, zooms, drift or animated stills)",
-        "framing: fill, fit  (Tokyo Girl and trend edits only: fill crops the 16:9 trailer to fill the 9:16 screen; fit shows"
+        "framing: box45, box11, stack, fill, fit  (Tokyo Girl and trend edits only: box45 = a big 4:5 picture over a"
+        " blurred copy with text in the bands above/below (default); box11 = the same at 1:1; stack = two clips at once,"
+        " one above the other, each whole; fill crops the 16:9 trailer to fill the 9:16 screen; fit shows"
         " the whole frame so nothing is cut off, over a blurred copy of itself)",
+        "smart_fill (custom): 0 or 1  (Tokyo Girl and trend edits: 1 = a close-up of one person goes full screen and"
+        " every crop is centred on the subject; default 1)",
         "media: clips, mixed  (Tokyo Girl and trend edits only: clips = real trailer video only, never screenshots)",
         "text_level: none, minimal, full, plain  (none = no captions/hook/text at all; minimal = short "
         "opening hook and captions only around the payoff (Lacy) / only the opening card (Tokyo Girl); "

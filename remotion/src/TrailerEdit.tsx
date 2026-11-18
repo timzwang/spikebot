@@ -4,10 +4,19 @@ import {
   useCurrentFrame, useVideoConfig,
 } from 'remotion';
 
+// layout (from spikebot/tokyo_girl.slot_layout): 'fill' full screen, 'box45' / 'box11' a picture in
+// `box` over a blurred copy, 'stack' this clip in `box` and `second` in its own box below,
+// 'fit' the whole frame over a blur. focus: where the subject is (fractions of the picture).
+export type Layout = 'fill' | 'fit' | 'box45' | 'box11' | 'stack';
+type Rect = [number, number, number, number];
+export type Second = {
+  src: string; kind: 'video' | 'image'; offset: number; srcW: number; srcH: number;
+  crop: Rect | null; focus: [number, number] | null; box: Rect;
+};
 export type Shot = {
   src: string; kind: 'video' | 'image'; start: number; dur: number; offset: number;
   pan: number; punch: boolean; flash: boolean; srcW: number; srcH: number;
-  crop: [number, number, number, number] | null;
+  crop: Rect | null; focus?: [number, number] | null; layout?: Layout; box?: Rect; second?: Second;
 };
 export type Card = {from: number; to: number; text: string; ask: boolean};
 export type Look = {
@@ -16,14 +25,14 @@ export type Look = {
 };
 export type TextStyle = {font: string; sizePx: number; colour: string; highlight: string; y: number};
 // motion: camera movement the editor adds ('none' = every shot completely still).
-// framing: 'fill' crops to fill 9:16, 'fit' shows the whole frame over a blurred copy.
+// framing: the edit's framing (each shot's own `layout` wins: smart fill, stack fallback).
 // fade: crossfade length in seconds (0 = hard cuts).
 export type Motion = 'none' | 'subtle' | 'full';
 export type Logo = {src: string; until: number; out: number; size: number};
 export type EditProps = {
   fps: number; width: number; height: number; duration: number;
   shots: Shot[]; cards: Card[]; logo: Logo | null;
-  look: Look; text: TextStyle; motion: Motion; framing: 'fill' | 'fit'; fade: number;
+  look: Look; text: TextStyle; motion: Motion; framing: Layout; fade: number;
 };
 
 export const defaultProps: EditProps = {
@@ -37,25 +46,27 @@ const smooth = Easing.bezier(0.45, 0, 0.2, 1); // gentle ease-in-out, like a han
 
 const AMOUNT: Record<Motion, number> = {none: 0, subtle: 0.5, full: 1};
 
-const Media: React.FC<{shot: Shot; style: React.CSSProperties}> = ({shot, style}) => {
+type Source = {src: string; kind: 'video' | 'image'; offset: number; srcW: number; srcH: number;
+  crop: Rect | null; focus?: [number, number] | null};
+
+const Media: React.FC<{shot: Source; style: React.CSSProperties}> = ({shot, style}) => {
   const {fps} = useVideoConfig();
   return shot.kind === 'video'
     ? <OffthreadVideo src={staticFile(shot.src)} trimBefore={Math.round(shot.offset * fps)} muted style={style} />
     : <Img src={staticFile(shot.src)} style={style} />;
 };
 
-// One shot. 'fill': cover-cropped, with a slow eased push + drift scaled by `motion` (none
-// with motion 'none') and an optional punch-in. 'fit': the whole frame, still, over a
+// One shot, drawn by its layout (see Layout). 'fit': the whole frame, still, over a
 // blurred copy. `fadeIn` frames: crossfade in over the previous shot.
-const ShotView: React.FC<{shot: Shot; motion: Motion; framing: 'fill' | 'fit'; fadeIn: number}> = (
+const ShotView: React.FC<{shot: Shot; motion: Motion; framing: Layout; fadeIn: number}> = (
   {shot, motion, framing, fadeIn},
 ) => {
   const frame = useCurrentFrame();
-  const {fps, width: W, height: H, durationInFrames} = useVideoConfig();
-  const amount = AMOUNT[motion] ?? 1;
+  const {width: W, height: H} = useVideoConfig();
   const opacity = fadeIn > 0 ? interpolate(frame, [0, fadeIn], [0, 1], {extrapolateRight: 'clamp'}) : 1;
   const [cw, ch, cx, cy] = shot.crop ?? [shot.srcW, shot.srcH, 0, 0];
-  if (framing === 'fit') {
+  const layout: Layout = shot.layout ?? (framing === 'fit' ? 'fit' : framing === 'fill' ? 'fill' : framing);
+  if (layout === 'fit') {
     const fit = Math.min(W / cw, H / ch);
     const cover = Math.max(W / cw, H / ch);
     const place = (k: number): React.CSSProperties => ({
@@ -72,34 +83,69 @@ const ShotView: React.FC<{shot: Shot; motion: Motion; framing: 'fill' | 'fit'; f
       </AbsoluteFill>
     );
   }
+  if (layout === 'fill') {
+    return (
+      <AbsoluteFill style={{overflow: 'hidden', backgroundColor: 'black', opacity}}>
+        <Cover m={shot} tw={W} th={H} pan={shot.pan} punch={shot.punch} motion={motion} />
+        {shot.flash ? <Flash /> : null}
+      </AbsoluteFill>
+    );
+  }
+  // a boxed picture (or two stacked) over a blurred, darker copy of the clip
+  const cover = Math.max(W / cw, H / ch);
+  const boxes: [Source, Rect, number][] = [[shot, shot.box ?? [0, 0, W, H], shot.pan]];
+  if (layout === 'stack' && shot.second) boxes.push([shot.second, shot.second.box, -shot.pan]);
+  return (
+    <AbsoluteFill style={{overflow: 'hidden', backgroundColor: 'black', opacity}}>
+      <AbsoluteFill style={{filter: 'blur(36px) brightness(0.82) saturate(0.85)', transform: 'scale(1.08)'}}>
+        <Media shot={shot} style={{position: 'absolute', width: shot.srcW * cover, height: shot.srcH * cover,
+          left: W / 2 - (cx + cw / 2) * cover, top: H / 2 - (cy + ch / 2) * cover}} />
+      </AbsoluteFill>
+      {boxes.map(([m, [bx, by, bw, bh], pan], i) => (
+        <div key={i} style={{position: 'absolute', left: bx, top: by, width: bw, height: bh, overflow: 'hidden'}}>
+          <Cover m={m} tw={bw} th={bh} pan={pan} punch={shot.punch} motion={motion} />
+        </div>
+      ))}
+      {shot.flash ? <Flash /> : null}
+    </AbsoluteFill>
+  );
+};
+
+// A clip cover-cropped to tw x th: a slow eased push + drift scaled by `motion` (none with
+// motion 'none'), an optional punch-in, and the crop centred on the subject when known.
+const Cover: React.FC<{m: Source; tw: number; th: number; pan: number; punch: boolean; motion: Motion}> = (
+  {m, tw, th, pan, punch, motion},
+) => {
+  const frame = useCurrentFrame();
+  const {fps, durationInFrames} = useVideoConfig();
+  const amount = AMOUNT[motion] ?? 1;
+  const [cw, ch, cx, cy] = m.crop ?? [m.srcW, m.srcH, 0, 0];
   const p = interpolate(frame, [0, Math.max(1, durationInFrames - 1)], [0, 1], {
     easing: smooth, extrapolateLeft: 'clamp', extrapolateRight: 'clamp',
   });
-  const extra = (shot.kind === 'image' ? 0.12 : 0.06) * amount;
-  const base = Math.max(W / cw, H / ch) * (1 + extra);
+  const extra = (m.kind === 'image' ? 0.12 : 0.06) * amount;
+  const base = Math.max(tw / cw, th / ch) * (1 + extra);
   const range = 0.06 * amount;
-  const push = shot.pan > 0 ? interpolate(p, [0, 1], [1.0, 1 + range]) : interpolate(p, [0, 1], [1 + range, 1.0]);
+  const push = pan > 0 ? interpolate(p, [0, 1], [1.0, 1 + range]) : interpolate(p, [0, 1], [1 + range, 1.0]);
   let scale = base * push;
   let blur = 0;
-  if (shot.punch && amount > 0) {
+  if (punch && amount > 0) {
     const s = spring({frame, fps, config: {damping: 18, stiffness: 180, mass: 0.6}});
     scale *= interpolate(s, [0, 1], [1.22, 1]);
     blur = interpolate(frame, [0, 6], [10, 0], {extrapolateRight: 'clamp'});
   }
-  const room = Math.max(0, cw * scale - W);
-  const drift = Math.min(140, room / 2) * shot.pan * (p - 0.5) * amount;
-  const left = W / 2 - (cx + cw / 2) * scale + drift;
-  const top = H / 2 - (cy + ch / 2) * scale;
+  const [fx, fy] = m.focus ?? [0.5, 0.5];
+  const room = Math.max(0, cw * scale - tw);
+  const drift = Math.min(140 * tw / 1080, room / 2) * pan * (p - 0.5) * amount;
+  const clampX = (x: number) => Math.min(-cx * scale, Math.max(tw - (cx + cw) * scale, x));
+  const clampY = (y: number) => Math.min(-cy * scale, Math.max(th - (cy + ch) * scale, y));
+  const left = clampX(tw / 2 - (cx + fx * cw) * scale + drift);
+  const top = clampY(th / 2 - (cy + fy * ch) * scale);
   const style: React.CSSProperties = {
-    position: 'absolute', left, top, width: shot.srcW * scale, height: shot.srcH * scale,
+    position: 'absolute', left, top, width: m.srcW * scale, height: m.srcH * scale,
     filter: blur > 0.1 ? `blur(${blur}px)` : undefined,
   };
-  return (
-    <AbsoluteFill style={{overflow: 'hidden', backgroundColor: 'black', opacity}}>
-      <Media shot={shot} style={style} />
-      {shot.flash ? <Flash /> : null}
-    </AbsoluteFill>
-  );
+  return <Media shot={m} style={style} />;
 };
 
 const Flash: React.FC = () => {

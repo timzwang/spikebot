@@ -35,6 +35,11 @@ COMMANDS: list[dict] = [
      "what": "Makes trailer edits cut to your trending sounds; each lands in #ready-to-post with 3 versions.",
      "how": "`/trend` (every sound) · `/trend song:<name> per_song:2` (1-3 per sound)",
      "tags": "trending sound song music tokyo girl trailer"},
+    {"name": "/compare", "cat": "make",
+     "what": "GTA 5 vs GTA 6 comparison edits from official trailers: the same kind of shot from both games,"
+             " labelled, with captions; each lands in #ready-to-post with 3 versions.",
+     "how": "`/compare` · `/compare count:2` (1-3; one is also made every day)",
+     "tags": "gta 5 vs 6 then now comparison side by side versus"},
     {"name": "/cancel", "cat": "make",
      "what": "Stops a running render, trend edit, Lacy clip, #inspiration analysis or sound download.",
      "how": "`/cancel` lists what's running · `/cancel run:<id from the progress bar>` · `/cancel run:all`",
@@ -91,7 +96,7 @@ COMMANDS: list[dict] = [
      "what": "Analyses another creator's Short for its style and saves it as a preset (the video is deleted"
              " straight after; only numbers are kept).",
      "how": "Post a TikTok / Instagram / YouTube link or upload a video. Optional: `copy: pacing, colour, text,"
-            " transitions, hook, structure, music-sync, look` and `name: my-preset`",
+            " transitions, hook, structure, music-sync, look, framing` and `name: my-preset`",
      "tags": "reference style analyse preset link upload copy name"},
     {"name": "#inspiration: a sound", "cat": "channels",
      "what": "Adds a song to the music library for trend edits (beats and drop are measured; edits stay silent).",

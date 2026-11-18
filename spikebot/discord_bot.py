@@ -46,6 +46,7 @@ log = logging.getLogger("discord_bot")
 
 MODE_LABEL = {"lacy": ("Lacy", 0x9146FF), "tokyo_girl": ("Tokyo Girl", 0xFF4FA3)}
 TREND_LABEL = ("Trending sound", 0x1DB954)
+COMPARE_LABEL = ("GTA 5 vs GTA 6", 0x5BC236)
 
 
 def mode_label(item: dict) -> tuple[str, int]:
@@ -53,6 +54,8 @@ def mode_label(item: dict) -> tuple[str, int]:
     but are not Tokyo Girl edits."""
     if (item.get("source") or {}).get("kind") == "trend":
         return TREND_LABEL
+    if (item.get("source") or {}).get("kind") == "compare":
+        return COMPARE_LABEL
     src = item.get("source") or {}
     if item["mode"] == "lacy" and src.get("streamer") and src["streamer"] != "Lacy":   # Adin Ross, Seal...
         return src["streamer"], (0x53FC18 if src.get("platform") == "kick" else 0x9146FF)
@@ -1336,7 +1339,7 @@ class ReviewBot:
                 await message.reply("Send a TikTok / Instagram / YouTube link or upload a video. For a song,"
                                     " paste a TikTok sound link (Share sound > Copy link), upload the audio,"
                                     " or put `sound:` before a link to a video that uses it. Optional notes:"
-                                    " `copy: pacing, colour, text, transitions, hook, structure, music-sync, look`,"
+                                    " `copy: pacing, colour, text, transitions, hook, structure, music-sync, look, framing`,"
                                     " `name: my-preset`, and anything about what you like in it.",
                                     mention_author=False)
             return
@@ -1804,13 +1807,27 @@ class ReviewBot:
 
     async def run_trend(self, inter, song: str | None, per_song: int) -> None:
         """`python -m spikebot.tokyo_girl trend` in a subprocess; the scan loop posts the rounds."""
-        cmd = [sys.executable, "-m", "spikebot.tokyo_girl", "--config", self.config_path, "trend",
-               "-n", str(per_song)] + (["--song", song] if song else [])
-        # One bar from the start (library check, sounds, every edit): the renders alone only
-        # showed one after the library's nudity check, which can take many minutes.
+        try:
+            await self.run_edits(inter, ["trend", "-n", str(per_song)] + (["--song", song] if song else []),
+                                 "Trending-sound edits" + (f" · {song}" if song and song != "auto" else ""), "🎵",
+                                 "trending-sound edit", skip_if="no trending sounds")
+        finally:
+            if song == "auto":
+                self._trend_running = False
+
+    async def run_compare(self, inter, n: int = 1) -> None:
+        """`python -m spikebot.tokyo_girl compare`: GTA 5 vs GTA 6 comparison edits."""
+        await self.run_edits(inter, ["compare", "-n", str(n)], "GTA 5 vs GTA 6" + (f" ×{n}" if n > 1 else ""),
+                             "🆚", "comparison edit")
+
+    async def run_edits(self, inter, args: list[str], title: str, icon: str, what: str,
+                        skip_if: str | None = None) -> None:
+        """A `spikebot.tokyo_girl` batch in a subprocess, with one progress bar from the start (library
+        check, sounds/labels, every edit): the renders alone only showed one after the library's
+        nudity check, which can take many minutes. `skip_if`: output text that means "nothing to do"."""
+        cmd = [sys.executable, "-m", "spikebot.tokyo_girl", "--config", self.config_path] + args
         where = getattr(inter, "channel_id", None) if inter is not None else None
-        pj = self.progress_job("Trending-sound edits" + (f" · {song}" if song and song != "auto" else ""),
-                               where, "🎵")
+        pj = self.progress_job(title, where, icon)
         ok, why, state = False, "", None
         try:
             p = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE,
@@ -1822,37 +1839,35 @@ class ReviewBot:
             except asyncio.TimeoutError:
                 p.kill()   # don't leave a hung render running forever
                 await p.wait()
-                raise RuntimeError("trending-sound render took over 3 h and was stopped")
+                raise RuntimeError(f"{what} render took over 3 h and was stopped")
             text = out.decode(errors="replace")
-            log.info("trend edits: %s", text[-500:].strip())
+            log.info("%s: %s", what, text[-500:].strip())
             self.wake.set()
             ok = p.returncode == 0
             bad = [ln for ln in text.splitlines() if "FAILED" in ln or "Error" in ln or "error" in ln]
             why = (bad or text.strip().splitlines() or ["?"])[-1][:300]
-            if "no trending sounds" in text:
+            skipped = bool(skip_if) and skip_if in text
+            if skipped:
                 state = "skipped"
             if p.pid in self.force_stopped:
-                log.info("trend edits stopped by /cancel")
+                log.info("%s stopped by /cancel", what)
             elif p.returncode != 0 and inter is None:
-                if self.notifier and "no trending sounds" not in text:
-                    await self.notifier.send("trend_failed", "🎵 Scheduled trending-sound edit failed: "
+                if self.notifier and not skipped:
+                    await self.notifier.send(f"{args[0]}_failed", f"{icon} Scheduled {what} failed: "
                                              + (text.strip().splitlines() or ["?"])[-1][:300], kind="lacy")
             elif p.returncode != 0:
-                lines = [ln for ln in text.splitlines() if "FAILED" in ln or "Error" in ln or "error" in ln]
-                await inter.followup.send(("⚠️ Some trending-sound edits failed:\n"
-                                           + ("\n".join(lines[-5:]) or text[-300:]))[:1990])
+                await inter.followup.send((f"⚠️ Some {what}s failed:\n"
+                                           + ("\n".join(bad[-5:]) or text[-300:]))[:1990])
         except Exception as e:  # noqa: BLE001 - never crash the bot on a command
-            log.warning("/trend failed: %s", e)
+            log.warning("%s failed: %s", what, e)
             why = str(e)[:300]
             try:
                 if inter is not None:
-                    await inter.followup.send(f"⚠️ Trending-sound edits failed: {e}"[:1990])
+                    await inter.followup.send(f"⚠️ {what.capitalize()}s failed: {e}"[:1990])
             except Exception:  # noqa: BLE001
                 pass
         finally:
             pj.finish(ok, "" if ok else why, state)
-            if song == "auto":
-                self._trend_running = False
 
     async def analyse(self, name: str, copy: list[str], url: str | None = None, file: Path | None = None,
                       note: str = "", channel_id: int | None = None) -> dict:
@@ -2258,6 +2273,18 @@ class ReviewBot:
                 f"🎬 Making trending-sound edits ({per_song} per sound{', ' + song if song else ''}). Each one"
                 " appears here in #ready-to-post with 3 versions when it's rendered (a few minutes each).")
             asyncio.create_task(bot.run_trend(inter, song, per_song))
+
+        @tree.command(name="compare", description="GTA 5 vs GTA 6 comparison edits (#ready-to-post, 3 versions each)")
+        @app_commands.describe(count="How many comparison edits (1-3)")
+        async def compare_cmd(inter: discord.Interaction, count: int = 1):
+            if not await guard(inter):
+                return
+            count = max(1, min(3, count))
+            await inter.response.send_message(
+                f"🆚 Making {count} GTA 5 vs GTA 6 comparison edit{'s' if count > 1 else ''}. The first one also"
+                " downloads Rockstar's GTA 5 trailers and matches the shots, so it can take a while; the bar below"
+                " shows where it is.")
+            asyncio.create_task(bot.run_compare(inter, count))
 
         @tree.command(name="stats", description="Refresh the 📊 Stats channels now")
         async def stats_cmd(inter: discord.Interaction):
