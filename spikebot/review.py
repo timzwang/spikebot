@@ -57,9 +57,13 @@ DEFAULTS = {
     "inspiration_archive_hours": 12,
     # automatic trending-sound edits: one per slot (UK times), rotating through the sounds
     "trend": {"enabled": True, "times": ["07:20", "12:10", "15:50", "19:40"]},
-    # info-only voice channels at the top of the server, renamed every 10 min (Discord
-    # allows 2 renames per channel per 10 min). Needs the bot's Manage Channels permission.
-    "stats": {"enabled": True, "category": "📊 Stats", "every_s": 600},   # #inspiration threads quiet this long are archived (0 = off)
+    # info-only voice channels at the top of the server, checked every minute; each one is
+    # renamed at most once per ~5 min (Discord allows 2 renames per channel per 10 min).
+    # Needs the bot's Manage Channels permission. social_every_s = how often views/likes/
+    # followers are re-read (spikebot/socialstats.py); youtube_channel = UC... id or @handle;
+    # gta6_launch = UK unlock time (ISO with offset).
+    "stats": {"enabled": True, "category": "📊 Stats", "social_every_s": 900, "youtube_channel": "",
+              "gta6_launch": "2026-11-19T00:00:00+00:00"},
     "preview_total_mb": 9.0,       # all 3 previews in one message (10 MB unboosted limit)
     "privacy": "public",           # YouTube privacy for non-Lacy modes (Lacy uses lacy.privacy)
     "youtube_max_per_day": 6,      # all modes together; Lacy also obeys lacy.max_uploads_per_day
@@ -391,7 +395,7 @@ def specs_for(item: dict, req: dict, store: Store, rng: random.Random,
 def _specs_for(item: dict, req: dict, store: Store, rng: random.Random,
                base_dir: Path | None, ai_client, sounds: list[str] | None) -> tuple[list[dict], str]:
     profile = store.profile()
-    presets = store.presets().all()
+    presets = presets_.for_mode(store.presets().all(), style_mode(item))
     kind = req["kind"]
     if kind in ("initial", "redo"):
         specs = st.pick_variants(profile, style_mode(item), rng, presets, avoid=shown_styles(item))

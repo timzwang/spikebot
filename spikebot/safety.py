@@ -171,17 +171,37 @@ def frame_flag(dets: list[dict], size: tuple[int, int]) -> str | None:
     return None
 
 
-def flag_times(path: Path, fps: float = 1.0, detector=None) -> list[list]:
+def flag_times(path: Path, fps: float = 1.0, detector=None, faces: list | None = None) -> list[list]:
     """[[time, what], ...] of frames in a library file that must never be used. Raises
-    Unavailable without NudeNet."""
+    Unavailable without NudeNet. With `faces` (a list), the same pass also collects the faces
+    in each frame (`frame_faces`): smart framing keeps the subject in the picture."""
     det = detector or detect
     if detector is None:
         _detector()
     out = []
     for t, f in frames(Path(path), fps):
-        why = frame_flag(det(f), (f.shape[1], f.shape[0]))
+        dets = det(f)
+        why = frame_flag(dets, (f.shape[1], f.shape[0]))
         if why:
             out.append([round(t, 2), why])
+        if faces is not None:
+            found = frame_faces(dets, (f.shape[1], f.shape[0]))
+            if found:
+                faces.append([round(t, 2), found])
+    return out
+
+
+FACE_SCORE = 0.45
+
+
+def frame_faces(dets: list[dict], size: tuple[int, int]) -> list[list[float]]:
+    """Faces in one frame as [centre x, centre y, width, height], fractions of the frame. Pure."""
+    w, h = size
+    out = []
+    for d in dets:
+        if d.get("class") in FACES and float(d.get("score") or 0) >= FACE_SCORE and w and h:
+            x, y, bw, bh = d["box"]
+            out.append([round((x + bw / 2) / w, 3), round((y + bh / 2) / h, 3), round(bw / w, 3), round(bh / h, 3)])
     return out
 
 

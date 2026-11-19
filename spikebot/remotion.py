@@ -28,7 +28,7 @@ from pathlib import Path
 
 log = logging.getLogger("remotion")
 ROOT = Path(__file__).resolve().parent.parent / "remotion"
-FPS = 30    # same as tokyo_girl.FPS (#39)
+FPS = 30    # same as tokyo_girl.FPS (#39); an edit of real 60 fps clips renders at 60 (edit_fps)
 CRF = 18    # same as editor.CRF (#39)
 TEXT_Y = {"high": 0.27, "middle": 0.44, "low": 0.6}
 
@@ -63,22 +63,35 @@ def props_for(plan, lcfg: dict, r: dict, cards: list[tuple[float, float, str]], 
             files[names[key]] = path.resolve()
         return names[key]
 
-    from .tokyo_girl import end_fade, focus_of
+    from . import tokyo_girl as TG
+    framing, smart = r.get("framing") or "fill", r.get("smart_fill", True)
     shots = []
     fade = float(r.get("fade_s") or 0.45) if r.get("transition") == "fade" else 0
     for i, sl in enumerate(plan.slots):
         sh = sl.shot
         nxt = plan.slots[i + 1] if i + 1 < len(plan.slots) else None
-        shots.append({"src": public(media / sh.src), "kind": sh.kind, "start": round(sl.start, 4),
-                      "dur": round(sl.dur, 4), "offset": round(sl.offset, 3), "pan": sl.pan,
-                      "punch": bool(sl.punch), "flash": bool(sl.flash), "srcW": sh.w, "srcH": sh.h,
-                      "crop": list(sh.crop) if sh.crop else None,
-                      # this clip's crossfade in, and how long it runs on under the next clip
-                      "fadeIn": round(float(sl.fade_in or (fade if i else 0)), 4),
-                      "tail": round(float((nxt.fade_in or fade) if nxt is not None and fade else 0), 4),
-                      # seconds of clean source; after that the last frame is held (never another scene)
-                      "hold": round(float(sl.hold), 4) if sl.hold is not None else None,
-                      "focus": round(focus_of(sl, r), 3)})
+        layout = TG.slot_layout(sl, framing, smart)
+        row = {"src": public(media / sh.src), "kind": sh.kind, "start": round(sl.start, 4),
+               "dur": round(sl.dur, 4), "offset": round(sl.offset, 3), "pan": sl.pan,
+               "punch": bool(sl.punch), "flash": bool(sl.flash), "srcW": sh.w, "srcH": sh.h,
+               "crop": list(sh.crop) if sh.crop else None,
+               "focus": list(sh.focus) if sh.focus else None, "layout": layout,
+               # this clip's crossfade in, and how long it runs on under the next clip
+               "fadeIn": round(float(sl.fade_in or (fade if i else 0)), 4),
+               "tail": round(float((nxt.fade_in or fade) if nxt is not None and fade else 0), 4),
+               # seconds of clean source; after that the last frame is held (never another scene)
+               "hold": round(float(sl.hold), 4) if sl.hold is not None else None}
+        if layout in TG.BOXES:
+            bw, bh = TG.BOXES[layout]
+            row["box"] = [0, TG.box_top(layout), bw, bh]
+        if layout == "stack":
+            s2 = sl.shot2
+            y1, y2 = TG.stack_tops()
+            row["box"] = [0, y1, TG.W, TG.STACK_H]
+            row["second"] = {"src": public(media / s2.src), "kind": s2.kind, "offset": round(sl.offset2, 3),
+                             "srcW": s2.w, "srcH": s2.h, "crop": list(s2.crop) if s2.crop else None,
+                             "focus": list(s2.focus) if s2.focus else None, "box": [0, y2, TG.W, TG.STACK_H]}
+        shots.append(row)
     g = r.get("grade") or {}
     look = r.get("look") or {}
     scale = float(r.get("scale") or 1.0)
@@ -87,7 +100,9 @@ def props_for(plan, lcfg: dict, r: dict, cards: list[tuple[float, float, str]], 
             "sizePx": int(r.get("text_px") or lcfg.get("font_size", 104) * scale * 0.92),
             "colour": r.get("text_colour") or "#FFFFFF", "highlight": r.get("highlight") or "#FFE500",
             "y": float(y) if y is not None else TEXT_Y.get(r.get("position") or "high", 0.27)}
-    props = {"fps": FPS, "width": 1080, "height": 1920, "duration": round(plan.duration, 4),
+    if y is None and (r.get("position") or "high") == "high" and r.get("framing") in ("box45", "box11", "stack"):
+        text["y"] = 0.035   # the band above the picture, not over it
+    props = {"fps": TG.edit_fps(plan), "width": 1080, "height": 1920, "duration": round(plan.duration, 4),
              "shots": shots,
              "cards": [{"from": a, "to": b, "text": t, "ask": i == len(cards) - 1 and t.replace("*", "").rstrip().endswith("?")}
                        for i, (a, b, t) in enumerate(cards)],
@@ -95,7 +110,7 @@ def props_for(plan, lcfg: dict, r: dict, cards: list[tuple[float, float, str]], 
              "logo": ({"src": public(logo), "until": round(intro_s, 4), "out": float(r.get("logo_fade_s") or 0.4),
                        "size": float(r.get("logo_size") or 0.78)} if logo and intro_s else None),
              "motion": r.get("motion") or "full", "framing": r.get("framing") or "fill",
-             "fade": fade, "endFade": end_fade(r, plan.duration),
+             "fade": fade, "endFade": TG.end_fade(r, plan.duration),
              "look": {"saturation": g.get("saturation", 1.0), "contrast": g.get("contrast", 1.0),
                       "brightness": g.get("brightness", 0.0), "warmth": g.get("warmth", 0.0),
                       "grain": float(look.get("grain") or 0), "vignette": bool(look.get("vignette")),

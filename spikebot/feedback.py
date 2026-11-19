@@ -141,7 +141,7 @@ def rule_based(text: str, mode: str, profile: st.Profile, current: dict | None =
         after = st.apply_changes(before, changes)
         for dim in st.dims(m):
             if after.get(dim) != before.get(dim) and after.get(dim) is not None:
-                rows.append({"mode": m if dim in ("hook", "ending", "intro") or mode != "all" else "all",
+                rows.append({"mode": m if dim in ("hook", "ending", "opening", "intro") or mode != "all" else "all",
                              "setting": dim, "value": str(after[dim]), "scope": scope})
         for k, v in (after.get("custom") or {}).items():
             if (before.get("custom") or {}).get(k) != v:

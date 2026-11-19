@@ -104,6 +104,47 @@ def test_end_to_end_with_fake_ocr(tmp_path):
     assert len(res["text"]) < 2000
     style = P.to_style(p, "tokyo_girl")
     assert style["custom"]["hook_style"] == "pov" and "transition" not in style  # transitions not copied
+    # fast, beat-synced cutting and no webcam: an edit, so it teaches the trailer / trend edits only
+    assert res["kind"] == "edit" and p["kind"] == "edit" and p["modes"] == ["tokyo_girl", "trend"]
+    assert "**Type** an **edit**" in res["text"]
+    assert set(P.for_mode({"ref": p}, "trend")) == {"ref"} and not P.for_mode({"ref": p}, "lacy")
+
+
+# ---- what kind of video it is (Tim, 19 Nov) ---------------------------------------------
+def analysis(cuts_per_s=0.1, cuts=2, avg=8.0, on_beat=0.0, audio=True, words=3, duration=30.0):
+    return {"duration": duration, "audio": audio, "pacing": {"cuts_per_s": cuts_per_s, "cuts": cuts, "avg_shot_s": avg},
+            "music": {"on_beat": on_beat, "bpm": 0}, "text": {"words_per_screen": words}}
+
+
+def test_video_kind_from_tim_then_claude_then_measurements():
+    assert I.kind_from_note("love the captions type: clip") == "stream_clip"
+    assert I.kind_from_note("Type: Edit, name: x") == "edit" and I.kind_from_note("kind: other") == "other"
+    assert I.kind_from_note("just a note") is None
+    a = analysis()
+    assert I.classify(a, None, "other", facecam=None)[0] == "other"                     # Tim's word wins
+    assert I.classify(a, {"kind": "edit", "kind_why": "montage"}, None, facecam=None) == ("edit", "montage")
+    assert I.classify(a, None, None, facecam=lambda p: True, path=Path("x"))[0] == "stream_clip"   # a webcam
+    assert I.guess_kind(analysis(cuts_per_s=1.2, cuts=20, avg=0.8))[0] == "edit"
+    assert I.guess_kind(analysis(on_beat=0.8, cuts=8, cuts_per_s=0.3, avg=3))[0] == "edit"
+    assert I.guess_kind(analysis())[0] == "stream_clip"                    # long takes, talking, short captions
+    assert I.guess_kind(analysis(audio=False))[0] == "other"
+
+
+def test_stream_clip_and_other_presets_teach_the_right_editor():
+    a = analysis(duration=26.0) | {"colour": None, "structure": {"hook_s": 2.0, "ending": "none"},
+                                   "transitions": {}, "motion": {}, "framing": {"framing": "fill"}}
+    a["pacing"] |= {"shortest_s": 1, "longest_s": 9}
+    clip = I.make_preset("c", list(P.PARTS), a, {"platform": "upload"}, None, "stream_clip", "webcam")
+    assert clip["modes"] == ["lacy"] and clip["settings"]["pacing"] == {"pace": "fast"}   # a 26 s clip
+    assert "framing" not in clip["copy"] and "music-sync" not in clip["copy"] and "framing" not in clip["settings"]
+    assert P.to_style(clip, "lacy")["pace"] == "fast"
+    other = I.make_preset("o", list(P.PARTS), a, {"platform": "upload"}, None, "other")
+    assert other["modes"] == [] and set(other["copy"]) == {"colour", "text", "look"}
+    old = {"name": "old", "settings": {}}          # presets from before the sorting apply everywhere
+    every = {"c": clip, "o": other, "old": old}
+    assert set(P.for_mode(every, "lacy")) == {"c", "old"} and set(P.for_mode(every, "tokyo_girl")) == {"old"}
+    assert "stream clip" in I.breakdown(clip | {"analysis": a | {"size": [1080, 1920], "detector": "ffmpeg",
+                                                                  "pacing": a["pacing"] | {"cuts": 2}}})
 
 
 @needs_ffmpeg
@@ -129,3 +170,43 @@ def test_cli_writes_json(tmp_path, monkeypatch):
     assert code == 0 and res["name"] == "cool-one"
     p = P.Presets(tmp_path / "data/presets").load("cool-one")
     assert p["copy"] == ["pacing", "colour"] and "OCR not installed" in res["text"]
+
+
+# ---- framing (Tim, 18 Nov: take the reference's aspect ratio into account) ----------
+def test_framing_from_bands_names_our_framings():
+    W, H = 270, 480
+    assert I.framing_from(W, H, [(0, 480)])["framing"] == "fill"
+    assert I.framing_from(W, H, [(71, 409)])["framing"] == "box45"          # 270x338 = 4:5
+    assert I.framing_from(W, H, [(105, 375)])["framing"] == "box11"
+    assert I.framing_from(W, H, [(164, 316)])["framing"] == "fit"           # 16:9 in the middle
+    assert I.framing_from(W, H, [(86, 238), (242, 394)])["framing"] == "stack"
+    assert I.framing_from(W, H, [])["framing"] is None
+
+
+def test_bands_close_a_smooth_sky_but_not_a_divider():
+    sky = [0.2] * 100 + [0.0] * 6 + [0.2] * 100             # one frame had edges in the gap: the same shot
+    assert I.bands(sky, peaks=[0.2] * 100 + [0.05] * 6 + [0.2] * 100) == [(0, 206)]
+    assert len(I.bands(sky, peaks=sky)) == 2                 # never an edge there: two stacked clips
+
+
+@pytest.mark.skipif(not shutil.which("ffmpeg"), reason="ffmpeg not installed")
+@pytest.mark.parametrize("name,graph,want", [
+    ("box45", "[1:v][0:v]overlay=0:285", "box45"),
+    ("fit", "[1:v][0:v]overlay=0:656", "fit"),
+])
+def test_framing_measured_from_a_video(tmp_path, name, graph, want):
+    size = "1080x1350" if name == "box45" else "1080x608"
+    out = tmp_path / f"{name}.mp4"
+    subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i",
+                    f"testsrc2=s={size}:r=30:d=3", "-f", "lavfi", "-i", "color=c=0x223344:s=1080x1920:d=3",
+                    "-filter_complex", graph + ",format=yuv420p", str(out)], check=True)
+    fr = I.framing(out, 3.0)
+    assert fr["framing"] == want
+    sets = I.settings_from({"pacing": {"avg_shot_s": 1.0, "cuts": 2}, "colour": None, "text": {},
+                            "transitions": {}, "motion": {}, "music": {"bpm": 0, "phase": 0, "on_beat": 0},
+                            "structure": {"hook_s": 1.0, "ending": "none"}, "framing": fr})
+    assert sets["framing"] == {"framing": want}
+    from spikebot import presets as P
+    assert P.to_style({"copy": ["framing"], "settings": sets}, "tokyo_girl") == {"framing": want}
+    assert P.to_style({"copy": ["framing"], "settings": sets}, "lacy") == {}     # stream clips keep their layout
+    assert P.parse_copy("copy: pacing, aspect") == ["pacing", "framing"]

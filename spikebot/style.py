@@ -63,9 +63,15 @@ TG_TRANSITIONS = TRANSITIONS + ("fade",)   # Tokyo Girl also has a soft crossfad
 # Camera movement added by the editor: "none" = every shot completely still (no pans,
 # push-ins, punch-in zooms or animated stills), "subtle" = half the drift, "full" = as designed.
 MOTIONS = ("none", "subtle", "full")
-# Tokyo Girl framing of the 16:9 trailers in the 9:16 frame: "fill" crops the sides to fill
-# the screen, "fit" shows the whole frame (nothing cut off) over a blurred copy of itself.
-FRAMINGS = ("fill", "fit")
+# Tokyo Girl framing of the 16:9 trailers in the 9:16 frame: "box45" (default) a big 4:5
+# picture on black bars (Tim, 19 Nov: no blur), text in the bands above/below; "box11" the same at 1:1 (more of
+# a wide shot); "stack" two clips at once, one above the other, each whole; "fill" crops the
+# sides to fill the screen; "fit" shows the whole frame (nothing cut off) over a blur.
+# With smart fill (custom smart_fill, on unless 0) a close-up of one person goes full screen,
+# and every crop is centred on the subject instead of the middle of the frame.
+FRAMINGS = ("box45", "box11", "stack", "fill", "fit")
+# What A/B/C explore when nothing is pinned (Tim, 18 Nov: 4:5 default, 1:1 and stacked to try)
+FRAMING_EXPLORE = ("box45", "box11", "stack")
 # Tokyo Girl source media: "clips" = trailer video only (never screenshots), "mixed" = both.
 MEDIA = ("clips", "mixed")
 # How much on-screen text an edit carries. "none": no captions, no hook box, no end
@@ -81,6 +87,9 @@ TG_TEXT_LEVELS = TEXT_LEVELS + ("plain",)
 # shot (the one over the ocean and skyscrapers where the text fades in) up to the drop.
 INTROS = ("none", "logo", "countdown", "rockstar_presents")
 ENDINGS = ("none", "question", "cta")
+# Stream clips: how the clip opens. "teaser" = its biggest moment plays first under an AI
+# voiceover hook, then the clip itself (Tim, 19 Nov: the experimental version C unless pinned).
+OPENINGS = ("normal", "teaser")
 HOOKS = {
     "lacy": ("matched", "funny", "shock", "hype", "neutral"),
     "tokyo_girl": ("news", "theory", "meme", "couple"),
@@ -93,7 +102,7 @@ TG_LIKE = ("tokyo_girl", "trend")
 DEFAULT = {"grade": "natural", "pace": "normal", "font": "dejavu", "size": "m",
            "position": "low", "colour": "classic", "transition": "flash",
            "ending": "none", "text_level": "minimal", "intro": "none", "motion": "full",
-           "framing": "fill", "media": "mixed"}
+           "framing": "box45", "media": "mixed", "opening": "normal"}
 TG_ONLY = ("intro", "framing", "media")   # dimensions only Tokyo Girl has
 # Not varied between A/B/C: a rule, not a style to explore. Default unless Tim sets it.
 FIXED = ("media",)
@@ -127,8 +136,10 @@ CUSTOM_KEYS = {
     # stream clips: seconds added before the clip's start (snapped back to the sentence start);
     # skip clips whose facecam panel shows no real face (1 = on)
     "lead_in_s": (0, 5), "require_facecam": (0, 1),
+    "smart_fill": (0, 1),   # close-ups of one person full screen, crops follow the subject (default 1)
 }
-TG_CUSTOM = ("max_s", "hold_beats", "logo_s", "logo_size", "fade_s", "logo_fade_s", "end_fade_s", "intro_mix",
+TG_CUSTOM = ("max_s", "hold_beats", "logo_s", "logo_size", "fade_s", "smart_fill", "logo_fade_s", "end_fade_s",
+             "intro_mix",
              "unique_clips", "crop_safe", "action_first", "ambient_bias", "palette_match", "impact_ending",
              "opener_rotation", "footage_match", "glitch_check")
 LACY_CUSTOM = ("lead_in_s", "require_facecam")   # stream clips only
@@ -166,6 +177,11 @@ BUILT_IN = (
     " shots, same order) unless the feedback asks for new clips",
     "Tokyo Girl / trend: a Feedback re-render can switch that edit to any sound in the music library"
     " (\"switch the song to impulsive\"); later re-renders of it keep that sound",
+    "Tokyo Girl / trend: never two clips from within 30 s of the same video in one edit (variety across long"
+    " videos like the Extended Look); crops are centred on the subject's face when there is one",
+    "Tokyo Girl / trend: 60 fps when every clip is real 60 fps footage, else 30 fps (never doubled frames)",
+    "GTA 5 vs GTA 6 comparisons: same theme from both games, labelled GTA 5 · 2013 / GTA 6 · 2026, the theme"
+    " as a caption above the picture, captions always on",
     "Tokyo Girl / trend: Feedback can reuse the exact clips of ANY earlier version of the edit, named like"
     " \"B1\" or by its file name (B_tokyogirl-20261118-004557): every one of its clips in the same order,"
     " no new clips added (the edit ends with its last clip) and no reordering (action_first never reorders"
@@ -218,6 +234,7 @@ def dims(mode: str) -> dict[str, tuple[str, ...]]:
            "text_level": TG_TEXT_LEVELS if tg else TEXT_LEVELS, "motion": MOTIONS}
     if mode == "lacy":
         out["ending"] = ENDINGS
+        out["opening"] = OPENINGS
     if tg:
         out["intro"] = INTROS
         out["framing"] = FRAMINGS
@@ -235,6 +252,7 @@ def default_style(mode: str) -> dict:
     s["hook"] = HOOKS.get(mode, ("matched",))[0]
     if mode != "lacy":
         s.pop("ending")
+        s.pop("opening")
     if mode not in TG_LIKE:
         for k in TG_ONLY:
             s.pop(k)
@@ -285,11 +303,13 @@ def resolve(style: dict) -> dict:
         "highlight": c["highlight"] if hex_ok(c.get("highlight", "")) else hi,
         "outline": c.get("outline"), "shadow": c.get("shadow"),
         "transition": transition, "motion": motion,
-        "framing": style.get("framing") if style.get("framing") in FRAMINGS else "fill",
+        "framing": style.get("framing") if style.get("framing") in FRAMINGS else DEFAULT["framing"],
+        "smart_fill": bool(num("smart_fill", 1)),
         "media": style.get("media") if style.get("media") in MEDIA else "mixed",
         "max_s": num("max_s", None), "hold_beats": int(num("hold_beats", 1)),
         "logo_s": num("logo_s", None), "logo_size": num("logo_size", 0.78), "fade_s": num("fade_s", 0.45),
         "ending": style.get("ending") if style.get("ending") in ENDINGS else "none",
+        "opening": style.get("opening") if style.get("opening") in OPENINGS else "normal",
         "hook_s": c.get("hook_s"), "payoff": c.get("payoff"),
         "hook_style": c.get("hook_style"),
         "text_level": style.get("text_level") if style.get("text_level") in TG_TEXT_LEVELS else "full",
@@ -364,6 +384,8 @@ def describe(style: dict) -> str:
             bits.append(f"{k} **{style[k]}**")
     if style.get("ending") not in (None, "none"):
         bits.append(f"ending **{style['ending']}**")
+    if style.get("opening") == "teaser":
+        bits.append("opening **teaser** (voiceover hook)")
     if c:
         bits.append("custom " + ", ".join(f"{k}={v}" for k, v in sorted(c.items())))
     return " · ".join(bits)
@@ -391,7 +413,7 @@ CATEGORIES = (
                                        "footage_match", "require_facecam")),
     ("text", "🔤 Text & captions", ("text_level", "font", "size", "position", "colour", "text_px", "text_y",
                                    "outline", "shadow", "words", "text_colour", "highlight")),
-    ("hook", "🪝 Hook, intro & ending", ("hook", "hook_s", "hook_style", "intro", "ending", "logo_s",
+    ("hook", "🪝 Hook, intro & ending", ("hook", "hook_s", "hook_style", "intro", "ending", "opening", "logo_s",
                                         "logo_size", "logo_fade_s", "end_fade_s", "intro_mix")),
     ("sound", "🔊 Sound", ("sfx",)),
     ("note", "📝 Notes (being turned into settings, or waiting for new editor code)", ()),
@@ -420,6 +442,7 @@ SETTING_INFO = {
     "max_s": ("Max length", "longest the edit may be, in seconds (logo intro included)"),
     "motion": ("Camera motion", "slow pans and push-in zooms on each clip"),
     "framing": ("Framing", "how a wide trailer shot fits the tall 9:16 screen"),
+    "smart_fill": ("Smart fill", "close-ups of one person go full screen and crops follow the subject (0 = off)"),
     "media": ("Footage", "which official Rockstar media the edit may use"),
     "text_level": ("Amount of text", "how much on-screen text the edit shows"),
     "font": ("Font", "the typeface of the on-screen text"),
@@ -438,6 +461,7 @@ SETTING_INFO = {
     "hook_style": ("Hook style", "how the opening line is written"),
     "intro": ("Intro", "what plays before the first beat drop"),
     "ending": ("Ending", "what the edit ends on"),
+    "opening": ("Opening", "stream clips: start normally, or tease the big moment first under an AI voiceover hook"),
     "logo_s": ("Logo build-up", "beats the GTA VI logo builds before it bursts on the drop"),
     "logo_size": ("Logo size", "logo width as a share of the screen"),
     "sfx": ("Sound effects", "volume of whooshes and hits on Lacy clips (0 = off)"),
@@ -471,6 +495,9 @@ VALUE_INFO = {
     ("motion", "none"): "clips stay still: no pans, no zooms",
     ("motion", "subtle"): "slow, gentle pans and zooms",
     ("motion", "full"): "clear pans and push-in zooms on every clip",
+    ("framing", "box45"): "a big 4:5 picture with black bars above and below it, text in the bars (the default)",
+    ("framing", "box11"): "a square 1:1 picture over a blurred copy: more of each wide shot",
+    ("framing", "stack"): "two clips at once, one above the other, each shown whole",
     ("framing", "fill"): "the shot is cropped to fill the whole tall screen (sides cut off)",
     ("framing", "fit"): "the whole wide shot is shown, over a blurred copy of itself",
     ("media", "clips"): "trailer video only, never screenshots",
@@ -485,6 +512,8 @@ VALUE_INFO = {
     ("intro", "rockstar_presents"): "the trailer's \"Rockstar Games Presents\" shot over the ocean and"
                                     " skyscrapers, up to the drop",
     ("ending", "none"): "no special ending",
+    ("opening", "normal"): "the clip starts at its beginning",
+    ("opening", "teaser"): "the clip's big moment plays first while an AI voice reads a hook, then the clip",
     ("ending", "question"): "ends on a question to get comments",
     ("ending", "cta"): "ends with a call to action (follow / comment)",
     ("pace", "slow"): "longer clips, fewer cuts",
@@ -598,13 +627,16 @@ class Profile:
         try:
             d = json.loads(self.path.read_text(encoding="utf-8"))
         except (FileNotFoundError, ValueError):
-            return _blank()
+            return _blank() | {"upgrades": [NOTES_UPGRADE, FRAMING_UPGRADE]}   # nothing old to upgrade
         d = _blank() | d
         if not d.get("entries") and (d.get("rules") or d.get("pinned") or d.get("custom_pins")):
             d["entries"] = migrate(d)
         if NOTES_UPGRADE not in (d.get("upgrades") or []):
             upgrade_notes(d["entries"])
             d["upgrades"] = list(d.get("upgrades") or []) + [NOTES_UPGRADE]
+        if FRAMING_UPGRADE not in (d.get("upgrades") or []):
+            framing_upgrade(d["entries"])
+            d["upgrades"] = list(d.get("upgrades") or []) + [FRAMING_UPGRADE]
         return d
 
     def save(self) -> None:
@@ -852,11 +884,20 @@ def pick_variants(profile: Profile, mode: str, rng: random.Random,
             if dim in FIXED:
                 style[dim] = DEFAULT[dim]
                 continue
+            if dim == "opening" and base.get(dim) not in opts:
+                # the voiceover teaser is the experimental version's: C tries it, A/B open normally
+                style[dim] = "teaser" if experimental else "normal"
+                continue
             if dim == "ending" and base.get("ending") not in opts:
                 # end cards ("Would you have done the same?") add nothing unless Tim asks
                 # for one (/feedback or /style) or a preset he chose has one
                 style[dim] = "none"
                 continue
+            if dim == "framing":
+                opts = FRAMING_EXPLORE
+                if i == 0 and base.get(dim) not in opts:
+                    style[dim] = DEFAULT[dim]   # A: the 4:5 default; B/C try 1:1 and stacked
+                    continue
             taken = {v["style"].get(dim) for v in out}
             fresh = [o for o in opts if o not in taken] or list(opts)
             unseen = [o for o in fresh if all(a.get(dim) != o for a in avoid)] or fresh
@@ -1123,6 +1164,22 @@ NOW_POSSIBLE = (r"logo intro stays|fade-out timing|zoom or crop|crop setting|cli
                 r"|prefer video clips|camera movement|static-shot|16:9|safe-area|safe area|4-second|gradual reveal"
                 r"|beat drop|logo expansion|total video length|clip start times|crossfades?|dissolves|framing works"
                 r"|approved phrase list|no-screenshots")
+
+
+FRAMING_UPGRADE = "framing-45"
+
+
+def framing_upgrade(entries: list[dict]) -> list[int]:
+    """Tim, 18 Nov: 4:5 over blur is the new default framing, with 1:1 and stacked to try.
+    Older fill/fit framing rules would block that, so they are switched off once (they can be
+    turned back on in /rules). Returns their numbers."""
+    off = []
+    for e in entries:
+        if e.get("on", True) and e.get("kind") == "setting" and e.get("setting") == "framing" \
+                and e.get("value") in ("fill", "fit"):
+            e["on"], e["upgraded"] = False, "4:5 is the default framing now"
+            off.append(e["n"])
+    return off
 
 
 def upgrade_notes(entries: list[dict], now: float | None = None) -> list[dict]:

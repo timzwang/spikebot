@@ -92,7 +92,9 @@ sudo bash ~/spikebot/deploy/auto_update.sh --force   # redeploy even with no new
   and when it reconnects, Kick error 4001 (chat key rotated), disk under 20% free. The same alert
   is never repeated within 30 minutes. Twitch live/offline needs the Twitch keys (`.env`).
 - `summary_webhook_url`: a third webhook (#daily-summary). At 22:00 UK time every day: moments
-  per streamer and the top 3 by score for the last 24 hours.
+  per streamer and the top 3 by score for the last 24 hours, plus the server's CPU (average, peak
+  and how long it was maxed out, sampled every 5 minutes). Maxed out for 2 hours or more in a day
+  shows a ⚠️ "a bigger VM would help" line; otherwise "no upgrade needed".
 - `detector`: tuning. `ratio` and `z` control sensitivity (higher = fewer, bigger moments);
   `pre_roll_s` / `post_roll_s` control how much footage either side of the reaction.
 
@@ -144,6 +146,14 @@ Rewards). Off by default. It only ever touches `twitch.tv/lacy`.
    quietly under his voice. Put royalty-free files (e.g. Pixabay sound effects) in
    `/opt/spikebot/data/sfx/whoosh/`, `.../hit/` and `.../riser/`; no files = no effects.
    Volume via `/feedback` ("quieter sound effects", or `sfx` 0-1; 0 turns them off).
+   **Voiceover teaser** (version C, setting `opening`): the hook line is written by Claude
+   from the transcript (5-14 words, the streamer's name, no banned words; else the clip
+   title) and read by a free neural voice (`edge-tts`, Microsoft Edge voices, no key), or
+   Google Cloud Text-to-Speech through the VM's service account if Edge fails (needs the
+   Text-to-Speech API enabled; 1M characters a month free). Optional `clips.voice` in
+   `config.json`: `edge_voice` (default `en-US-AndrewNeural`), `edge_rate` (`+8%`),
+   `google_voice`, `engines`. If no voice works the teaser still plays with the line on
+   screen (the card shows 🎞️ instead of 🎙️).
 5. Title always contains "Lacy" and is neutral or funny (it never uses negative,
    mocking or drama words; see `TITLES` / `BANNED` in `spikebot/lacy.py`). Description
    includes `#Lacy #Shorts`.
@@ -374,9 +384,11 @@ no captions, story cards or hook box), whatever a rule or preset says.
   `npm ci` in `remotion/`, Remotion's headless Chrome; about 500 MB disk). About 2 minutes
   per 15 s edit on the VM. If Remotion isn't there or a render fails, the ffmpeg renderer
   is used, so an edit is never lost. Force one with `tokyo_girl.engine`: `auto` (default),
-  `remotion` or `ffmpeg`. Tokyo Girl / trend edits render at 30 fps (the trailers' own rate; 60 doubled
-  every frame and stuttered), CRF 18. Lacy clips: 60 fps, or the VOD's
-  own rate when it's lower. A Remotion render that prints nothing for 5 min, or runs over
+  `remotion` or `ffmpeg`. Tokyo Girl / trend / comparison edits render at **60 fps when every clip in
+  the edit really is 60 fps** (official videos are downloaded at 60 fps when Rockstar offers it), else
+  30 fps: doubling 30 fps trailer frames to 60 stuttered on TikTok, and real interpolation costs about
+  10 CPU minutes per version. CRF 18. Stream clips: 1080p60 is picked when the stream had it, and the
+  clip keeps the VOD's own rate up to 60. A Remotion render that prints nothing for 5 min, or runs over
   40 min, is killed and falls back to ffmpeg. `tokyo_girl.remotion_concurrency` sets frames
   rendered in parallel (default: half the CPUs, max 4).
   `remotion_cache_mb` sets Remotion's decoded-frame cache; `remotion_tmp` (e.g. `/dev/shm/spikebot-remotion`)
@@ -464,12 +476,19 @@ Girl sound in the app, paste the matching caption line from the `.txt`.
 Every clip from every mode (Lacy, Tokyo Girl, and the stream-clip editor later) waits for
 your approval. **Nothing is posted anywhere until you press Approve.**
 
-**What you see in #ready-to-post**: one message per clip with **3 preview videos A/B/C**.
-Each card shows the YouTube title, Instagram and TikTok captions (long-press to copy) and its
-style: colour grade, pace, text (font/size/position/colour), transition and hook type.
+**What you see in #ready-to-post**: one compact message per clip with **3 preview videos
+A/B/C**: one header line (streamer · category · VOD time · id), then a single box with
+🟢 A | 🔵 B | 🟠 C side by side as columns (length, the sound and where to start it, or the
+clip title; 🎙️ marks the voiceover teaser), then the buttons. Captions and hashtags are in
+#tiktok-queue after approval, not on the card.
 A is the look you approve most, B is built on one of your most-approved #inspiration
-presets (rotating), C is **🧪 experimental** (settings it has tried least) so you keep
-seeing new ideas. A thread opens under each clip for everything that follows.
+presets of that kind (rotating), C is **🧪 experimental** (settings it has tried least) so you
+keep seeing new ideas. On stream clips C also **opens with a voiceover teaser**: the clip's
+big moment (the loudest reaction just before chat peaked) plays first for 2.5-4.5 s while an
+AI voice reads a hook ("Lacy thought this heist was easy..."), shown on screen too, then a
+white flash into the clip itself. Pin it for every version with `/style opening teaser`, or
+turn it off with `/style opening normal`. A thread opens under each clip for everything that
+follows.
 
 | Button | What happens |
 |---|---|
@@ -533,11 +552,32 @@ they start rendering.
 
 **Stats channels:** a **📊 Stats** category at the top of the server with locked voice
 channels whose names show live numbers: live streamers (of those watched), moments today,
-waiting for review, approved today, bot uptime and the GTA 6 countdown. The bot creates them
-itself and renames them every 10 minutes (Discord only allows 2 renames per channel per 10
-minutes, so they can't tick every second). It needs **Manage Channels**; without it #status
-says so (it retries every minute until it works). `/stats` refreshes them now. Settings:
-`review.stats` (`enabled`, `category`, `every_s`).
+waiting for review, approved today, total views / likes / followers, bot uptime and the GTA 6
+countdown (to the minute, to the UK unlock at 00:00 GMT Thu 19 Nov, then time since launch).
+The bot creates them itself and checks them every minute; each channel is renamed at most once
+per ~5 minutes (Discord allows 2 renames per channel per 10 minutes). `/stats` refreshes now
+(still within Discord's limit). It needs **Manage Channels**; without it #status says so.
+
+- **Live streamers** count a channel as live from a live/offline lookup in the last 10 minutes
+  (Twitch Helix, Kick channel info; auto-watched streams are live as soon as they're added).
+  A channel with no recent lookup (no Twitch keys, Kick blocked by Cloudflare) counts as live
+  only if its chat was busy in the last 5 minutes, and the name says how many are
+  `unchecked`. Failed lookups are logged as warnings (`journalctl -u spikebot | grep "live status"`).
+- **Views / likes / followers** add up the platforms the bot can read, shown in brackets
+  (`YT+IG`). YouTube: put a free **API key** in `.env` as `YOUTUBE_API_KEY` (Google Cloud
+  Console > APIs & Services > Credentials > Create credentials > API key, restricted to YouTube
+  Data API v3); the channel is found from a video the bot uploaded, or set
+  `review.stats.youtube_channel` (`UC...` or `@handle`). Without a key it uses the upload login,
+  which only works after re-running `python -m spikebot.youtube auth --env .env` (it now also
+  asks for read-only access). Instagram uses `IG_ACCESS_TOKEN`; views need the insights
+  permission and are only counted once every post has a number (25 posts per refresh).
+  TikTok isn't counted yet (its API needs the `user.info.stats` / `video.list` scopes, which
+  the TikTok app doesn't ask for). A platform that fails keeps
+  its last numbers for 6 hours. Refreshed every `social_every_s` (15 min); check by hand with
+  `python -m spikebot.socialstats --config config.json`.
+
+Settings: `review.stats` (`enabled`, `category`, `social_every_s`, `youtube_channel`,
+`gta6_launch`).
 
 **`/feedback text:<anything> [mode]`**: tell the editor what you think in plain words, e.g.
 *"the captions are AI slop, only caption when he says something that matters"* or *"open the
@@ -611,19 +651,42 @@ to fade the sound out over the same seconds in the app (the files stay silent).
 **Movement, framing and footage** (all settings, so `/feedback` and `/rules` control them):
 `motion` `none` (every shot completely still: no pans, push-ins, punch-in zooms or animated
 stills; a zoom transition becomes a cut) / `subtle` / `full`, for every mode. Tokyo Girl only:
-`framing` `fit` (the whole 16:9 trailer frame, nothing cut off, over a blurred copy of itself) or
-`fill` (cropped to fill the screen); `media` `clips` (trailer video only, never screenshots) or
+`framing` **`box45`** (the default since 18 Nov: a big 4:5 picture on black bars (no blur, 19 Nov), the hook
+in the bar above it), `box11` (a 1:1 picture over a blurred copy: more of each wide shot), `stack` (two clips at
+once, one above the other, each whole), `fit` (the whole 16:9 trailer frame over a blurred copy)
+or `fill` (cropped to fill the screen). Version A uses 4:5; B and C try 1:1 and stacked, so your
+approvals show which works (older `fill`/`fit` rules were switched off once; turn them back on in
+`/rules`). **Smart fill** (`smart_fill`, on unless set to 0): a close-up of one person goes full
+screen, and every crop is centred on the subject instead of the middle of the frame (faces come
+from the same pass as the nudity check, once per file); `media` `clips` (trailer video only, never screenshots) or
 `mixed`; `transition` `fade` (a soft crossfade, `fade_s` seconds); `hold_beats` (no clip shorter
 than that many beats, and each shows the middle of its clip so the action stays intact);
 `max_s` (the longest a Tokyo Girl edit may be, logo intro included; trending-sound edits
 ignore it and are only limited by their sound: an edit never runs past the end of the sound
 from its start point). Footage is picked by each story's
-tags; the logo intro uses the calmest clip (measured once per trailer).
+tags, least-used first, and never two clips from within 30 s of the same video in one edit (so
+long videos give variety); the logo intro uses the calmest clip (measured once per trailer).
+Besides the trailers, `tokyo_girl.searches` finds official videos by title on Rockstar's own
+YouTube channel (default: *Grand Theft Auto VI: An Extended Look*, lots of cinematic and ambient
+shots; its animal part from 7:44 is tagged `animals` for the wildlife story). A new source is
+fetched on the next daily run instead of waiting for the weekly refetch.
+
+**GTA 5 vs GTA 6 (`/compare [count]`, and `compare_per_day`, default 1, in `daily`)**: the same
+kind of shot from both games, side by side. GTA 5 footage is Rockstar's original 2013 trailers and
+gameplay video (never the PS5 remaster), kept in `data/rockstar_media/.gta5/` so GTA 6 edits never
+use it. Each shot is labelled once by Claude from one frame (theme such as beaches, faces, night
+city, police, wildlife, and how clear it is; `data/compare/labels.json`, about $0.15 for the whole
+library, needs `ANTHROPIC_API_KEY`). An edit pairs up to 6 themes, biggest-difference first, after
+a GTA 6 hook shot: versions A and B are stacked (GTA 5 on top, GTA 6 below), C shows the GTA 5
+shot then the GTA 6 one. Corner labels "GTA 5 · 2013" / "GTA 6 · 2026", the theme as a caption
+above the picture, a question at the end. Silent like the other trailer edits; approved ones are
+copied to `exports/compare/`.
 
 **Footage choice** (Tokyo Girl / trend, 0/1 unless a range is given): `unique_clips` (default 1: never
 the same clip twice in an edit, and the same footage in two files, e.g. a trailer and its extended
-look, counts as one); `crop_safe` (default 1, fill framing: prefer shots whose subject fits the 9:16
-crop and move the crop onto the subject when the middle would cut it off); `footage_match` (default 1:
+look, counts as one); `crop_safe` (default 1, for the framings that crop the sides: fill, 4:5, 1:1: prefer
+shots whose subject fits the crop and, when no face is known, move the crop onto the subject when the
+middle would cut it off); `footage_match` (default 1:
 only clips that fit the edit, never filler or title cards); `action_first` (most action-packed clips in
 the first third); `ambient_bias` 0-1 (prefer calm, atmospheric shots); `palette_match` 0-1 (clips close
 to the opening clip's colours); `impact_ending` (end on someone walking away or a car driving into the
@@ -710,9 +773,24 @@ shots) and moved off them, so no other scene flashes up between two clips.
 
 Post a TikTok / Instagram / YouTube link, or upload the video, in #inspiration. Optional notes
 in the same message: `copy: pacing, colour` (parts: pacing, colour, text, transitions, hook,
-structure, music-sync, look; default all), `name: night-drive`, and anything about what you
-like in it ("love that there's no text until the drop"). The bot opens a thread, measures
-the style and replies with a breakdown and a thumbnail strip, and saves the preset to
+structure, music-sync, look, framing; default all), `name: night-drive`, `type: edit / clip /
+other`, and anything about what you like in it ("love that there's no text until the drop").
+
+**It works out what kind of video it is** and only teaches the matching editor (the reply's
+**Type** line says which and why):
+
+| Type | How it's spotted | What it teaches |
+|---|---|---|
+| **edit** | a montage cut from footage, usually to music: fast or beat-synced cuts, no webcam | Tokyo Girl and trend edits (every part, incl. framing and beat sync) |
+| **stream clip** | a livestream moment: the streamer talking, a webcam that stays put, speech captions | stream clips (Lacy, Adin Ross, Seal): pacing from the clip's length, captions, hook, colour, transitions; never framing or beat sync |
+| **other** | anything else (vlog, podcast, news, meme...) | nothing automatically: kept as a reference, used only with `/preset apply` |
+
+Claude decides from the frames when `ANTHROPIC_API_KEY` is set, otherwise the measurements do
+(webcam check, cut rate, beat sync). `type:` in your message always wins; send it again with
+`type:` if it guessed wrong. Presets saved before 19 Nov have no type and still apply everywhere. The bot opens a thread, measures
+the style (including its **framing**: full screen, a 4:5 or 1:1 picture over blur or bars, a 16:9
+frame in the middle, or two clips stacked, read from where the sharp picture sits) and replies with
+a breakdown and a thumbnail strip, and saves the preset to
 `data/presets/<name>.json`. If a link can't be downloaded (Instagram often needs a login) it
 asks you to upload the file in the thread instead.
 

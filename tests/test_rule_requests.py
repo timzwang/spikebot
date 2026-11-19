@@ -313,13 +313,16 @@ def test_presents_intro_holds_its_last_frame():
 
 def test_remotion_props_carry_fades_holds_focus_and_end_fade(tmp_path):
     from spikebot import remotion
-    sh = vshot(start=0, end=5, focus=0.2)
+    sh = vshot(start=0, end=5, subject_x=0.2)
     plan = TG.cut_fades(plan_of([(sh, 2.0), (vshot(start=10, end=15), 2.0)]), 0.45)
     plan.slots[0].hold = 1.5
-    r = S.resolve(dict(S.default_style("tokyo_girl"), transition="fade", custom={"logo_fade_s": 0.2}))
+    r = S.resolve(dict(S.default_style("tokyo_girl"), transition="fade", framing="fill",
+                       custom={"logo_fade_s": 0.2}))
+    plan = TG.crop_safe_focus(plan, r)       # no face known: the crop goes to the subject
     props, _ = remotion.props_for(plan, {"font_size": 104}, r, [], tmp_path / "logo.png", 1.0, tmp_path)
     a, b = props["shots"]
-    assert a["hold"] == 1.5 and a["tail"] == b["fadeIn"] > 0 and a["fadeIn"] == 0 and a["focus"] == 0.2
+    assert a["hold"] == 1.5 and a["tail"] == b["fadeIn"] > 0 and a["fadeIn"] == 0 and a["focus"] == [0.2, 0.5]
+    assert b["focus"] is None
     assert props["endFade"] == pytest.approx(4.0 / 3, abs=1e-3) and props["logo"]["out"] == 0.2   # a third of 4 s
 
 
@@ -528,5 +531,5 @@ def test_card_shows_intro_and_glitch_notes():
     v = {"label": "A", "duration": 20, "silent": True, "intro_note": "No Rockstar shot: used the logo intro",
          "glitch_note": "Glitch check: fixed 1 stray cut(s)"}
     p = D.round_payload(item, {"n": 1, "kind": "initial", "variants": [v]})
-    text = p["embeds"][0]["description"]
+    text = p["embeds"][0]["fields"][0]["value"]   # one column per version
     assert "⚠️ No Rockstar shot" in text and "🛠️ Glitch check" in text

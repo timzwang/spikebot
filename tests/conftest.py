@@ -3,8 +3,10 @@ import pytest
 
 @pytest.fixture(autouse=True)
 def _no_real_ai(monkeypatch):
-    """Tests never call the real Claude API (a developer's key in the environment is ignored)."""
+    """Tests never call the real Claude API (a developer's key in the environment is ignored)
+    or a real text-to-speech service (render subprocesses inherit the switch)."""
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setenv("SPIKEBOT_VOICE", "off")
 
 
 @pytest.fixture(autouse=True)
@@ -35,3 +37,11 @@ def _no_nudity_model_on_test_patterns(request, monkeypatch):
     monkeypatch.setattr(safety, "scan", scan)
     monkeypatch.setattr(safety, "find_facecam", lambda *a, **k: None)
     monkeypatch.setattr(safety, "real_facecam", lambda *a, **k: None)   # synthetic streams have no faces
+
+
+@pytest.fixture(autouse=True)
+def _no_real_downloads(monkeypatch):
+    """Tests never download from Rockstar / YouTube (a new source makes `daily` fetch at once).
+    A test that checks fetching patches TG.fetch itself."""
+    from spikebot import tokyo_girl as TG
+    monkeypatch.setattr(TG, "fetch", lambda lcfg: None)

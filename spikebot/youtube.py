@@ -22,7 +22,9 @@ TOKEN_URL = "https://oauth2.googleapis.com/token"
 AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 UPLOAD_URL = "https://www.googleapis.com/upload/youtube/v3/videos"
 THUMB_URL = "https://www.googleapis.com/upload/youtube/v3/thumbnails/set"
-SCOPE = "https://www.googleapis.com/auth/youtube.upload"
+# upload + read-only (the 📊 Stats panel reads channel totals; tokens made before only upload)
+SCOPE = ("https://www.googleapis.com/auth/youtube.upload"
+         " https://www.googleapis.com/auth/youtube.readonly")
 GAMING = "20"
 
 

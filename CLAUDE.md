@@ -38,9 +38,8 @@ per phase).
 
 - **Editor:** vertical 1080x1920, word-level captions, programme watermark/hashtags (Lacy mode
   already has a Lacy-only version in `editor.py`/`lacy.py`; captions follow `text_level`:
-  `minimal` = 2.5 s hook + captions only around the payoff, `none` = no text),
-  optional AI voiceover hook.
-- (Done: review queue + Discord approval bot, uploader with windows/caps, #inspiration presets,
+  `minimal` = 2.5 s hook + captions only around the payoff, `none` = no text).
+- (Done: AI voiceover teaser on stream clips' version C, review queue + Discord approval bot, uploader with windows/caps, #inspiration presets,
   stream-clip editor for every programme channel via `lacy.profiles`.)
 
 ## Deadlines
@@ -70,7 +69,7 @@ It posts to four Discord webhooks, which must stay separate:
 |---|---|---|
 | `discord_webhook_url` | #moments | Clip moments only (`candidate` spikes) |
 | `status_webhook_url` | #status | Bot health: start/restart, streamer live/offline (with category), chat down >5 min and reconnected, Kick 4001 key error, disk <20% free |
-| `summary_webhook_url` | #daily-summary | 22:00 UK daily summary: moments per streamer + top 3 by score (last 24h) |
+| `summary_webhook_url` | #daily-summary | 22:00 UK daily summary: moments per streamer + top 3 by score (last 24h) + server CPU (average, peak, time maxed out, upgrade verdict) |
 | `videos_webhook_url` | #ready-to-post | Legacy only (review off / `lacy deliver`): finished file attached, or a GCS link. Old name `tokyo_girl_webhook_url` still read |
 
 An empty field disables that channel; the message is still logged.
@@ -114,7 +113,9 @@ it in sync when behaviour or config changes.
   if it never connected) and alerts after 5 min, then again on reconnect.
   `LiveWatch` turns polls into live/offline events (offline at startup is silent).
   `next_summary_time` handles GMT/BST; a summary missed while the bot was down is
-  sent on start if it's still before midnight UK.
+  sent on start if it's still before midnight UK. CPU: `status_loop` adds a load-per-core sample every 5 min
+  (`add_cpu_sample`, `status_state.cpu`, 26 h kept); `cpu_summary` -> `messages.cpu_line` in the summary
+  (maxed out = >= `CPU_BUSY` 0.9; >= 2 h = `upgrade` verdict).
 - `spikebot/main.py`: `Bot` wires it together. `ticker()` drives the detectors,
   `poll_state()` refreshes live/category/start time every 120s, `handle()` sets the
   status (`candidate` / `low_score` / `filtered_category`) and saves *every* spike
@@ -177,11 +178,11 @@ it in sync when behaviour or config changes.
   `choose_shot(..., prefs, anchor)` (`narrow` = soft filters; `footage_groups` = same footage across files via
   `shot_info.dup_groups`), `action_order`, `impact_end`, opener history `state["openers"]`. Crossfades:
   `cut_fades` (per cut, <= half of either clip, whole frames) + `clean_plan` (per-slot `tails`, `Slot.hold` =
-  clean seconds, then the last frame is held: tpad in ffmpeg, `<Freeze>` in Remotion) = `prepare`; `end_fade`,
-  `focus_of` (crop on `Shot.focus`). `ReviewAdapter.pick_intro` / `presents` / `glitch_pass` (`edit_cuts`,
+  clean seconds, then the last frame is held: tpad in ffmpeg, `<Freeze>` in Remotion) = `prepare` (also
+  `crop_safe_focus`: no face known -> `Shot.focus = (subject_x, 0.5)` for the `CROPPED` framings); `end_fade`. `ReviewAdapter.pick_intro` / `presents` / `glitch_pass` (`edit_cuts`,
   `glitches`, `fix_glitches`); clip reuse `spec["footage_from"]` (`review.named_version`, `feedback.footage_ref`
   / `find_version`: "B1" or `B_<item id>`), `trim_to`, `plan_from_footage`. `spikebot/shot_info.py`: one
-  72x40 2 fps decode per file (`entry["looks"]`: YUV, 12-strip detail, 64-bit hash) -> `shot_stats` (focus only
+  72x40 2 fps decode per file (`entry["looks"]`: YUV, 12-strip detail, 64-bit hash) -> `shot_stats` (`subject_x` only
   moves off-centre when the centre crop would cut the subject off). `spikebot/shot_labels.py`: Claude vision
   labels per shot (`entry["labels"]`, `VERSION`, retry after 6 h; `UNSAFE` shots never used; `presents_segments`;
   `STORY_TAGS`); `Library.add_extra` / `needs_extra` / `presents_shots`; `Library.label_ask` = test hook.
@@ -198,8 +199,19 @@ it in sync when behaviour or config changes.
 - #announcements: `ReviewBot.announce` (channel id or the one named "announcements", else
   #status): new rules (`announce_new_rules`), compiler notices, live links, blocked videos,
   deploy request `announce {text}`.
-- Review cards (`round_payload`) are minimal: streamer/category/VOD time or song + start, length,
-  clip title. No style details.
+- Review cards (`round_payload`) are minimal: one header line (streamer/category/VOD time/id), then ONE
+  embed whose inline fields are A | B | C side by side (`variant_cell`: length, song + start or clip title,
+  🎙️/🎞️ teaser; `VARIANT_DOT`). No style details.
+- **Voiceover teaser** (stream clips, style dim `opening` normal|teaser, lacy only; `pick_variants` gives
+  "teaser" to the experimental C unless pinned/preset): `ReviewAdapter.voice_line` (Claude
+  `ai.write_voice_hook`, cached in the job's voice.json, `voice_line_ok`, else the title) -> `teaser()`
+  (`voice.speak` -> mp3, `editor.teaser_length`, `teaser_window` on `loudness` = loudest moment in the 6 s
+  before chat's peak) -> `build_ass(lead=, lead_text=)` + `render_variant(teaser=, voice=)` (teaser first,
+  clip audio ducked `TEASER_DUCK` under the voice, white flash into the clip; sfx cues shifted). Window
+  shrinks so teaser + clip <= `max_clip_s`. Variant `teaser` {line, voice, s}; Feedback re-renders keep it.
+  `spikebot/voice.py`: engines edge (edge-tts, free) then google (Cloud TTS via the VM's metadata token),
+  config `clips.voice`; `SPIKEBOT_VOICE=off` (tests/conftest.py) = never a real service. Tested in
+  `tests/test_teaser.py`.
 - Kick key: `kick_pusher_credentials` tries the realtime descriptor, then `pusher_from_js` on
   kick.com's scripts; cached 6 h, failures 30 min.
 - **Text rules** (`style.LOCKED` / `enforce`, applied to every rendered spec in `review.specs_for`; saved
@@ -209,7 +221,7 @@ it in sync when behaviour or config changes.
 - Whisper never decodes through PyAV: `editor.decode_audio` (ffmpeg -> 16 kHz float32) is handed to
   faster-whisper (PyAV 19 broke `av.open(metadata_errors=)`). `lacy.retry_after_fix` re-runs renders
   that crashed on that once.
-- `spikebot/editor.py`: ffmpeg/yt-dlp helpers: `fetch_segment` (only the clip range of a
+- `spikebot/editor.py`: ffmpeg/yt-dlp helpers: `fetch_segment` (1080p60 when the stream had it: `-S res:1080,fps`; only the clip range of a
   VOD), `layout` (facecam stacked over gameplay for the whole clip), `away_reason`,
   `build_ass(style=)` (word captions, font/size/position/colours, hook length, end card;
   `caption_margin` keeps clear of the hook box and the bottom 320 px), `keep_segments` /
@@ -251,10 +263,34 @@ it in sync when behaviour or config changes.
   `with_intro_shot` = one `calm_shot` under the logo: `Shot.motion` from `measure_motion`, cached in
   library.json, added once to old entries); the logo builds for `logo_s` (song window starts that many
   beats before the drop, `music.window(build_beats=)`) and bursts at the drop (`intro_filter`,
-  `LOGO_GROW`, `logo_width`); `slot_filter(motion, framing)`: motion none = fixed centred crop, `fit_filter`
-  = whole frame over a blurred copy; `transition: fade` renders slots with an overlap and joins them with
+  `LOGO_GROW`, `logo_width`); `slot_filter(motion, framing, smart, fps)` = a -filter_complex graph
+  ([0:v], [1:v] for stack -> [v]): `slot_layout` (smart fill: `Shot.single` close-up -> full screen; stack
+  without `shot2` -> box45), `cover_chain` (crop centred on `Shot.focus`), `BOXES` box45 1080x1350 on black bars
+  (`BLACK_BARS`, `pad`, no blur; Remotion skips its blur layer too) / box11 1080x1080 over `blur_bg`, stack = two 1080x608 (`stack_tops`), `fit_filter` = whole frame over a blurred
+  copy; "high" text with a boxed/stacked picture sits in the band (`BAND_MARGIN`; Remotion text.y 0.035).
+  Faces: `nudity_scan` stores `entry["faces"]` (`safety.flag_times(faces=)` / `frame_faces`, same NudeNet
+  pass, once more for old entries), `subject_of` -> `Shot.focus`/`single`. `edit_fps`: 60 only when every
+  video clip's source is >= 50 fps (`entry["fps"]`, probed once), else `FPS` 30 (no doubled frames, #39);
+  `render_slot`/`join_crossfade`/`render_plan` and Remotion props take it. Stack: `Slot.shot2`/`offset2`
+  (`with_seconds`, kept by `footage_of`/`refit` as key2/offset2). Variety: `choose_shot` skips clips within
+  `NEAR_S` (30 s) of one already in the edit (`near_used`); `KNOWN_RANGES` tags parts of official videos
+  (Extended Look 7:44 = animals; story `wildlife`); `searches` (default the Extended Look) = yt-dlp
+  `ytsearch` on Rockstar's channel with a title filter (`title_regex`, no backslashes); `daily` fetches as
+  soon as a source/search is new (`state.fetched`); downloads prefer 60 fps (`-S res:1080,fps`); `transition: fade` renders slots with an overlap and joins them with
   `join_crossfade` (xfade on each beat); `plain_line` / `countdown_line`; the dark "Ask" box only for a
   card ending in "?". Remotion gets the same via props `motion`, `framing`, `fade`, `logo.size/out`.
+- `spikebot/compare.py`: **GTA 5 vs GTA 6** comparison edits (`/compare [count]` -> `ReviewBot.run_compare`
+  -> `tokyo_girl compare -n`; `daily_compare` tops up `compare_per_day`, default 1, counts in
+  `state.compare_days`). Review items mode `tokyo_girl`, `source.kind: "compare"` (`ReviewAdapter.render` ->
+  `render_variants`, ffmpeg only, label `COMPARE_LABEL`, exports `exports/compare/`). GTA 5 library =
+  `<media_dir>/.gta5` (hidden: GTA 6 edits never see it; `gta5_cfg`, `GTA5_SEARCHES` = Rockstar's 2013
+  trailers/gameplay, never the PS5 remaster; fetched with the GTA 6 media, `GTA5_FETCH`), shots `prefixed`
+  `.gta5/...`. `label_shots`: one frame per shot -> Claude (Sonnet, effort low) theme from `THEMES` +
+  quality 0-3, cached in data/compare/labels.json per shot key. `pick_pairs` (same theme, biggest-difference
+  themes first, best/least-used shots; `keep` = a re-render's pairs), `plan_compare` (hook over a GTA 6 hero
+  shot, then pairs; layout stack = `Slot.shot2`, sequence = GTA 5 40% then GTA 6 60% in 4:5; corner labels
+  via `render_plan(labels=)` / `build_text_ass(labels=)`, theme captions as cards, question last). Versions
+  A/B stack, C sequence (`LAYOUTS`); variant keeps `pairs`, `layout`, `hook_card`, `question`.
 - `spikebot/music.py`: song beat maps (librosa, lazy): `analyse` (bpm, beats filled back to 0,
   drop = biggest loudness rise), `Library` (`data/music/`, cache `library.json`; Tokyo Girl uses only `tokyo_girl.song`
   (default `tokyo-girl`, `TOKYO_GIRL_SONG`), other songs are trending sounds and never replace it),
@@ -325,7 +361,9 @@ it in sync when behaviour or config changes.
   `NOTES_UPGRADE`) turns old notes matching `NOTE_RULES` into setting entries and switches them and
   `NOW_POSSIBLE` "not possible" items off (`upgraded` = "now #N" shown in /rules); new dims `motion`
   (all modes; none = no pans/push-ins/punch zooms, zoom -> cut in `resolve`), Tokyo Girl `framing`
-  fill|fit, `media` clips|mixed, transition `fade`, text_level `plain`, intro `countdown` (`TG_ONLY`,
+  box45 (default)|box11|stack|fill|fit (A/B/C explore only `FRAMING_EXPLORE`; A = the default unless pinned or a
+  preset sets it; `framing_upgrade` / `FRAMING_UPGRADE` switched old fill/fit rules off once; new profiles
+  start with every upgrade flag) + custom `smart_fill` (default 1), `media` clips|mixed, transition `fade`, text_level `plain`, intro `countdown` (`TG_ONLY`,
   `TG_TRANSITIONS`, `TG_TEXT_LEVELS`); Tokyo Girl custom `max_s`, `hold_beats`, `logo_s`, `logo_size`,
   `fade_s` (`TG_CUSTOM`); `resolve()` -> render
   numbers, `grade_filter()`; `Profile` = `data/style_profile.json` (shown/approved/passed/rejected
@@ -402,7 +440,17 @@ it in sync when behaviour or config changes.
   `progress_loop` / `progress_tick`: one message per job file in data/progress/ (edited, deleted
   when done, kept on failure; ids in `_messages.json`). `stats_loop` / `stats_tick`: 📊 Stats
   category of locked voice channels (`stat_names`, ids in data/discord_stats.json), renamed
-  every 10 min; `stats_source` = `main.Bot.stats_snapshot`.
+  as their numbers change (see Stats below); `stats_source` = `main.Bot.stats_snapshot`.
+  Stats: `stats_loop` checks every 60 s; `renames_due` / `note_rename` keep each channel to Discord's 2 renames
+  per 10 min (normally one per `RENAME_GAP_S` ~5 min; `/stats` = `force`, limit only), history in
+  data/discord_stats.json `renamed`. `stat_names` adds views/likes/followers (`compact`, platforms in brackets)
+  and `launch_text` (`GTA6_LAUNCH` = 00:00 GMT 19 Nov 2026, `review.stats.gta6_launch`). `main.Bot.live_count`:
+  lookup in the last `LIVE_FRESH_S` wins (`state_at`; discovered streams live on add and from each top list),
+  else chat in the last `CHAT_LIVE_S` = live and the channel is `unchecked`; failed lookups `_poll_warn`.
+  `social_loop` -> `spikebot/socialstats.py` (`refresh` every `social_every_s`: YouTube Data API with
+  `YOUTUBE_API_KEY` or the OAuth token if it has youtube.readonly, channel from `youtube_channel` or an uploaded
+  video; Instagram followers/likes + per-post `views` insights in turns; TikTok not counted; last good numbers
+  kept `STALE_S`; data/social_stats.json). Tested in `tests/test_socialstats.py`.
   `archive_inspiration` (from `scan_loop`, every 10 min): the bot's #inspiration threads with no
   message for `review.inspiration_archive_hours` (12) are archived (`stale_threads`, snowflake times).
 - `spikebot/help.py` (pure): **/help** [category] [search] (ephemeral): `COMMANDS` (name, `cat`, what, how, tags)
@@ -429,12 +477,21 @@ it in sync when behaviour or config changes.
   `Job.adopt(pid)` for jobs the bot creates; `force_stopped` pids aren't reported as crashes).
   `/cancel [run|all|q-<item>]` + the bar's Cancel button (`rv|cancel|<job id>`). Tested in
   `tests/test_cancel.py`.
+- #inspiration **video kind** (`inspiration.KINDS` edit | stream_clip | other): `classify` = Tim's `type:`
+  (`kind_from_note`, bot passes `--kind`) > Claude (`ART_SCHEMA.kind`) > `guess_kind` (webcam via
+  `safety.find_facecam`, cut rate, beat sync). Preset gets `kind`, `kind_why`, `modes` (`KIND_MODES`: edit ->
+  tokyo_girl+trend, stream_clip -> lacy, other -> none) and `copy` limited to `KIND_PARTS`; stream clips' pace
+  = `clip_pace(length)`. `presets.for_mode` filters what `review._specs_for` rotates into B (no `modes` =
+  old preset, everywhere); `/preset apply` still applies any preset.
 - `spikebot/inspiration.py`: style analysis in a subprocess (`python -m spikebot.inspiration
   analyse --url|--file --name --copy --json`). yt-dlp only for tiktok/instagram/youtube hosts,
   <= 4 min; the reference file is **always deleted** and only numbers are kept (hook *type*,
   never their words or footage). PySceneDetect cuts (ffmpeg fallback), tempo + on-beat share from
   an onset envelope (numpy), signalstats colour -> grade, optional easyocr text (`requirements-ocr.txt`),
-  OpenCV zoom/shake, flash/fade at cuts, structure. Download failure -> bot asks for an upload.
+  OpenCV zoom/shake, flash/fade at cuts, structure, **framing** (`framing`: 8 frames, `sharp_rows` edge share
+  per row, `bands` (median rows; a gap is closed unless no frame ever had an edge there = a stacked divider),
+  `framing_from` -> fill / box45 / box11 / fit / stack; preset part `framing` in `presets.PART_KEYS`, Tokyo
+  Girl/trend only). Download failure -> bot asks for an upload.
 - `tests/test_style.py`, `tests/test_review.py` (store, publisher with fakes, bot flows with fake
   Discord objects, #inspiration flow), `tests/test_review_modes.py` (real ffmpeg: Lacy and Tokyo Girl
   variants, feedback re-render, Lacy rules), `tests/test_inspiration.py`.
@@ -461,7 +518,7 @@ it in sync when behaviour or config changes.
 - `.env` / `.env.example`: `TWITCH_CLIENT_ID`, `TWITCH_CLIENT_SECRET`, `TOKYO_GIRL_MODE`, `TOKYO_GIRL_PER_DAY`, `LACY_MODE`,
   `LACY_MAX_UPLOADS_PER_DAY`, `LACY_AUTO_UPLOAD` (ignored), `DISCORD_BOT_TOKEN`,
   `DISCORD_REVIEW_CHANNEL_ID`, `DISCORD_TIKTOK_CHANNEL_ID`, `DISCORD_INSPIRATION_CHANNEL_ID`,
-  `DISCORD_GUILD_ID`, `DISCORD_APPROVER_IDS`, `REVIEW_ENABLED`, `YOUTUBE_CLIENT_ID/SECRET/REFRESH_TOKEN`,
+  `DISCORD_GUILD_ID`, `DISCORD_APPROVER_IDS`, `REVIEW_ENABLED`, `YOUTUBE_CLIENT_ID/SECRET/REFRESH_TOKEN`, `YOUTUBE_API_KEY`,
   `IG_USER_ID`, `IG_ACCESS_TOKEN` (read by `instagram.Token`, not `apply_env`),
   `IG_MAX_REELS_PER_DAY`, `INSTAGRAM_AUTO_POST`. `main.apply_env()`
   overlays them on the config (environment > `.env` next to config > `.env` in cwd >

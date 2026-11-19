@@ -42,6 +42,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import dataclasses
 from dataclasses import dataclass, field, replace
 from datetime import date, datetime
 from pathlib import Path
@@ -79,7 +80,11 @@ DEFAULTS = {
         "https://www.youtube.com/watch?v=QdBZY2fkU-0",   # GTA VI Trailer 1 (Rockstar Games)
         "https://www.youtube.com/watch?v=VQRLujxTm3c",   # GTA VI Trailer 2 (Rockstar Games)
     ],
+    # official videos found by title on Rockstar's own YouTube channel (no fixed link needed);
+    # Tim, 18 Nov: the Extended Look has lots of cinematic / ambient shots and an animal part
+    "searches": ["Grand Theft Auto VI: An Extended Look"],
     "refetch_days": 7,
+    "compare_per_day": 1,               # GTA 5 vs GTA 6 comparison edits made by `daily` (0 = off)
     "trailer_head_s": 6.0,              # skip Rockstar logo intro
     "trailer_tail_s": 15.0,             # skip end cards / logo / release date card
     "min_luma": 28,                     # darker shots (black, title-on-black) are skipped
@@ -191,6 +196,9 @@ STORIES = [
     Story("glow-up", "news", "Vice City 2002 vs 2026. Did you play the original?",
           ["Vice City in GTA 6", "vs the one we got in *2002*", "Glow up of the century",
            "Did you play the original?"], ANY, CITY),
+    Story("wildlife", "news", "Leonida's wildlife looks unreal. What are you looking for first?",
+          ["Leonida isn't just *Vice City*", "The wildlife is *unreal*", "Swamps. Beaches. *Everything moves.*",
+           "What are you looking for first?"], ANY, ["animals", "city"]),
     Story("detail", "news", "The detail in GTA 6 is unreal. What did you notice?",
           ["The detail in GTA 6", "is *genuinely* unreal", "Pause on any frame",
            "What detail did you notice first?"], ANY, CITY),
@@ -371,7 +379,12 @@ class Shot:
     w: int = 0
     h: int = 0
     motion: float | None = None     # mean frame-to-frame change (low = calm, ambient shot)
-    focus: float = 0.5              # where the subject sits across the frame (0-1): a fill crop centres on it
+    # where the subject is (fractions of the picture after the letterbox crop), from the faces
+    # the library's nudity pass found; None = no face, crop around the centre
+    focus: tuple[float, float] | None = None
+    single: bool = False            # one clear subject (a close-up): smart fill shows it full screen
+    fps: float | None = None        # the source's frame rate (videos)
+    subject_x: float = 0.5          # crop_safe: where the subject sits across the frame when no face is known
     crop_ok: bool = True            # a 9:16 crop shows the whole subject (shot_info / vision labels)
     yuv: list[float] | None = None  # mean colour (palette_match)
     hashes: list[int] = field(default_factory=list)   # picture hashes: same footage in another file
@@ -458,6 +471,7 @@ def analyse_video(path: Path, threshold: float = 0.3) -> dict:
         if med[0] * med[1] < 0.97 * info["width"] * info["height"]:
             crop = [editor.even(med[0]), editor.even(med[1]), editor.even_pos(med[2]), editor.even_pos(med[3])]
     return {"kind": "video", "w": info["width"], "h": info["height"], "duration": info["duration"],
+            "fps": info.get("fps"),
             "cuts": [round(c, 3) for c in cuts], "yavg": yavg, "crop": crop}
 
 
@@ -473,6 +487,17 @@ def measure_motion(path: Path) -> list[list[float]]:
         text = f.read_text(errors="replace") if f.exists() else ""
     return [[round(t, 2), round(float(d["lavfi.signalstats.YAVG"]), 2)]
             for t, d in parse_meta(text) if "lavfi.signalstats.YAVG" in d]
+
+
+# Tags for parts of official videos we know (file name pattern -> ranges in seconds). tags.json
+# ranges add to these. Tim, 18 Nov: the Extended Look's animal part starts at 7:44.
+KNOWN_RANGES = [
+    (r"extended_look", [{"start": 464.0, "end": 560.0, "tags": ["animals", "nature", "ambient"]}]),
+]
+
+
+def known_ranges(rel: str) -> list[dict]:
+    return [r for rx, rows in KNOWN_RANGES if re.search(rx, rel, re.I) for r in rows]
 
 
 def build_shots(rel: str, entry: dict, override: dict, lcfg: dict) -> list[Shot]:
@@ -494,7 +519,7 @@ def build_shots(rel: str, entry: dict, override: dict, lcfg: dict) -> list[Shot]
             merged.append(b)
     merged[-1] = dur
     excl = override.get("exclude") or []
-    ranges = override.get("ranges") or []
+    ranges = known_ranges(rel) + list(override.get("ranges") or [])
     out = []
     for s, e in zip(merged, merged[1:]):
         s, e = max(s + 0.1, lo), min(e - 0.1, hi)  # margin keeps the neighbour shot out
@@ -523,9 +548,10 @@ def build_shots(rel: str, entry: dict, override: dict, lcfg: dict) -> list[Shot]
             stags |= {shot_labels.STORY_TAGS[t] for t in vt if t in shot_labels.STORY_TAGS}
         # skip the first/last half second: the cut itself shows up as a big change
         mv = [m for t, m in entry.get("motion") or [] if s + 0.5 <= t < e - 0.5]
+        focus, single = subject_of(entry, s, e)
         out.append(described(Shot(rel, "video", round(s, 3), round(e, 3), sorted(stags), entry.get("crop"),
-                                  entry["w"], entry["h"], round(statistics.mean(mv), 2) if mv else None),
-                             entry, lab))
+                                  entry["w"], entry["h"], round(statistics.mean(mv), 2) if mv else None, focus,
+                                  single, entry.get("fps")), entry, lab))
     return out
 
 
@@ -540,12 +566,50 @@ def described(shot: Shot, entry: dict, lab: dict | None) -> Shot:
     stats = shot_info.shot_stats(entry, shot.start, shot.end, aspect)
     shot.labels = lab
     if stats:
-        shot.yuv, shot.hashes, shot.focus = stats["yuv"], stats["hashes"], stats["focus"]
+        shot.yuv, shot.hashes, shot.subject_x = stats["yuv"], stats["hashes"], stats["focus"]
     if lab:
-        shot.focus = shot_info.subject_focus(float(lab.get("subject_x", 0.5)), float(lab.get("subject_w", 0.3)),
+        shot.subject_x = shot_info.subject_focus(float(lab.get("subject_x", 0.5)), float(lab.get("subject_w", 0.3)),
                                              aspect)
     shot.crop_ok = shot_info.crop_ok(stats, lab.get("subject_w") if lab else None, aspect)
     return shot
+
+
+BIG_FACE = 0.004      # a face this share of the frame (or more) is a subject, not a crowd extra
+SINGLE_SHARE = 0.6    # one clear subject: one big face (and no other) in this share of the samples
+
+
+def subject_of(entry: dict, start: float, end: float, fps: float = 1.0) -> tuple[tuple[float, float] | None, bool]:
+    """(focus, single) of a shot from the library's face samples (fractions of the frame
+    after the letterbox crop). Pure."""
+    rows = entry.get("faces")
+    if not rows:
+        return None, False
+    k0, k1 = math.ceil(start * fps), math.floor(end * fps - 1e-9)
+    n = max(0, k1 - k0 + 1)                       # sampled frames inside the shot
+    if n == 0:
+        return None, False
+    w0, h0 = entry.get("w") or 1, entry.get("h") or 1
+    cw, ch, cx, cy = entry.get("crop") or [w0, h0, 0, 0]
+
+    def inside(fx, fy):   # full-frame fraction -> fraction of the cropped picture
+        return ((fx * w0 - cx) / cw, (fy * h0 - cy) / ch)
+    singles, centres = [], []
+    for t, faces in rows:
+        if not (start <= t <= end):
+            continue
+        big = [f for f in faces if f[2] * f[3] >= BIG_FACE]
+        if len(big) == 1:
+            singles.append(inside(big[0][0], big[0][1]))
+        if big:
+            centres.append(inside(sum(f[0] for f in big) / len(big), sum(f[1] for f in big) / len(big)))
+    if not centres:
+        return None, False
+
+    def med(pts, i):
+        return round(min(1.0, max(0.0, statistics.median(p[i] for p in pts))), 3)
+    if len(singles) >= max(1, SINGLE_SHARE * n):
+        return (med(singles, 0), med(singles, 1)), True
+    return (med(centres, 0), med(centres, 1)), False
 
 
 def nudity_scan(path: Path, entry: dict, rel: str) -> None:
@@ -554,8 +618,10 @@ def nudity_scan(path: Path, entry: dict, rel: str) -> None:
     stored, so it runs again next time."""
     from . import safety
     try:
-        log.info("nudity check of %s (once)", rel)
-        entry["nsfw"] = safety.flag_times(path, fps=1.0)
+        log.info("nudity and face check of %s (once)", rel)
+        faces: list = []
+        entry["nsfw"] = safety.flag_times(path, fps=1.0, faces=faces)
+        entry["faces"] = faces
         if entry["nsfw"]:
             log.warning("%s: %d frame(s) with nudity/sexual content, those shots are never used",
                         rel, len(entry["nsfw"]))
@@ -595,14 +661,19 @@ class Library:
             st = p.stat()
             sig = [st.st_size, int(st.st_mtime)]
             cached = rel in cache and cache[rel].get("sig") == sig
-            if on_file and (not cached or "nsfw" not in cache[rel]
+            if on_file and (not cached or "nsfw" not in cache[rel] or "faces" not in cache[rel]
                             or (cache[rel].get("kind") == "video" and "motion" not in cache[rel])
                             or self.needs_extra(cache[rel])):
                 on_file(i, len(files), rel)
             if cached:
                 out[rel] = cache[rel]
-                if "nsfw" not in cache[rel]:
-                    nudity_scan(p, out[rel], rel)
+                if "nsfw" not in cache[rel] or "faces" not in cache[rel]:
+                    nudity_scan(p, out[rel], rel)   # files from before the face pass: once more
+                if cache[rel].get("kind") == "video" and "fps" not in cache[rel]:
+                    try:
+                        out[rel]["fps"] = editor.probe(p).get("fps")
+                    except (editor.EditError, subprocess.TimeoutExpired, ValueError) as e:
+                        log.warning("could not read the frame rate of %s: %s", rel, e)
                 if cache[rel].get("kind") == "video" and "motion" not in cache[rel]:
                     try:   # files analysed before the motion measure: add it once
                         log.info("measuring motion in %s (once)", rel)
@@ -729,6 +800,8 @@ class Slot:
     flash: bool
     pan: int           # +1 / -1 direction of the slow pan
     punch: bool = False  # zoom-cut: tighter framing on the first shot of a card
+    shot2: Shot | None = None   # framing "stack": the clip shown below this one
+    offset2: float = 0.0
     hold: float | None = None   # seconds of clean source from `offset`; past it the last frame is held
     fade_in: float = 0.0        # crossfade from the previous clip (s); set just before rendering
 
@@ -857,7 +930,8 @@ def with_intro_shot(plan: Plan, shots: list[Shot], intro_s: float, uses: dict[st
 def footage_of(plan: Plan) -> list[dict]:
     """The clips of a rendered edit, in order (saved on the variant so a re-render can reuse them)."""
     return [{"key": sl.shot.key, "offset": sl.offset, "pan": sl.pan, "start": round(sl.start, 3),
-             "dur": round(sl.dur, 3)} for sl in plan.slots]
+             "dur": round(sl.dur, 3)} | ({"key2": sl.shot2.key, "offset2": sl.offset2} if sl.shot2 else {})
+            for sl in plan.slots]
 
 
 def refit(plan: Plan, footage: list[dict], shots: list[Shot], skip: int = 0) -> tuple[Plan, int]:
@@ -885,8 +959,13 @@ def refit(plan: Plan, footage: list[dict], shots: list[Shot], skip: int = 0) -> 
             offset = min(max(float(f.get("offset", shot.start)), shot.start), shot.end - sl.dur)
         else:
             offset = 0.0
-        slots.append(Slot(shot, round(offset, 3), sl.beats, sl.start, sl.dur, sl.card, sl.flash,
-                          int(f.get("pan") or sl.pan), sl.punch))
+        new = Slot(shot, round(offset, 3), sl.beats, sl.start, sl.dur, sl.card, sl.flash,
+                   int(f.get("pan") or sl.pan), sl.punch)
+        s2 = by_key.get(f.get("key2") or "")
+        if s2 is not None and s2.length >= sl.dur - 1e-3:   # a stacked version keeps its lower clip too
+            off2 = min(max(float(f.get("offset2", s2.start)), s2.start), s2.end - sl.dur) if s2.kind == "video" else 0.0
+            new = dataclasses.replace(new, shot2=s2, offset2=round(off2, 3))
+        slots.append(new)
         kept += 1
     return Plan(plan.story, plan.cards, slots, plan.duration), kept
 
@@ -1000,12 +1079,15 @@ def prefs_for(r: dict, shots: list[Shot], openers: list[str] | None = None, fade
     """Prefs from a resolved style (style.resolve)."""
     unique = bool(r.get("unique_clips", True))
     n = int(r.get("opener_rotation") or 0)
-    return Prefs(unique=unique, crop_safe=bool(r.get("crop_safe", True)) and r.get("framing", "fill") == "fill",
+    return Prefs(unique=unique, crop_safe=bool(r.get("crop_safe", True)) and r.get("framing", "fill") in CROPPED,
                  relevant=bool(r.get("footage_match", True)), ambient=float(r.get("ambient_bias") or 0),
                  palette=float(r.get("palette_match") or 0), action_first=bool(r.get("action_first")),
                  impact_ending=bool(r.get("impact_ending")),
                  openers=set((openers or [])[-n:]) if n > 0 else set(),
                  groups=footage_groups(shots) if unique else {}, tail=fade)
+
+
+CROPPED = ("fill", "box45", "box11")   # framings that crop the sides of a 16:9 clip (crop_safe applies)
 
 
 def narrow(pool: list, keep) -> list:
@@ -1132,25 +1214,55 @@ def plan_clip(story: Story, shots: list[Shot], lcfg: dict, today: date, rng: ran
     return plan
 
 
+NEAR_S = 30.0   # one edit never shows two clips from within this many seconds of the same video
+
+
+def near_used(shot: Shot, used_here: set[str]) -> bool:
+    """A clip from (about) the same moment of the same video is already in this edit."""
+    if shot.kind != "video":
+        return False
+    for k in used_here:
+        src, _, at = k.rpartition("@")
+        if src == shot.src:
+            try:
+                if abs(float(at) - shot.start) < NEAR_S:
+                    return True
+            except ValueError:
+                pass
+    return False
+
+
 def choose_shot(shots: list[Shot], tag: str, dur: float, used_here, uses: dict[str, int],
-                rng: random.Random, prefs: Prefs | None = None, anchor: Shot | None = None) -> Shot:
+                rng: random.Random, prefs: "Prefs | None" = None, anchor: Shot | None = None) -> Shot:
+    """The least-used fitting clip, preferring the story's tag, spread over the footage (never
+    next to a clip already in this edit, so a long video like the Extended Look gives variety)."""
     fits = [s for s in shots if s.length >= dur]
     if not fits:
         raise editor.EditError(f"no shot is {dur:.1f}s long")
-    if prefs is None:   # the plain picker (make / old tests): tag, then unused, then anything
-        for pool in ([s for s in fits if tag in s.tags and s.key not in used_here],
-                     [s for s in fits if s.key not in used_here],
-                     fits):
-            if pool:
-                least = min(uses.get(s.key, 0) for s in pool)
-                return rng.choice([s for s in pool if uses.get(s.key, 0) <= least + 1])
-        raise AssertionError("unreachable")
+    if prefs is not None:
+        return _choose_pref(fits, tag, dur, used_here, uses, rng, prefs, anchor)
+    for pool in ([s for s in fits if tag in s.tags and s.key not in used_here and not near_used(s, used_here)],
+                 [s for s in fits if s.key not in used_here and not near_used(s, used_here)],
+                 [s for s in fits if s.key not in used_here],
+                 fits):
+        if pool:
+            least = min(uses.get(s.key, 0) for s in pool)
+            return rng.choice([s for s in pool if uses.get(s.key, 0) <= least + 1])
+    raise AssertionError("unreachable")
+
+
+def _choose_pref(fits: list[Shot], tag: str, dur: float, used_here, uses: dict[str, int], rng: random.Random,
+                 prefs: "Prefs", anchor: Shot | None) -> Shot:
+    """choose_shot with the footage settings (unique_clips, footage_match, crop_safe, palette_match,
+    ambient_bias); each is a preference that never leaves the pool empty."""
     order = list(used_here)
     used = {group_of(prefs, k) for k in order}
     fresh = [s for s in fits if group_of(prefs, s.key) not in used]
+    near = set(order)
     for pool in ([s for s in fresh if tag in s.tags], fresh):
         if not pool:
             continue
+        pool = narrow(pool, lambda s: not near_used(s, near))   # variety across one long video
         if prefs.relevant:
             pool = narrow(pool, lambda s: s.relevant())
         if prefs.tail > 0:
@@ -1171,6 +1283,29 @@ def choose_shot(shots: list[Shot], tag: str, dur: float, used_here, uses: dict[s
     return min(fits, key=lambda s: (last.get(group_of(prefs, s.key), -1), uses.get(s.key, 0)))
 
 
+def with_seconds(plan: Plan, shots: list[Shot], rng: random.Random, uses: dict[str, int] | None = None,
+                 tags: list[str] | None = None) -> Plan:
+    """Framing "stack": every slot gets a second clip (shown below it), different from every
+    other clip in the edit."""
+    uses = dict(uses or {})
+    used = {sl.shot.key for sl in plan.slots} | {sl.shot2.key for sl in plan.slots if sl.shot2}
+    want = tags or plan.story.tags or ["city"]
+    out = []
+    for i, sl in enumerate(plan.slots):
+        if sl.shot2 is None:
+            try:
+                s2 = choose_shot(shots, want[i % len(want)], sl.dur, used, uses, rng)
+            except editor.EditError:
+                out.append(sl)
+                continue
+            used.add(s2.key)
+            uses[s2.key] = uses.get(s2.key, 0) + 1
+            off = s2.start + (s2.length - sl.dur) * rng.uniform(0.2, 0.8) if s2.kind == "video" else 0.0
+            sl = dataclasses.replace(sl, shot2=s2, offset2=round(off, 3))
+        out.append(sl)
+    return dataclasses.replace(plan, slots=out)
+
+
 # --------------------------------------------------------------------------
 # Text (ASS, libass)
 # --------------------------------------------------------------------------
@@ -1180,10 +1315,11 @@ def card_markup(text: str, highlight: str = "&H00E5FF&") -> str:
 
 
 TEXT_POS = {"high": (8, 520), "middle": (5, 0), "low": (2, 560)}  # ASS alignment, MarginV
+LABEL_PX = 58   # corner labels on comparison pictures
 
 
 def build_text_ass(cards: list[tuple[float, float, str]], font: str, size: int,
-                   style: dict | None = None) -> str:
+                   style: dict | None = None, labels: list[dict] | None = None) -> str:
     """Big centred text, upper middle (clear of TikTok/IG buttons), pops in on the
     beat. The last card (the question) sits in a dark box so it stands out.
     `style` (style.resolve output) changes font, size, position and colours."""
@@ -1196,6 +1332,8 @@ def build_text_ass(cards: list[tuple[float, float, str]], font: str, size: int,
     align, margin = TEXT_POS.get(r.get("position") or "high", TEXT_POS["high"])
     if r.get("text_y") is not None:
         align, margin = 2, int(max(400, min(H - 300, H * (1 - float(r["text_y"])) - size)))
+    elif (r.get("position") or "high") == "high" and r.get("framing") in (*BOXES, "stack"):
+        margin = BAND_MARGIN   # in the band above the picture, not over it
     main = ass_colour(r.get("text_colour") or "#FFFFFF")
     hi = "&H" + ass_colour(r.get("highlight") or "#FFE500")[4:] + "&"
     outline = int(r["outline"]) if r.get("outline") is not None else 9
@@ -1211,6 +1349,7 @@ ScaledBorderAndShadow: yes
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
 Style: Card,{font},{size},{main},{main},&H00000000,&H96000000,-1,0,0,0,100,100,0,0,1,{outline},{shadow},{align},90,90,{margin},1
 Style: Ask,{font},{q},&H00FFFFFF,&H00FFFFFF,&H40000000,&H40000000,-1,0,0,0,100,100,0,0,3,22,0,{align},90,90,{margin},1
+Style: Label,{font},{LABEL_PX},&H00FFFFFF,&H00FFFFFF,&H50000000,&H50000000,-1,0,0,0,100,100,0,0,3,14,0,7,0,0,0,1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
@@ -1221,6 +1360,10 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         style_name = "Ask" if i == len(cards) - 1 and plain(text).rstrip().endswith("?") else "Card"
         lines.append(f"Dialogue: 0,{editor.ass_time(s)},{editor.ass_time(e)},{style_name},,0,0,0,,"
                      f"{pop}{card_markup(text, hi)}")
+    for lb in labels or []:   # corner labels ("GTA 5 · 2013") on a comparison's pictures
+        colour = "&H" + ass_colour(lb.get("colour") or "#FFFFFF")[4:] + "&"
+        lines.append(f"Dialogue: 1,{editor.ass_time(lb['start'])},{editor.ass_time(lb['end'])},Label,,0,0,0,,"
+                     f"{{\\pos({lb['x']},{lb['y']})\\c{colour}\\fad(80,0)}}{editor.ass_escape(lb['text'])}")
     return head + "\n".join(lines) + "\n"
 
 
@@ -1241,39 +1384,98 @@ def fit_filter(pre: list[str], flash: bool) -> str:
             f"[bg][fg]overlay=(W-w)/2:(H-h)/2,fps={FPS},setsar=1,format=yuv420p{tail}")
 
 
-def slot_filter(slot: Slot, zoom: float, motion: str = "full", framing: str = "fill",
-                extra: float = 0.0, focus: float = 0.5) -> str:
-    """Cover-crop to 1080x1920 with a slow horizontal pan across the shot (none with
-    motion "none"), or the whole frame over a blurred copy with framing "fit". `focus`: where
-    the crop is centred across the frame (0.5 = the middle; crop_safe puts it on the subject)."""
-    sh = slot.shot
-    vf = []
-    sw, shh = sh.w, sh.h
-    if sh.crop:
-        cw, ch, cx, cy = sh.crop
-        vf.append(f"crop={cw}:{ch}:{cx}:{cy}")
-        sw, shh = cw, ch
-    if framing == "fit":
-        return fit_filter(vf, slot.flash)
-    s = max(W / sw, H / shh) * zoom
-    ow, oh = max(editor.even(sw * s), W), max(editor.even(shh * s), H)
-    room = ow - W
-    cx = min(max(ow * float(focus) - W / 2, 0.0), float(room))    # crop centre on the subject
-    amp = min(160, room) * MOTION_AMOUNT.get(motion, 1.0)
-    if abs(focus - 0.5) > 1e-3:
-        amp = min(amp, 60.0)          # framed on the subject: drift gently, never off it
-    yroom = oh - H
+BOXES = {"box45": (1080, 1350), "box11": (1080, 1080)}   # the picture's size in the 9:16 frame
+BLACK_BARS = ("box45",)    # boxes drawn on black (the others sit over a blurred copy)
+BAND_MARGIN = 70          # "high" text with a boxed / stacked picture: in the band above it
+STACK_H, STACK_GAP = 608, 16                               # two 16:9 clips, one above the other
+
+
+def box_top(framing: str) -> int:
+    """Where a boxed picture starts (it is centred; the hook sits in the band above it)."""
+    return (H - BOXES[framing][1]) // 2
+
+
+def stack_tops() -> tuple[int, int]:
+    top = (H - 2 * STACK_H - STACK_GAP) // 2
+    return top, top + STACK_H + STACK_GAP
+
+
+def slot_layout(slot: Slot, framing: str, smart: bool = True) -> str:
+    """The framing one clip is drawn with: smart fill puts a close-up of one person full
+    screen; a stacked slot without its second clip falls back to 4:5."""
+    if smart and slot.shot.single and framing in ("box45", "box11", "fit"):
+        return "fill"
+    if framing == "stack" and slot.shot2 is None:
+        return "box45"
+    return framing
+
+
+def blur_bg(head: str = "") -> str:
+    return (f"{head}scale=270:480:force_original_aspect_ratio=increase,crop=270:480,boxblur=18:2,"
+            f"eq=brightness=-0.12:saturation=0.85,scale={W}:{H}")
+
+
+def cover_chain(shot: Shot, pan: int, dur: float, zoom: float, motion: str, tw: int, th: int,
+                pre: list[str] | None = None) -> list[str]:
+    """Scale to cover tw x th and crop, with the slow pan (none with motion "none"). The crop
+    is centred on the shot's subject when the library knows where it is."""
+    vf = list(pre or [])
+    sw, shh = (shot.crop[0], shot.crop[1]) if shot.crop else (shot.w, shot.h)
+    s = max(tw / sw, th / shh) * zoom
+    ow, oh = max(editor.even(sw * s), tw), max(editor.even(shh * s), th)
+    room, yroom = ow - tw, oh - th
+    fx, fy = shot.focus if shot.focus else (0.5, 0.5)
+    cx0 = min(max(fx * ow - tw / 2, 0), room) if shot.focus else room / 2
+    cy0 = min(max(fy * oh - th / 2, 0), yroom) if shot.focus else yroom / 2
+    amp = min(160 * tw / W, room) * MOTION_AMOUNT.get(motion, 1.0)
     if amp == 0:   # no camera movement: a fixed crop (nothing depends on time)
-        x, y = f"{cx:.1f}", f"{yroom / 2:.1f}"
+        x, y = f"{cx0:.1f}", f"{cy0:.1f}"
     else:
-        x = f"clip({cx:.1f}+{slot.pan * amp:.1f}*(t/{slot.dur:.3f}-0.5),0,{room})"
-        y = (f"clip({yroom / 2:.1f}+{-slot.pan * min(80, yroom) * MOTION_AMOUNT.get(motion, 1.0):.1f}"
-             f"*(t/{slot.dur:.3f}-0.5),0,{yroom})")
-    vf += [f"scale={ow}:{oh}:flags=bicubic", f"crop={W}:{H}:'{x}':'{y}'",
-           f"fps={FPS}", "setsar=1", "format=yuv420p"]
-    if slot.flash:
-        vf.append("fade=t=in:st=0:d=0.12:color=white")
-    return ",".join(vf)
+        x = f"clip({cx0:.1f}+{pan * amp:.1f}*(t/{dur:.3f}-0.5),0,{room})"
+        y = (f"clip({cy0:.1f}+{-pan * min(80, yroom) * MOTION_AMOUNT.get(motion, 1.0):.1f}"
+             f"*(t/{dur:.3f}-0.5),0,{yroom})")
+    return vf + [f"scale={ow}:{oh}:flags=bicubic", f"crop={tw}:{th}:'{x}':'{y}'"]
+
+
+def _pre(shot: Shot) -> list[str]:
+    if shot.crop:
+        cw, ch, cx, cy = shot.crop
+        return [f"crop={cw}:{ch}:{cx}:{cy}"]
+    return []
+
+
+def slot_filter(slot: Slot, zoom: float, motion: str = "full", framing: str = "fill",
+                extra: float = 0.0, smart: bool = True, fps: int | None = None) -> str:
+    """The -filter_complex graph ([0:v], and [1:v] for a stacked slot -> [v]) for one clip:
+    "fill" cover-crops to 1080x1920 with a slow pan; "box45" a cover-cropped 4:5 picture with
+    black bars above and below; "box11" a 1:1 picture over a blurred copy; "stack" two 16:9 clips one above the other; "fit" the whole
+    frame over a blurred copy. See slot_layout for smart fill."""
+    fps = fps or FPS
+    sh = slot.shot
+    tail = f"fps={fps},setsar=1,format=yuv420p" + (",fade=t=in:st=0:d=0.12:color=white" if slot.flash else "")
+    kind = slot_layout(slot, framing, smart)
+    if kind == "fit":
+        return "[0:v]" + fit_filter(_pre(sh), slot.flash).replace(f"fps={FPS}", f"fps={fps}") + "[v]"
+    if kind == "fill":
+        return "[0:v]" + ",".join(cover_chain(sh, slot.pan, slot.dur, zoom, motion, W, H, _pre(sh)) + [tail]) + "[v]"
+    if kind in BLACK_BARS:   # 4:5: plain black bars above and below the picture (Tim, 19 Nov)
+        bw, bh = BOXES[kind]
+        return ("[0:v]" + ",".join(cover_chain(sh, slot.pan, slot.dur, zoom, motion, bw, bh, _pre(sh)))
+                + f",pad={W}:{H}:0:{box_top(kind)}:color=black,{tail}[v]")
+    if kind in BOXES:
+        bw, bh = BOXES[kind]
+        pre = ",".join(_pre(sh))
+        return (f"[0:v]{pre + ',' if pre else ''}split[a][b];[a]{blur_bg()}[bg];"
+                f"[b]{','.join(cover_chain(sh, slot.pan, slot.dur, zoom, motion, bw, bh))}[fg];"
+                f"[bg][fg]overlay=0:{box_top(kind)},{tail}[v]")
+    # stack: the slot's clip on top, its second clip below, each whole (16:9)
+    y1, y2 = stack_tops()
+    s2 = slot.shot2
+    pre1, pre2 = ",".join(_pre(sh)), ",".join(_pre(s2))
+    return (f"[0:v]{pre1 + ',' if pre1 else ''}split[a][b];[a]{blur_bg()}[bg];"
+            f"[b]{','.join(cover_chain(sh, slot.pan, slot.dur, zoom, motion, W, STACK_H))}[t];"
+            f"[1:v]{','.join(cover_chain(s2, -slot.pan, slot.dur, zoom, motion, W, STACK_H, _pre(s2)))}[u];"
+            f"[bg][t]overlay=0:{y1}[m];[m][u]overlay=0:{y2},{tail}[v]")
 
 
 CUT_CHECK_THRESHOLD = 0.12   # lower than the library's: dark-to-dark trailer cuts score ~0.2
@@ -1300,7 +1502,7 @@ def window_cuts(src: Path, start: float, end: float, threshold: float = CUT_CHEC
     return cuts
 
 
-def cut_fades(plan: Plan, fade_s: float) -> Plan:
+def cut_fades(plan: Plan, fade_s: float, fps: int | None = None) -> Plan:
     """Each slot's crossfade from the previous clip (Tim: a fade only ever blends the TWO clips
     next to each other). A fade is never longer than half of either clip, so it is over before
     the next one starts and no third image is ever in the mix. Whole frames, at least 2."""
@@ -1308,9 +1510,10 @@ def cut_fades(plan: Plan, fade_s: float) -> Plan:
         return Plan(plan.story, plan.cards, [replace(sl, fade_in=0.0) for sl in plan.slots], plan.duration)
     out = [replace(plan.slots[0], fade_in=0.0)]
     for prev, sl in zip(plan.slots, plan.slots[1:]):
+        rate = fps or FPS
         f = min(fade_s, prev.dur / 2, sl.dur / 2)
-        frames = max(2, int(math.floor(f * FPS + 1e-6)))
-        out.append(replace(sl, fade_in=frames / FPS))
+        frames = max(2, int(math.floor(f * rate + 1e-6)))
+        out.append(replace(sl, fade_in=frames / rate))
     return Plan(plan.story, plan.cards, out, plan.duration)
 
 
@@ -1362,34 +1565,53 @@ def clean_plan(plan: Plan, media: Path, tail: float = 0.0, cuts_of=None) -> Plan
 
 def prepare(plan: Plan, r: dict, media: Path, cuts_of=None) -> Plan:
     """Crossfades per cut, then clips moved off scene cuts (with held frames where needed)."""
-    return clean_plan(cut_fades(plan, fade_of(r, plan)), media, cuts_of=cuts_of)
+    plan = crop_safe_focus(plan, r)
+    return clean_plan(cut_fades(plan, fade_of(r, plan), edit_fps(plan)), media, cuts_of=cuts_of)
 
 
 def render_slot(slot: Slot, media: Path, out: Path, motion: str = "full", framing: str = "fill",
-                extra: float = 0.0, focus: float = 0.5) -> None:
+                extra: float = 0.0, smart: bool = True, fps: int | None = None) -> None:
     """`extra`: seconds rendered past the slot's end (the overlap of a crossfade). A slot with
     `hold` reads only that much clean source and holds its last frame for the rest."""
-    src = str((media / slot.shot.src).resolve())
+    fps = fps or FPS
     # frame count from the slot's edges, so uneven real beats never drift over a whole edit
-    frames = round((slot.start + slot.dur) * FPS) - round(slot.start * FPS) + round(extra * FPS)
+    frames = round((slot.start + slot.dur) * fps) - round(slot.start * fps) + round(extra * fps)
     still = motion == "none"
     held = slot.shot.kind == "video" and slot.hold is not None and slot.hold < slot.dur + extra
+    length = f"{slot.dur + extra + 0.2:.3f}"
+
+    def source(shot: Shot, offset: float, t: str = length) -> list[str]:
+        src = str((media / shot.src).resolve())
+        if shot.kind == "video":
+            return ["-ss", f"{offset:.3f}", "-t", t, "-i", src]
+        return ["-loop", "1", "-framerate", str(fps), "-t", t, "-i", src]
+    inp = source(slot.shot, slot.offset, f"{slot.hold:.3f}" if held else length)
     if slot.shot.kind == "video":
-        length = slot.hold if held else slot.dur + extra + 0.2
-        inp = ["-ss", f"{slot.offset:.3f}", "-t", f"{length:.3f}", "-i", src]
         zoom = 1.0 if (still or slot.shot.w / max(slot.shot.h, 1) > 1.2) else 1.08
     else:
-        inp = ["-loop", "1", "-framerate", str(FPS), "-t", f"{slot.dur + extra + 0.2:.3f}", "-i", src]
         zoom = 1.0 if still else 1.15
+    if slot_layout(slot, framing, smart) == "stack":
+        inp += source(slot.shot2, slot.offset2)
     if slot.punch and not still:
         zoom *= 1.18
-    vf = slot_filter(slot, zoom, motion, framing, extra, focus)
+    graph = slot_filter(slot, zoom, motion, framing, extra, smart, fps)
     if held:   # never run into the next scene: freeze on the last clean frame
-        vf += f",tpad=stop_mode=clone:stop_duration={slot.dur + extra - slot.hold + 0.3:.3f}"
+        graph = graph[:-len("[v]")] + f",tpad=stop_mode=clone:stop_duration={slot.dur + extra - slot.hold + 0.3:.3f}[v]"
     editor.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", *inp, "-an",
-                "-vf", vf, "-frames:v", str(frames),
-                "-c:v", "libx264", "-preset", "veryfast", "-crf", "16", "-r", str(FPS),
+                "-filter_complex", graph, "-map", "[v]", "-frames:v", str(frames),
+                "-c:v", "libx264", "-preset", "veryfast", "-crf", "16", "-r", str(fps),
                 str(out)], timeout=300)
+
+
+REAL_60 = 50.0   # a source at least this fast has real 60 fps frames (59.94 counts)
+
+
+def edit_fps(plan: "Plan") -> int:
+    """60 when every trailer clip in the edit really has 60 fps frames (stills move smoothly at
+    any rate), else 30: doubling 30 fps trailer frames to 60 stuttered on TikTok (#39)."""
+    shots = [sl.shot for sl in plan.slots] + [sl.shot2 for sl in plan.slots if sl.shot2]
+    vids = [x for x in shots if x.kind == "video"]
+    return 60 if vids and all((x.fps or 0) >= REAL_60 for x in vids) else FPS
 
 
 def edit_cap(r: dict, lcfg: dict, trend: bool) -> float:
@@ -1409,8 +1631,7 @@ def trim_plan(plan: Plan, limit: float) -> Plan:
         if sl.start >= limit - 0.25:
             break
         if sl.start + sl.dur > limit:
-            sl = Slot(sl.shot, sl.offset, sl.beats, sl.start, round(limit - sl.start, 3), sl.card, sl.flash,
-                      sl.pan, sl.punch)
+            sl = dataclasses.replace(sl, dur=round(limit - sl.start, 3))
         slots.append(sl)
     cards = [(a, min(b, limit), t) for a, b, t in plan.cards if a < limit - 0.25]
     return Plan(plan.story, cards, slots, round(slots[-1].start + slots[-1].dur, 3) if slots else limit)
@@ -1531,7 +1752,7 @@ def logo_width(logo_size: float) -> int:
     return int(W * float(logo_size) / (1 + LOGO_GROW))
 
 
-def join_crossfade(names: list[str], plan: Plan, fade_s: float, cwd: Path) -> str:
+def join_crossfade(names: list[str], plan: Plan, fade_s: float, cwd: Path, fps: int | None = None) -> str:
     """Join the shots with a soft crossfade starting on each cut's beat: each fade blends only the
     two clips at that cut (its own length from cut_fades; whole frames, so nothing drifts)."""
     inputs = []
@@ -1541,13 +1762,14 @@ def join_crossfade(names: list[str], plan: Plan, fade_s: float, cwd: Path) -> st
     for k in range(1, len(names)):
         out = f"x{k}"
         d = plan.slots[k].fade_in or fade_s
-        off = round(plan.slots[k].start * FPS) / FPS
+        rate = fps or FPS
+        off = round(plan.slots[k].start * rate) / rate
         graph.append(f"[{last}][{k}:v]xfade=transition=fade:duration={d:.4f}"
                      f":offset={off:.4f}[{out}]")
         last = out
     editor.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", *inputs,
                 "-filter_complex", ";".join(graph), "-map", f"[{last}]", "-an", "-c:v", "libx264",
-                "-preset", "veryfast", "-crf", "16", "-r", str(FPS), "joined.mp4"], timeout=600, cwd=cwd)
+                "-preset", "veryfast", "-crf", "16", "-r", str(fps or FPS), "joined.mp4"], timeout=600, cwd=cwd)
     return "joined.mp4"
 
 
@@ -1558,11 +1780,18 @@ def end_fade(r: dict, duration: float) -> float:
     return round(min(v, duration / 3), 3) if v > 0 and duration > 0 else 0.0
 
 
-def focus_of(slot: Slot, r: dict) -> float:
-    """Where a fill crop is centred: on the subject with crop_safe, else the middle."""
-    if r.get("crop_safe") and r.get("framing", "fill") == "fill" and slot.shot.kind == "video":
-        return float(slot.shot.focus)
-    return 0.5
+def crop_safe_focus(plan: Plan, r: dict) -> Plan:
+    """crop_safe: a clip with no known face whose subject would be cut off by a centred crop is
+    framed on the subject (Shot.focus, which every renderer centres the crop on)."""
+    if not r.get("crop_safe") or r.get("framing", "fill") not in CROPPED:
+        return plan
+    slots = []
+    for sl in plan.slots:
+        sh = sl.shot
+        if sh.kind == "video" and sh.focus is None and abs(sh.subject_x - 0.5) > 1e-3:
+            sl = replace(sl, shot=replace(sh, focus=(sh.subject_x, 0.5)))
+        slots.append(sl)
+    return Plan(plan.story, plan.cards, slots, plan.duration)
 
 
 def fade_of(r: dict, plan: Plan) -> float:
@@ -1572,7 +1801,7 @@ def fade_of(r: dict, plan: Plan) -> float:
 
 def render_plan(plan: Plan, lcfg: dict, out: Path, grade: str = "", text_style: dict | None = None,
                 cards: list[tuple[float, float, str]] | None = None, logo: Path | None = None,
-                intro_s: float = 0.0, look: str = "") -> Path:
+                intro_s: float = 0.0, look: str = "", labels: list[dict] | None = None) -> Path:
     """`cards` overrides plan.cards (text level); `logo` + `intro_s` add the logo intro
     (it bursts away exactly at `intro_s`, the drop); `look` is style.look_filter() (grain /
     vignette / cinema bars). `text_style` (style.resolve) also carries motion, framing,
@@ -1581,8 +1810,10 @@ def render_plan(plan: Plan, lcfg: dict, out: Path, grade: str = "", text_style: 
     cards = plan.cards if cards is None else cards
     r = text_style or {}
     motion, framing = r.get("motion", "full"), r.get("framing", "fill")
+    smart = r.get("smart_fill", True)
     fade = fade_of(r, plan)
     plan = prepare(plan, r, media)
+    fps = edit_fps(plan)
     logo_out = float(r.get("logo_fade_s") or LOGO_OUT_S)
     out.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory() as tmp:
@@ -1592,13 +1823,13 @@ def render_plan(plan: Plan, lcfg: dict, out: Path, grade: str = "", text_style: 
         job = progress.current()
         for i, (slot, extra) in enumerate(zip(plan.slots, tails(plan))):
             seg = tmpd / f"s{i:03d}.mp4"
-            render_slot(slot, media, seg, motion, framing, extra, focus_of(slot, r))
+            render_slot(slot, media, seg, motion, framing, extra, smart, fps)
             names.append(seg.name)
             job.update(0.8 * (i + 1) / len(plan.slots), detail=f"shot {i + 1}/{len(plan.slots)}")
         job.update(0.85, detail="joining shots, text and colour")
         base_chain = ",".join(x for x in (grade, look) if x) or "null"
         if fade:
-            inputs = ["-i", join_crossfade(names, plan, fade, tmpd)]
+            inputs = ["-i", join_crossfade(names, plan, fade, tmpd, fps)]
         else:
             (tmpd / "list.txt").write_text("".join(f"file '{n}'\n" for n in names), encoding="utf-8")
             inputs = ["-f", "concat", "-safe", "0", "-i", "list.txt"]
@@ -1611,16 +1842,16 @@ def render_plan(plan: Plan, lcfg: dict, out: Path, grade: str = "", text_style: 
             graph = f"[0:v]{base_chain}[v0]"
         end = end_fade(r, plan.duration)
         tail_fx = f",fade=t=out:st={plan.duration - end:.3f}:d={end:.3f}" if end else ""
-        if cards:
-            (tmpd / "text.ass").write_text(build_text_ass(cards, lcfg["font"], lcfg["font_size"], text_style),
-                                           encoding="utf-8")
+        if cards or labels:
+            (tmpd / "text.ass").write_text(build_text_ass(cards or [], lcfg["font"], lcfg["font_size"], text_style,
+                                                          labels), encoding="utf-8")
             graph += f";[v0]ass=text.ass{tail_fx},format=yuv420p[v]"
         else:
             graph += f";[v0]null{tail_fx},format=yuv420p[v]"
         part = tmpd / "edit.mp4"
         # -an: no audio stream at all. Tim adds the official sound in the app.
         editor.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", *inputs,
-                    "-filter_complex", graph, "-map", "[v]", "-an", "-r", str(FPS),
+                    "-filter_complex", graph, "-map", "[v]", "-an", "-r", str(fps),
                     "-t", f"{plan.duration:.3f}", "-c:v", "libx264", "-preset", "medium",
                     "-crf", str(editor.CRF), "-maxrate", "14M", "-bufsize", "28M", "-pix_fmt", "yuv420p", "-profile:v", "high",
                     "-movflags", "+faststart", part.name], timeout=600, cwd=tmpd)   # a 30 s edit joins in about a minute
@@ -1719,6 +1950,9 @@ class ReviewAdapter:
         return self._shots
 
     def render(self, item: dict, specs: list[dict], n: int, folder: Path, preview_bytes: int) -> list[dict]:
+        if (item.get("source") or {}).get("kind") == "compare":   # GTA 5 vs GTA 6 (spikebot/compare.py)
+            from . import compare
+            return compare.render_variants(self, item, specs, n, folder, preview_bytes)
         from . import style as st
         today = date.fromisoformat(item["source"]["day"])
         state_path = Path(self.lcfg["state_file"])
@@ -1848,6 +2082,8 @@ class ReviewAdapter:
                                   recovered=src_v.get("recovered", False))
                 elif recovered:
                     base_v = src_v
+            if r["framing"] == "stack":
+                plan = with_seconds(plan, shots, random.Random(seed + 1), state.get("uses"))
             stem = f"r{n}_{spec['label']}"
             mp4 = folder / f"{stem}.mp4"
             if r["text_level"] == "plain":
@@ -1870,7 +2106,9 @@ class ReviewAdapter:
             prev = editor.preview(mp4, folder / f"{stem}_preview.mp4", preview_bytes, plan.duration)
             uses = state.setdefault("uses", {})
             for sl in plan.slots:
-                uses[sl.shot.key] = uses.get(sl.shot.key, 0) + 1
+                for sh in (sl.shot, sl.shot2):
+                    if sh is not None:
+                        uses[sh.key] = uses.get(sh.key, 0) + 1
             if plan.slots and not want_pres:   # opener_rotation: what opened the recent edits
                 state["openers"] = (state.get("openers", []) + [plan.slots[0].shot.key])[-40:]
             state["recent"] = (state.get("recent", []) + [story.id])[-12:]
@@ -1901,7 +2139,7 @@ class ReviewAdapter:
 
     def recover(self, folder: Path, base_v: dict) -> list[dict]:
         """The clip list of an old version, read back from its video (footage_match)."""
-        from . import footage_match, style as st
+        from . import footage_match
         for name in (base_v.get("file"), base_v.get("preview")):
             video = Path(folder) / name if name else None
             if video and video.exists():
@@ -1912,7 +2150,9 @@ class ReviewAdapter:
             lib = Library(self.lcfg)
             index = footage_match.Index(lib.root, lib.scan(),
                                         Path(self.lcfg["data_dir"]) / "tokyo_girl" / "frame_hashes.json")
-            framing = st.resolve(base_v.get("style") or {})["framing"]
+            framing = (base_v.get("style") or {}).get("framing") or "fill"   # versions before framing: fill
+            if framing not in ("fill", "fit"):
+                return []   # boxed / stacked versions always save their clip list
             out = footage_match.recover(video, index, self.shots(), framing)
         except Exception as e:  # noqa: BLE001 - recovery is best effort: the plan's own clips are used
             log.warning("could not recover the clips of %s: %s", base_v.get("label"), e)
@@ -2018,8 +2258,8 @@ class ReviewAdapter:
         a = item["approved"]
         v = review.variant_of(item, a["round"], a["label"])
         export = Path(self.lcfg["export_dir"])
-        if (item.get("source") or {}).get("kind") == "trend":
-            export = export.parent / "trend"
+        if (item.get("source") or {}).get("kind") in ("trend", "compare"):
+            export = export.parent / item["source"]["kind"]
         export.mkdir(parents=True, exist_ok=True)
         stem = f"{item['id']}_{v['story']}"
         shutil.copyfile(src, export / f"{stem}.mp4")
@@ -2140,16 +2380,22 @@ def daily(lcfg: dict, now: float | None = None) -> list:
         log.info("Tokyo Girl mode is off (TOKYO_GIRL_MODE=false)")
         return []
     state = load_state(Path(lcfg["state_file"]))
-    if now - state.get("last_fetch", 0) > lcfg["refetch_days"] * 86400:
-        try:
-            fetch(lcfg)
-        except Exception as e:  # never let a fetch problem stop the edits
-            log.warning("fetch failed, using media already on disk: %s", e)
+    wanted = list(lcfg["sources"]) + list(lcfg.get("searches") or []) + [GTA5_FETCH]
+    new_source = any(x not in (state.get("fetched") or []) for x in wanted)
+    if new_source or now - state.get("last_fetch", 0) > lcfg["refetch_days"] * 86400:
+        from . import compare
+        for c in (lcfg, compare.gta5_cfg(lcfg)):   # GTA 6 media, and GTA 5's for the comparisons
+            try:
+                fetch(c)
+            except Exception as e:  # never let a fetch problem stop the edits
+                log.warning("fetch failed, using media already on disk: %s", e)
         state = load_state(Path(lcfg["state_file"]))
         state["last_fetch"] = now
+        state["fetched"] = wanted   # a source added later (e.g. the Extended Look) is fetched straight away
         save_state(Path(lcfg["state_file"]), state)
     day = datetime.fromtimestamp(now, UK).strftime("%Y-%m-%d")
     if lcfg.get("review"):
+        daily_compare(lcfg, day, now)
         need = lcfg["per_day"] - items_on(load_state(Path(lcfg["state_file"])), day)
         if need <= 0:
             log.info("already %d edits for %s", lcfg["per_day"], day)
@@ -2167,6 +2413,28 @@ def daily(lcfg: dict, now: float | None = None) -> list:
         made = make(lcfg, need, now=now)
     deliver_pending(lcfg, now)  # retry anything Discord/GCS missed last time
     return made
+
+
+GTA5_FETCH = "gta5-official-trailers"   # marks the GTA 5 library as fetched (comparisons)
+
+
+def daily_compare(lcfg: dict, day: str, now: float) -> list[str]:
+    """Top up today's GTA 5 vs GTA 6 comparisons to `compare_per_day`. Never stops the rest."""
+    per_day = int(lcfg.get("compare_per_day") or 0)
+    state = load_state(Path(lcfg["state_file"]))
+    done = (state.get("compare_days") or {}).get(day, 0)
+    if per_day <= done:
+        return []
+    from . import compare
+    try:
+        ids = compare.make(lcfg, per_day - done, now=now)
+    except Exception as e:  # noqa: BLE001 - no GTA 5 footage / no API key yet: the edits still get made
+        log.warning("GTA 5 vs GTA 6 comparison skipped: %s", e)
+        return []
+    state = load_state(Path(lcfg["state_file"]))
+    state.setdefault("compare_days", {})[day] = done + len(ids)
+    save_state(Path(lcfg["state_file"]), state)
+    return ids
 
 
 # --------------------------------------------------------------------------
@@ -2283,16 +2551,31 @@ def fetch(lcfg: dict) -> None:
                     dest.write_bytes(ri.content)
             except Exception as e:
                 log.warning("image failed %s: %s", u, e)
-    for v in dict.fromkeys(videos):
-        # Video only (no audio needed), max 1080p, Rockstar's own channel only.
+    jobs = [(v, "uploader~='(?i)rockstar'") for v in dict.fromkeys(videos)]
+    for q in lcfg.get("searches") or []:
+        # the newest few results for the title; only Rockstar's own upload with that title is taken.
+        # A dict search gives its own title regex and an `exclude` regex (no backslashes in either).
+        q = q if isinstance(q, dict) else {"query": q}
+        flt = f"uploader~='(?i)^rockstar games$' & title~='{q.get('title') or title_regex(q['query'])}'"
+        if q.get("exclude"):
+            flt += f" & title!~='{q['exclude']}'"
+        jobs.append((f"ytsearch{int(q.get('max', 5))}:{q['query']} Rockstar Games", flt))
+    for v, flt in jobs:
+        # Video only (no audio needed), max 1080p (60 fps when offered), Rockstar's own channel only.
         p = subprocess.run([sys.executable, "-m", "yt_dlp", "--no-warnings", "--no-playlist",
                             "-f", "bv*[height<=1080][ext=mp4]/bv*[height<=1080]/b[height<=1080]",
-                            "--match-filter", "uploader~='(?i)rockstar'",
+                            "-S", "res:1080,fps", "--match-filter", flt,
                             "--download-archive", str(media / ".yt_archive"),
                             "--restrict-filenames", "-o", str(media / "trailers" / "%(title).80s_trailer_%(id)s.%(ext)s"),
-                            v], capture_output=True, text=True, timeout=1800)
+                            v], capture_output=True, text=True, timeout=3600)
         if p.returncode != 0:
             log.warning("yt-dlp failed for %s: %s", v, p.stderr.strip()[-300:])
+
+
+def title_regex(title: str) -> str:
+    """yt-dlp match-filter regex: every word of the title, in order, any punctuation between."""
+    words = re.findall(r"[A-Za-z0-9]+", title)
+    return "(?i)" + "[^A-Za-z0-9]+".join(words)   # no backslashes: they would need escaping in the filter
 
 
 # --------------------------------------------------------------------------
@@ -2322,6 +2605,8 @@ def main(argv: list[str] | None = None) -> None:
     tr = sub.add_parser("trend", help="edits cut to the trending sounds (one per sound by default)")
     tr.add_argument("--song", action="append", help="only this sound (repeatable); 'auto' = next in rotation")
     tr.add_argument("-n", type=int, default=1, help="edits per sound")
+    cp = sub.add_parser("compare", help="GTA 5 vs GTA 6 comparison edits (review items)")
+    cp.add_argument("-n", type=int, default=1)
     mk = sub.add_parser("make")
     mk.add_argument("-n", type=int, default=1)
     mk.add_argument("--story")
@@ -2405,6 +2690,32 @@ def main(argv: list[str] | None = None) -> None:
             print(f"review item {item_id} ({item['source']['song']}): "
                   + ("cancelled" if item.get("status") == "cancelled"
                      else "ready for #ready-to-post" if ok else f"FAILED: {item.get('error')}"))
+        if failed:
+            sys.exit(1)
+    elif args.cmd == "compare":
+        job = progress.current()
+        job.update(0.0, "Checking the trailer libraries")
+        from . import compare
+        try:
+            with job.span(0.0, 0.1):
+                ensure_media(lcfg, on_file=lambda i, n, rel: job.update(i / max(1, n), detail=f"{i + 1}/{n} · {Path(rel).name}"))
+                compare.ensure_gta5(lcfg)
+            with job.span(0.1, 1.0):
+                ids = compare.make(lcfg, args.n)
+        except progress.Cancelled:
+            print("comparison edits cancelled")
+            return
+        except editor.EditError as e:
+            sys.exit(f"FAILED: {e}")
+        from . import review
+        store = review.Store(Path(lcfg["data_dir"]))
+        failed = 0
+        for item_id in ids:
+            item = store.load(item_id)
+            ok = item.get("status") != "failed"
+            failed += not ok
+            print(f"review item {item_id}: " + ("cancelled" if item.get("status") == "cancelled"
+                                                else "ready for #ready-to-post" if ok else f"FAILED: {item.get('error')}"))
         if failed:
             sys.exit(1)
     elif args.cmd == "daily":

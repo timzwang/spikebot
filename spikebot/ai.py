@@ -126,8 +126,12 @@ def settings_menu() -> str:
         " movement); Tokyo Girl and trend edits also have fade  (a soft crossfade; length fade_s)",
         "motion: none, subtle, full  (camera movement the editor adds: none = every shot completely still,"
         " no pans, push-ins, zooms, drift or animated stills)",
-        "framing: fill, fit  (Tokyo Girl and trend edits only: fill crops the 16:9 trailer to fill the 9:16 screen; fit shows"
+        "framing: box45, box11, stack, fill, fit  (Tokyo Girl and trend edits only: box45 = a big 4:5 picture with"
+        " black bars above/below and text in them (default); box11 = a 1:1 picture over a blurred copy; stack = two clips at once,"
+        " one above the other, each whole; fill crops the 16:9 trailer to fill the 9:16 screen; fit shows"
         " the whole frame so nothing is cut off, over a blurred copy of itself)",
+        "smart_fill (custom): 0 or 1  (Tokyo Girl and trend edits: 1 = a close-up of one person goes full screen and"
+        " every crop is centred on the subject; default 1)",
         "media: clips, mixed  (Tokyo Girl and trend edits only: clips = real trailer video only, never screenshots)",
         "text_level: none, minimal, full, plain  (none = no captions/hook/text at all; minimal = short "
         "opening hook and captions only around the payoff (Lacy) / only the opening card (Tokyo Girl); "
@@ -141,6 +145,9 @@ def settings_menu() -> str:
         " black title card is never used); intro_mix = share of logo-intro edits that use rockstar_presents"
         " instead, so not every edit starts with the logo)",
         "ending: " + ", ".join(st.ENDINGS) + "  (Lacy only: end card)",
+        "opening: " + ", ".join(st.OPENINGS) + "  (stream clips only: teaser = the clip's biggest moment plays"
+        " first for 2.5-4.5 s while an AI voice reads a short hook, then the clip from its start; normally only"
+        " the experimental version C gets it)",
         "hook: Lacy tones " + ", ".join(st.HOOKS["lacy"]) + "; Tokyo Girl / trend story kinds "
         + ", ".join(st.HOOKS["tokyo_girl"]) + "  (needs mode lacy, tokyo_girl or trend)",
     ]
@@ -264,7 +271,7 @@ def interpret_feedback(text: str, mode: str, base: Path | None = None, current: 
     out.setdefault("song", None)
     for row in out.get("settings", []):
         if str(row.get("value", "")).lower() in ("auto", "null", "none") and row.get("setting") not in (
-                "text_level", "intro", "ending", "transition"):
+                "text_level", "intro", "ending", "opening", "transition"):
             row["value"] = "auto"
     return out
 
@@ -286,8 +293,11 @@ ART_SCHEMA = {
         "opening": {"type": "string"},
         "settings": {"type": "array", "items": SETTING_ROW},
         "avoid": {"type": "array", "items": {"type": "string"}},
+        "kind": {"type": "string", "enum": ["edit", "stream_clip", "other"]},
+        "kind_why": {"type": "string"},
     },
-    "required": ["summary", "what_makes_it_good", "techniques", "text_use", "opening", "settings", "avoid"],
+    "required": ["summary", "what_makes_it_good", "techniques", "text_use", "opening", "settings", "avoid",
+                 "kind", "kind_why"],
     "additionalProperties": False,
 }
 
@@ -303,6 +313,15 @@ footage carries it") rather than generic praise.
 
 Never transcribe or quote on-screen words, speech, usernames or captions, and never suggest reusing
 their footage, audio or wording: describe the *type* of choice only.
+
+kind: what sort of video it is, which decides what our editor learns from it:
+- "edit": a montage cut together from game/trailer/film footage, usually to music (many cuts, often
+  beat-synced, no streamer talking to camera). Teaches the trailer and trending-sound edits.
+- "stream_clip": a moment from a livestream or gaming video: one take or a few jump cuts, the streamer's
+  own voice, usually a webcam/facecam on screen and captions of what they say. Teaches stream clips.
+- "other": anything else (vlog, podcast, news, meme, tutorial, ad, IRL). Kept for reference only.
+kind_why: a few words on what gave it away (e.g. "webcam in the top corner, one continuous take").
+For a stream_clip, choose settings for mode "lacy" (the stream-clip editor); for an edit, mode "tokyo_girl".
 
 techniques[].can_copy = true only if the editor below could reproduce it with its settings.
 settings: the closest settings for our editor (mode "all" unless clearly mode-specific, scope "always").
@@ -363,3 +382,35 @@ def write_clip_copy(name: str, game: str, transcript: str, vibe: list[str] | Non
     out = ask_json(CLIP_COPY_SYSTEM.replace("{name}", name), content, CLIP_COPY_SCHEMA, base,
                    max_tokens=1500, client=client, effort="low", task="feedback")
     return [o for o in out.get("options") or [] if o.get("title") and o.get("caption")]
+
+
+# --------------------------------------------------------------------------
+# Stream clips, teaser opening: the line the AI voice says over the big moment
+# --------------------------------------------------------------------------
+VOICE_HOOK_SYSTEM = """You write the spoken hook for the first 3 seconds of a Short. The clip's biggest moment
+plays first as a teaser while an AI voice reads your line, then the clip plays from the start. You get the
+streamer's name, the game, chat's reaction words and the transcript of what was said.
+- line: 5-14 words, one or two short spoken sentences, must contain the streamer's name exactly as given.
+- It makes the viewer need to see how it happened: set up the moment, never give away the punchline or
+  the outcome, never describe exactly what they're about to see.
+- Talk like a real person narrating ("{name} thought this heist was easy... it wasn't."), plain English,
+  no hashtags, no emojis, no ALL CAPS, no quotes from the transcript.
+- Only what the transcript supports; never invent events. If it is vague, keep it general.
+- Never: insults, mocking, drama, negativity about the streamer, "you won't believe", "insane", "crazy",
+  "wait for it", "watch till the end", "POV", story spoilers."""
+
+VOICE_HOOK_SCHEMA = {
+    "type": "object", "additionalProperties": False,
+    "properties": {"line": {"type": "string"}},
+    "required": ["line"],
+}
+
+
+def write_voice_hook(name: str, game: str, transcript: str, vibe: list[str] | None = None,
+                     base: Path | None = None, client=None) -> str:
+    """One spoken teaser line for a clip. Raises AIError (callers fall back to the title)."""
+    content = (f"Streamer: {name}\nGame: {game}\nChat reaction: {', '.join((vibe or [])[:8]) or 'none'}\n"
+               f"Transcript:\n{transcript.strip()[:3000] or '(no clear speech)'}")
+    out = ask_json(VOICE_HOOK_SYSTEM.replace("{name}", name), content, VOICE_HOOK_SCHEMA, base,
+                   max_tokens=400, client=client, effort="low", task="feedback")
+    return str(out.get("line") or "").strip()

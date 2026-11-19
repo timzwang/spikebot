@@ -318,11 +318,15 @@ def test_round_payload_and_buttons(tmp_path):
     store, item = new_item(tmp_path)
     p = DB.round_payload(item, item["rounds"][0])
     assert "`" + item["id"] + "`" in p["content"] and "Expires" not in p["content"]
-    assert [e["title"].split(" ")[0] for e in p["embeds"]] == ["A", "B", "C"]
-    assert "🧪" in p["embeds"][2]["title"]
+    # one embed: A | B | C side by side as columns (short, scannable), not one box each
+    assert len(p["embeds"]) == 1
+    cols = p["embeds"][0]["fields"]
+    assert [f["name"].split(" ")[1] for f in cols] == ["A", "B", "C"] and all(f["inline"] for f in cols)
+    assert "🧪" in cols[2]["name"] and "🧪" not in cols[0]["name"]
     # kept short: length + title, no style details or caption walls
-    assert all("fields" not in e and len(e["description"]) < 200 for e in p["embeds"])
+    assert all(len(f["value"]) < 200 and f["value"].count("\n") <= 3 for f in cols)
     assert "grade" not in str(p["embeds"]) and "cuts" not in str(p["embeds"])
+    assert p["content"].count("\n") == 0
     labels = [b["label"] for row in p["rows"] for b in row]
     assert labels == ["Approve A", "Approve B", "Approve C", "Redo (3 new)", "Reject", "Feedback", "Edit caption"]
     for row in p["rows"]:
@@ -454,7 +458,7 @@ def test_bot_posts_round_with_previews_and_thread(tmp_path):
     b, reg = bot_for(tmp_path, store)
     asyncio.run(b.scan(T))
     msg = reg[100].sent[0]
-    assert len(msg.kw["files"]) == 3 and len(msg.kw["embeds"]) == 3
+    assert len(msg.kw["files"]) == 3 and len(msg.kw["embeds"]) == 1
     item = store.load(item["id"])
     assert item["thread_id"] == 999 and item["rounds"][0]["message_id"] == msg.id
     asyncio.run(b.scan(T))
@@ -743,15 +747,48 @@ def test_progress_bar_is_posted_edited_and_removed(tmp_path):
     assert env[P.ENV] == str(j2.path)
 
 
-def test_stats_channels_are_created_once_then_renamed(tmp_path):
+def test_stats_names_launch_countdown_and_social():
     from datetime import datetime as _dt
     from spikebot import review as RV
     now = _dt(2026, 11, 17, 21, 0, tzinfo=RV.UK).timestamp()
     names = DB.stat_names({"live": 5, "watching": 40, "moments_today": 12, "to_review": 3,
                            "approved_today": 2, "started": now - (5 * 3600 + 30 * 60 + 20)}, now)
     assert names["live"] == "🟢 Live streamers: 5/40" and names["uptime"] == "⏱ Bot uptime: 5h 30m"
-    assert names["gta6"] == "🎮 GTA 6 in 2 days"
-    assert DB.stat_names({}, _dt(2026, 11, 19, 9, 0, tzinfo=RV.UK).timestamp())["gta6"] == "🎮 GTA 6: out now"
+    # UK unlock is 00:00 GMT Thu 19 Nov
+    assert names["gta6"] == "🎮 GTA 6 in 1d 3h (Thu 19 Nov 00:00 UK)"
+    eve = _dt(2026, 11, 18, 17, 34, 50, tzinfo=RV.UK).timestamp()
+    assert DB.stat_names({}, eve)["gta6"] == "🎮 GTA 6 in 6h 25m (Thu 19 Nov 00:00 UK)"
+    assert DB.stat_names({}, _dt(2026, 11, 19, 9, 5, tzinfo=RV.UK).timestamp())["gta6"] == "🎮 GTA 6 out now: 9h 05m in"
+    assert DB.stat_names({}, _dt(2026, 11, 21, 9, 0, tzinfo=RV.UK).timestamp())["gta6"] == "🎮 GTA 6 out: day 3"
+    assert DB.stat_names({"live": 3, "watching": 35, "unchecked": 4}, now)["live"] == \
+        "🟢 Live streamers: 3/35 (4 unchecked)"
+    social = {"views": {"total": 1234567, "platforms": ["YT", "IG"]},
+              "likes": {"total": 45210, "platforms": ["YT", "IG"]},
+              "followers": {"total": 999, "platforms": ["IG"]}}
+    n = DB.stat_names({"social": social}, now)
+    assert n["views"] == "👁 Views: 1.23M (YT+IG)" and n["likes"] == "❤️ Likes: 45.2K (YT+IG)"
+    assert n["followers"] == "👥 Followers: 999 (IG)"
+    assert "views" not in DB.stat_names({"social": {}}, now)
+    assert [DB.compact(x) for x in (0, 1000, 10500, 2_000_000, 123_456_789)] == ["0", "1K", "10.5K", "2M", "123M"]
+
+
+def test_stats_renames_respect_discord_limit():
+    names, cur = {"live": "new", "uptime": "u2"}, {"live": "old", "uptime": "u1"}
+    hist = {}
+    assert DB.renames_due(names, cur, hist, 1000.0) == ["live", "uptime"]
+    DB.note_rename(hist, "live", 1000.0)
+    assert DB.renames_due(names, cur, hist, 1100.0) == ["uptime"]          # spaced ~5 min
+    assert DB.renames_due(names, cur, hist, 1100.0, burst=True) == ["live", "uptime"]   # /stats
+    DB.note_rename(hist, "live", 1100.0)
+    assert "live" not in DB.renames_due(names, cur, hist, 1500.0, burst=True)   # 2 in 10 min
+    assert "live" in DB.renames_due(names, cur, hist, 1000.0 + 611)
+    assert DB.renames_due(names, {"live": "new", "uptime": "u2"}, {}, 0) == []   # up to date
+
+
+def test_stats_channels_are_created_once_then_renamed(tmp_path):
+    from datetime import datetime as _dt
+    from spikebot import review as RV
+    now = _dt(2026, 11, 17, 21, 0, tzinfo=RV.UK).timestamp()
 
     class Ch:
         _n = 100
@@ -786,6 +823,7 @@ def test_stats_channels_are_created_once_then_renamed(tmp_path):
     store = R.Store(tmp_path / "data")
     b, _ = bot_for(tmp_path, store)
     b.rcfg["guild_id"] = 1
+    b.social = {"totals": {"views": {"total": 5000, "platforms": ["YT"]}}}
 
     class Client:
         def get_guild(self, gid):
@@ -795,11 +833,22 @@ def test_stats_channels_are_created_once_then_renamed(tmp_path):
     b.stats_source = lambda t: {"live": live["n"], "watching": 40, "moments_today": 1}
     asyncio.run(b.stats_tick(now))
     made = [c.name for c in g.chans.values()]
-    assert "📊 Stats" in made and "🟢 Live streamers: 5/40" in made and len(made) == 7
+    assert "📊 Stats" in made and "🟢 Live streamers: 5/40" in made and "👁 Views: 5K (YT)" in made
+    assert len(made) == 8
     live["n"] = 6
-    asyncio.run(b.stats_tick(now + 600))
-    assert len(g.chans) == 7                                  # no duplicates
+    asyncio.run(b.stats_tick(now + 60))
+    assert len(g.chans) == 8                                  # no duplicates
     assert "🟢 Live streamers: 6/40" in [c.name for c in g.chans.values()]
+    live["n"] = 7
+    asyncio.run(b.stats_tick(now + 120))                      # renamed a minute ago: waits ~5 min
+    assert "🟢 Live streamers: 6/40" in [c.name for c in g.chans.values()]
+    asyncio.run(b.stats_tick(now + 120, force=True))          # /stats: 2nd rename in 10 min is fine
+    assert "🟢 Live streamers: 7/40" in [c.name for c in g.chans.values()]
+    live["n"] = 8
+    asyncio.run(b.stats_tick(now + 400, force=True))          # a 3rd would hit Discord's limit
+    assert "🟢 Live streamers: 7/40" in [c.name for c in g.chans.values()]
+    asyncio.run(b.stats_tick(now + 60 + 611))
+    assert "🟢 Live streamers: 8/40" in [c.name for c in g.chans.values()]
 
 
 def test_progress_dead_worker_shows_stopped(tmp_path):
@@ -882,12 +931,12 @@ def test_clip_card_shows_streamer_and_vod_time_only():
         {"label": "A", "duration": 31.2, "title": "Adin Ross did NOT expect this in GTA 6", "style": {"grade": "moody"}}]}
     p = DB.round_payload(item, rnd)
     assert p["content"].startswith("**Adin Ross** · GTA VI · [VOD at 1:02:03]")
-    assert p["embeds"][0]["description"] == "31.2s\n“Adin Ross did NOT expect this in GTA 6”"
+    assert p["embeds"][0]["fields"][0]["value"] == "**31.2s**\n“Adin Ross did NOT expect this in GTA 6”"
     tg = {"id": "tg1", "mode": "tokyo_girl", "source": {}}
     v = {"label": "B", "duration": 18.0, "silent": True, "music": {"song": "Tokyo Girl", "start_s": 42.4},
          "music_note": "🎵 Sound: **Tokyo Girl** — start it at **0:42** · <https://www.tiktok.com/music/x-1>"}
-    e = DB.round_payload(tg, {"n": 1, "kind": "initial", "variants": [v]})["embeds"][0]
-    assert "🎵 **Tokyo Girl** · start **0:42** · [sound](https://www.tiktok.com/music/x-1)" in e["description"]
+    e = DB.round_payload(tg, {"n": 1, "kind": "initial", "variants": [v]})["embeds"][0]["fields"][0]
+    assert "🎵 Tokyo Girl\n▶ **0:42** · [sound](https://www.tiktok.com/music/x-1)" in e["value"]
 
 
 def test_trend_command_shows_one_bar_from_the_start(tmp_path, monkeypatch):
