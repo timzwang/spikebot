@@ -192,7 +192,7 @@ def status(kind: str, text: str) -> dict:
 # --------------------------------------------------------------------------
 def summary(rows: list[dict], channels: list[tuple[str, str]], now: float,
             names: dict | None = None, window_s: float = 86400, cpu: dict | None = None,
-            cores: int | None = None) -> dict:
+            cores: int | None = None, filtered: dict | None = None) -> dict:
     """rows: candidate moments in the window (platform, channel, score, onset and,
     when known, peak_rate, baseline, vod_url). channels: every tracked (platform, name)."""
     names = names or {}
@@ -222,6 +222,15 @@ def summary(rows: list[dict], channels: list[tuple[str, str]], now: float,
         elif r.get("stream_offset_start"):
             bits.append(f"stream time {r['stream_offset_start']}")
         lines.append(f"{i}. " + " · ".join(bits))
+    f = filtered or {}
+    if f.get("chat") or f.get("clips"):
+        bits = []
+        if f.get("chat"):
+            bits.append(f"{f['chat']} chat surge{'s' if f['chat'] != 1 else ''} caused only by chat answering the"
+                        " streamer, subs or raids (no alert, no clip)")
+        if f.get("clips"):
+            bits.append(f"{f['clips']} clip{'s' if f['clips'] != 1 else ''} judged low impact before editing")
+        lines += ["", "🧹 **Filtered out**: " + "; ".join(bits)]
     if cpu:
         lines += ["", cpu_line(cpu, cores)]
     return embed("\n".join(lines), BLURPLE, title="📊 Daily summary")

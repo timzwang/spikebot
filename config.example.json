@@ -8,6 +8,7 @@
 
   "require_category_contains": ["Grand Theft Auto"],
   "min_score_to_alert": 3,
+  "impact": {"enabled": true, "chat_prompt_share": 0.45, "min_score": 4, "ai": true},
 
   "discord_webhook_url": "",
   "status_webhook_url": "",

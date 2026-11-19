@@ -578,6 +578,19 @@ def _render_job_body(job, lcfg, jobs, used_titles, fetch, transcribe, now, revie
             return finish("skipped", f"not English (detected {lang} {prob:.0%})")
         if len(words) < lcfg["min_words"]:
             return finish("skipped", "almost no speech, nothing to caption")
+        # Is it a real moment, or did chat only spike because the streamer asked it something?
+        # Checked before any rendering so no time goes into editing a non-moment.
+        track.update(0.32, "Checking it's a real moment (not just chat answering a question)")
+        from . import impact
+        try:
+            levels = editor.loudness(editor.decode_audio(seg))
+        except editor.EditError:
+            levels = []
+        verdict = impact.judge(job, words, levels, cfg, base)
+        job["impact"] = {k: verdict.get(k) for k in ("score", "kind", "why", "asked", "reaction", "loud", "by")
+                         if verdict.get(k) not in (None, "")}
+        if verdict["skip"]:
+            return finish("skipped", f"low impact: {verdict['why']}")
         if review_store is None:  # old single-render path (CLI `lacy approve` / tests)
             return _render_single(job, lcfg, jobs, used_titles, seg, lay, words, lang, duration, day, finish)
         (d / "words.json").write_text(json.dumps([[w.start, w.end, w.text] for w in words]), encoding="utf-8")

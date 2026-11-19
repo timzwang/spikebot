@@ -168,6 +168,9 @@ BUILT_IN = (
     "Every video: nudity / sexual content check before review and again before posting; anything flagged is"
     " blocked and deleted, and Tokyo Girl / trend never use trailer shots with nudity, strip-club or twerking framing",
     "Stream clips: the clip never starts or ends mid-word or mid-sentence",
+    "Stream clips: moments where chat only surged because the streamer asked chat something (a question, poll,"
+    " 'type 1', 'spam W'), thanked subs / a raid or read an ad are skipped before editing; with the Claude key"
+    " each moment is rated 0-10 and below `impact.min_score` (default 4) it is not edited",
     "Captions sit at one fixed spot, one line at a time, never jumping up or down",
     "Tokyo Girl / trend: never any on-screen text (no captions, story cards or hook box); text_level is always none",
     "Tokyo Girl / trend: silent files (no audio track); the sound is added in the app",

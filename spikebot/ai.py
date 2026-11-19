@@ -442,3 +442,50 @@ def game_lines(name: str, game: str, lines: list[tuple[float, float, str]], base
     out = ask_json(SPEAKER_SYSTEM, f"Streamer: {name}\nGame: {game}\nTranscript:\n{text[:6000]}", SPEAKER_SCHEMA,
                    base, max_tokens=600, client=client, effort="low", task="feedback")
     return sorted({int(i) for i in out.get("game") or [] if isinstance(i, int) and 0 <= i < len(lines)})
+
+
+# --------------------------------------------------------------------------
+# Stream clips: is this chat spike a real moment? (spikebot/impact.py)
+# --------------------------------------------------------------------------
+IMPACT_SYSTEM = """You judge whether a moment from a GTA livestream is worth turning into a Short. Chat suddenly
+got busy, and you decide whether something actually HAPPENED that viewers would want to watch, or whether chat
+was only busy because the streamer turned to chat.
+You get the streamer's name, the game, the transcript around the moment with times relative to when chat peaked
+(chat reacts a few seconds AFTER what caused it), chat's most common messages, and how loud the streamer got
+compared with the rest of the clip (1.0 = normal, 2+ = shouting or laughing hard).
+kind:
+- funny: a genuinely funny moment or line; shock: something surprising or unbelievable happens;
+  skill: an impressive play, escape, chase or stunt; fail: a fail, crash, death or chaotic mistake;
+  rage: frustration at the game (never mocking); social: a memorable interaction with another player or NPC;
+- chat_prompt: chat only spiked because the streamer asked chat something (a question, poll, "type 1", "spam W",
+  "say hi") and nothing happened in the game;
+- support_thanks: thanking subs / gifts / donations / a raid, giveaways;
+- ad_or_sponsor: an ad break or sponsor read; break_or_idle: away, loading, menus, nothing on screen happening;
+- just_talking: ordinary chatting with no payoff; other: none of these.
+score 0-10: how much a stranger scrolling Shorts would care. 8-10 big laugh or jaw-drop; 5-7 solid clip;
+3-4 mild; 0-2 nothing happens. A question to chat followed by a real reaction to something in the game is a
+moment; a question to chat that chat merely answers is not.
+why: one short sentence. Judge only from what you are given; never invent events."""
+
+IMPACT_SCHEMA = {
+    "type": "object", "additionalProperties": False,
+    "properties": {
+        "kind": {"type": "string", "enum": ["funny", "shock", "skill", "fail", "rage", "social", "chat_prompt",
+                                            "support_thanks", "ad_or_sponsor", "break_or_idle", "just_talking",
+                                            "other"]},
+        "score": {"type": "integer"},
+        "why": {"type": "string"},
+    },
+    "required": ["kind", "score", "why"],
+}
+
+
+def rate_impact(name: str, game: str, timeline: str, chat: dict, loud: float,
+                base: Path | None = None, client=None) -> dict:
+    """{"kind", "score", "why"} for one moment. Raises AIError."""
+    content = (f"Streamer: {name}\nGame: {game}\nLoudness at the moment: {loud:.1f}x normal\n"
+               f"Chat ({chat.get('source')}): most common messages {json.dumps(chat.get('messages') or [])[:600]};"
+               f" hype words {json.dumps(chat.get('hype words') or [])}\n"
+               f"Transcript (seconds from chat's peak):\n{timeline.strip()[:3500] or '(no clear speech)'}")
+    return ask_json(IMPACT_SYSTEM, content, IMPACT_SCHEMA, base, max_tokens=400, client=client,
+                    effort="low", task="feedback")

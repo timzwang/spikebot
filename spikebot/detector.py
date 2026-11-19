@@ -20,6 +20,30 @@ HYPE_RE = re.compile(
     re.IGNORECASE,
 )
 CLIP_RE = re.compile(r"\bclip(ped|\s+it|\s+that)?\b", re.IGNORECASE)
+# Chat that is busy but not reacting to a moment (spikebot/impact.py decides what to do with it):
+# answers to a question / poll the streamer asked ("1", "2", "yes", "b"), bot commands and
+# giveaway entries ("!enter", "!bet"), and subs / gifts / raids / greetings.
+ANSWER_RE = re.compile(
+    r"^\s*(?:(\d)\1{0,2}|\d{1,2}|[a-dA-D]|ye[sp]+|yea+h?|y|n|no|nope|left|right|first|second|third|"
+    r"option\s*\w|team\s*\w+|[+-]1)\s*[!.?]*\s*$", re.IGNORECASE)
+COMMAND_RE = re.compile(r"^\s*!\w+")
+EVENT_RE = re.compile(
+    r"\b(gift(ed|ing|s)?|subs?|subbed|subscri\w*|resub\w*|prime|raid(ed|ers?|ing)?|giveaway|donat\w*|"
+    r"bits|cheer\d*|hype ?train|welcome( in| back)?|hi+|hello+|hey+|o7|gn|good ?night)\b", re.IGNORECASE)
+
+
+def chat_kind(text: str, hype: bool = False) -> str | None:
+    """"answer" / "command" / "event" for chat that isn't a reaction, else None. A message
+    with a hype word or emote is always a reaction."""
+    if hype:
+        return None
+    if COMMAND_RE.match(text):
+        return "command"
+    if ANSWER_RE.match(text):
+        return "answer"
+    if EVENT_RE.search(text) and len(text) <= 60:
+        return "event"
+    return None
 KICK_EMOTE_RE = re.compile(r"\[emote:\d+:([^\]]+)\]")
 
 
@@ -81,6 +105,10 @@ class Spike:
     clip_end: float
     sample: list[str] = field(default_factory=list)
     vibe: list[str] = field(default_factory=list)  # top hype words/emotes, variants merged
+    # share of messages that answered the streamer / were commands / were subs, raids, greetings
+    answer_share: float = 0.0
+    command_share: float = 0.0
+    event_share: float = 0.0
 
 
 @dataclass
@@ -90,6 +118,7 @@ class _Msg:
     text: str
     hype: bool
     clip: bool
+    kind: str | None = None
 
 
 class SpikeDetector:
@@ -110,7 +139,8 @@ class SpikeDetector:
     # ---- input -------------------------------------------------------------
     def add_message(self, ts: float, user: str, text: str) -> None:
         clean = normalise(text)
-        msg = _Msg(ts, user.lower(), clean, bool(HYPE_RE.search(clean)), bool(CLIP_RE.search(clean)))
+        hype = bool(HYPE_RE.search(clean))
+        msg = _Msg(ts, user.lower(), clean, hype, bool(CLIP_RE.search(clean)), chat_kind(clean, hype))
         self._window.append(msg)
         if self._active is not None:
             a = self._active
@@ -118,6 +148,8 @@ class SpikeDetector:
             a["users"].add(msg.user)
             a["hype"] += msg.hype
             a["clip"] += msg.clip
+            if msg.kind:
+                a["kinds"][msg.kind] += 1
             if msg.hype:
                 a["vibe"].update({vibe_word(w) for w in HYPE_RE.findall(clean)})
             if len(clean) <= 80:
@@ -179,6 +211,7 @@ class SpikeDetector:
             "users": {m.user for m in msgs},
             "hype": sum(m.hype for m in msgs),
             "clip": sum(m.clip for m in msgs),
+            "kinds": Counter(m.kind for m in msgs if m.kind),
             "texts": texts,
             "vibe": Counter(w for m in msgs if m.hype
                             for w in {vibe_word(t) for t in HYPE_RE.findall(m.text)}),
@@ -224,4 +257,7 @@ class SpikeDetector:
             clip_end=clip_end,
             sample=[t for t, _ in a["texts"].most_common(8)],
             vibe=[w for w, _ in a["vibe"].most_common(4)],
+            answer_share=round(a["kinds"]["answer"] / n, 2),
+            command_share=round(a["kinds"]["command"] / n, 2),
+            event_share=round(a["kinds"]["event"] / n, 2),
         )

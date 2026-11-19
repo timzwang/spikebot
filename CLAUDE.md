@@ -215,6 +215,14 @@ it in sync when behaviour or config changes.
   `spikebot/voice.py`: engines edge (edge-tts, free) then google (Cloud TTS via the VM's metadata token),
   config `clips.voice`; `SPIKEBOT_VOICE=off` (tests/conftest.py) = never a real service. Tested in
   `tests/test_teaser.py`.
+- **Impact filter** (`spikebot/impact.py`, config `impact`): 1) `detector.chat_kind` (answer / command /
+  event) -> Spike `answer_share`/`command_share`/`event_share`; `chat_verdict` in `Bot.handle` -> status
+  `chat_prompt` (saved with `filtered_why`, no alert, no clip; before low_score). 2) in `lacy._render_job_body`
+  after transcription, before the review item: `judge` = `speech_verdict` (`ASKED_RE` / `THANKS_RE` in the 30 s
+  before the peak, no `REACTION_RE` around it and `reaction_level` < `loud_ratio`) then `ai_verdict`
+  (`ai.rate_impact`, Sonnet low effort: kind + 0-10 score; `NON_MOMENTS` or < `min_score` = skip; no key / API
+  failure = through) -> job `impact`, skip reason "low impact: ...". `Bot.filtered_since` ->
+  `messages.summary(filtered=)` 🧹 line. Tested in `tests/test_impact.py`.
 - Kick key: `kick_pusher_credentials` tries the realtime descriptor, then `pusher_from_js` on
   kick.com's scripts; cached 6 h, failures 30 min.
 - **Text rules** (`style.LOCKED` / `enforce`, applied to every rendered spec in `review.specs_for`; saved

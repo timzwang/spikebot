@@ -82,6 +82,20 @@ sudo bash ~/spikebot/deploy/auto_update.sh --force   # redeploy even with no new
   this text. Kick category is read automatically; Twitch needs the Twitch keys
   (`.env`, see above), otherwise Twitch moments are never filtered.
 - `min_score_to_alert`: raise to 5 if Discord gets too noisy, lower to 2 if too quiet.
+- `impact` (**is it a real moment?**): a chat surge that only happened because the streamer asked
+  chat something ("type 1 or 2", a poll, "spam W", "say hi"), or chat was busy with subs, a raid,
+  giveaway entries (`!enter`) or bot commands, is not a moment. Such surges are saved with status
+  `chat_prompt` but never alerted in #moments and never clipped (`chat_prompt_share`, default 0.45:
+  that share of messages being answers / commands / sub-raid-greeting messages, with little hype and
+  no "clip it"). Stream clips get two more checks after the speech is transcribed and **before any
+  editing**: if the streamer turned to chat (or thanked subs / read an ad) just before the peak and
+  nothing happened after it (no reaction words, nothing loud), the clip is skipped; with
+  `ANTHROPIC_API_KEY` Claude then rates the moment 0-10 (funny / shock / skill / fail / rage /
+  social vs chat prompt / thanks / ad / idle / just talking) and anything under `min_score`
+  (default 4) or not a real moment is skipped (about 0.2p a clip; an API failure lets the clip
+  through). Skips show on the progress bar as "low impact: ..." and the daily summary has a
+  🧹 Filtered out line. `"impact": {"enabled": false}` turns it all off; `"ai": false` keeps only
+  the free checks.
 - `discord_webhook_url`: Discord server → channel settings → Integrations → Webhooks → New → Copy URL.
   This is #moments: clip moments only. Each alert is a coloured card (grey under score 3,
   orange 3 to 5, red above 5) with a "Watch moment" link straight to the VOD at the clip start,
@@ -135,7 +149,9 @@ Rewards). Off by default. It only ever touches `twitch.tv/lacy`.
 2. About 5 minutes later (`vod_delay_s`, so the VOD has caught up) it cuts that moment
    (max 59s) from his Twitch VOD. It does not download the whole VOD.
 3. Skips the clip if it shows a BRB/away screen (screen or facecam frozen), his camera is
-   off (facecam black), the speech isn't English, or there's almost no speech.
+   off (facecam black), the speech isn't English, or there's almost no speech, and if it isn't a
+   real moment (chat only spiked because he asked chat something, thanked subs or read an ad, or
+   Claude rates it under 4/10: see `impact` above). All before any editing.
 4. Renders 1080x1920: **his facecam full-width in the top third for the whole clip**
    (trimmed to shape, never squashed), **gameplay in the bottom two thirds**, the title as
    on-screen text and captions. Captions only appear when they add something: lines that

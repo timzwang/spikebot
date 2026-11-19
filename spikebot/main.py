@@ -24,6 +24,7 @@ from curl_cffi.requests import AsyncSession
 
 from . import instagram as ig_
 from . import highlights as hl_
+from . import impact as impact_
 from . import lacy as lacy_
 from . import messages as msg_
 from . import review as rv_
@@ -86,6 +87,10 @@ class Store:
              rec["onset"], rec["onset_uk"], rec["stream_offset_start"], rec["stream_offset_end"],
              rec["clip_start"], rec["clip_end"], rec["category"], rec["title"], json.dumps(rec)))
         self.db.commit()
+
+    def count_since(self, status: str, ts: float) -> int:
+        return self.db.execute("SELECT COUNT(*) FROM spikes WHERE status = ? AND onset >= ?",
+                               (status, ts)).fetchone()[0]
 
     def candidates_since(self, ts: float) -> list[dict]:
         cur = self.db.execute(
@@ -384,6 +389,9 @@ class Bot:
             # checked right now and not GTA (or offline). If the check itself failed, the
             # moment still goes to #moments, it just doesn't become a clip.
             status = "filtered_category"
+        elif impact_.chat_verdict(asdict(spike), self.cfg):
+            # chat only surged because the streamer asked it something / subs / a raid: not a moment
+            status = "chat_prompt"
         elif spike.score < self.min_score:
             status = "low_score"
 
@@ -397,15 +405,18 @@ class Bot:
             "stream_offset_end": hms(spike.clip_end - start) if start else None,
             "vod_url": None,
         }
+        if status == "chat_prompt":
+            rec["filtered_why"] = impact_.chat_verdict(rec, self.cfg)
         decision = None
         if status == "candidate":
             rec["vod_url"] = await self.vod_link(key, st, spike.clip_start, start)
             decision = self.gate.decide(spike.score, bool(meta.get("programme")), time.time())
             rec["rank"], rec["rank_of"], rec["alerted"] = decision.rank, decision.total, decision.send
         self.store.save(rec)
-        log.info("SPIKE %s/%s score=%s status=%s at %s offset=%s",
+        log.info("SPIKE %s/%s score=%s status=%s at %s offset=%s%s",
                  spike.platform, spike.channel, spike.score, status,
-                 rec["onset_uk"], rec["stream_offset_start"])
+                 rec["onset_uk"], rec["stream_offset_start"],
+                 f" ({rec['filtered_why']})" if rec.get("filtered_why") else "")
         if decision and decision.send:
             await self.alert(rec)
         elif decision:
@@ -714,10 +725,22 @@ class Bot:
         return {"live": live, "unchecked": unchecked, "watching": len(self.detectors),
                 "moments_today": len(self.store.candidates_since(midnight)), "started": self.started_at}
 
+    def filtered_since(self, ts: float) -> dict:
+        """Moments the impact filter dropped: chat-prompt spikes and clip jobs judged low impact."""
+        clips = 0
+        if self.lacy:
+            try:
+                clips = sum(1 for j in self.lacy.jobs.all() if (j.get("created") or 0) >= ts
+                            and j.get("status") == "skipped" and str(j.get("reason") or "").startswith("low impact"))
+            except Exception as e:  # noqa: BLE001 - the summary must never fail
+                log.info("could not count filtered clips: %s", e)
+        return {"chat": self.store.count_since("chat_prompt", ts), "clips": clips}
+
     def summary_message(self, now: float) -> dict:
         return msg_.summary(self.store.candidates_since(now - 86400),
                             list(self.detectors), now, self.names,
-                            cpu=st_.cpu_summary(self.status_state.data.get("cpu"), now), cores=os.cpu_count())
+                            cpu=st_.cpu_summary(self.status_state.data.get("cpu"), now), cores=os.cpu_count(),
+                            filtered=self.filtered_since(now - 86400))
 
     async def summary_loop(self) -> None:
         if st_.summary_due_on_start(time.time(), self.status_state.data.get("last_summary_date")):
