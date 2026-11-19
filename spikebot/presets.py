@@ -18,7 +18,7 @@ from pathlib import Path
 
 from . import style as st
 
-PARTS = ("pacing", "colour", "text", "transitions", "hook", "structure", "music-sync", "look")
+PARTS = ("pacing", "colour", "text", "transitions", "hook", "structure", "music-sync", "look", "framing")
 ALIASES = {"pace": "pacing", "pacing": "pacing", "cuts": "pacing", "color": "colour",
            "colour": "colour", "grade": "colour", "text": "text", "captions": "text",
            "font": "text", "transition": "transitions", "transitions": "transitions",
@@ -26,7 +26,8 @@ ALIASES = {"pace": "pacing", "pacing": "pacing", "cuts": "pacing", "color": "col
            "music": "music-sync", "music-sync": "music-sync", "music_sync": "music-sync",
            "musicsync": "music-sync", "beat": "music-sync", "beats": "music-sync",
            "sync": "music-sync", "look": "look", "effects": "look", "fx": "look",
-           "cinematic": "look", "vibe": "look", "all": "all"}
+           "cinematic": "look", "vibe": "look", "framing": "framing", "frame": "framing",
+           "aspect": "framing", "ratio": "framing", "layout": "framing", "crop": "framing", "all": "all"}
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,39}$")
 # which preset settings each part may write into a style
 PART_KEYS = {
@@ -40,6 +41,8 @@ PART_KEYS = {
     "music-sync": set(),   # Tokyo Girl always cuts on the official sound's beat
     # artistic choices read from the frames by the AI (how much text, logo intro, film look)
     "look": {"text_level", "intro", "grain", "vignette", "letterbox"},
+    # where the picture sits in the 9:16 frame (4:5 / 1:1 box, stacked, full screen, 16:9 over blur)
+    "framing": {"framing"},
 }
 
 

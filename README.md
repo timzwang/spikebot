@@ -92,7 +92,9 @@ sudo bash ~/spikebot/deploy/auto_update.sh --force   # redeploy even with no new
   and when it reconnects, Kick error 4001 (chat key rotated), disk under 20% free. The same alert
   is never repeated within 30 minutes. Twitch live/offline needs the Twitch keys (`.env`).
 - `summary_webhook_url`: a third webhook (#daily-summary). At 22:00 UK time every day: moments
-  per streamer and the top 3 by score for the last 24 hours.
+  per streamer and the top 3 by score for the last 24 hours, plus the server's CPU (average, peak
+  and how long it was maxed out, sampled every 5 minutes). Maxed out for 2 hours or more in a day
+  shows a ⚠️ "a bigger VM would help" line; otherwise "no upgrade needed".
 - `detector`: tuning. `ratio` and `z` control sensitivity (higher = fewer, bigger moments);
   `pre_roll_s` / `post_roll_s` control how much footage either side of the reaction.
 
@@ -374,9 +376,11 @@ no captions, story cards or hook box), whatever a rule or preset says.
   `npm ci` in `remotion/`, Remotion's headless Chrome; about 500 MB disk). About 2 minutes
   per 15 s edit on the VM. If Remotion isn't there or a render fails, the ffmpeg renderer
   is used, so an edit is never lost. Force one with `tokyo_girl.engine`: `auto` (default),
-  `remotion` or `ffmpeg`. Tokyo Girl / trend edits render at 30 fps (the trailers' own rate; 60 doubled
-  every frame and stuttered), CRF 18. Lacy clips: 60 fps, or the VOD's
-  own rate when it's lower. A Remotion render that prints nothing for 5 min, or runs over
+  `remotion` or `ffmpeg`. Tokyo Girl / trend / comparison edits render at **60 fps when every clip in
+  the edit really is 60 fps** (official videos are downloaded at 60 fps when Rockstar offers it), else
+  30 fps: doubling 30 fps trailer frames to 60 stuttered on TikTok, and real interpolation costs about
+  10 CPU minutes per version. CRF 18. Stream clips: 1080p60 is picked when the stream had it, and the
+  clip keeps the VOD's own rate up to 60. A Remotion render that prints nothing for 5 min, or runs over
   40 min, is killed and falls back to ffmpeg. `tokyo_girl.remotion_concurrency` sets frames
   rendered in parallel (default: half the CPUs, max 4).
   `remotion_cache_mb` sets Remotion's decoded-frame cache; `remotion_tmp` (e.g. `/dev/shm/spikebot-remotion`)
@@ -626,14 +630,36 @@ PNG at `/opt/spikebot/data/brand/gta6_logo.png`; without the file the intro is s
 **Movement, framing and footage** (all settings, so `/feedback` and `/rules` control them):
 `motion` `none` (every shot completely still: no pans, push-ins, punch-in zooms or animated
 stills; a zoom transition becomes a cut) / `subtle` / `full`, for every mode. Tokyo Girl only:
-`framing` `fit` (the whole 16:9 trailer frame, nothing cut off, over a blurred copy of itself) or
-`fill` (cropped to fill the screen); `media` `clips` (trailer video only, never screenshots) or
+`framing` **`box45`** (the default since 18 Nov: a big 4:5 picture over a blurred copy, the hook
+in the band above it), `box11` (the same at 1:1: more of each wide shot), `stack` (two clips at
+once, one above the other, each whole), `fit` (the whole 16:9 trailer frame over a blurred copy)
+or `fill` (cropped to fill the screen). Version A uses 4:5; B and C try 1:1 and stacked, so your
+approvals show which works (older `fill`/`fit` rules were switched off once; turn them back on in
+`/rules`). **Smart fill** (`smart_fill`, on unless set to 0): a close-up of one person goes full
+screen, and every crop is centred on the subject instead of the middle of the frame (faces come
+from the same pass as the nudity check, once per file); `media` `clips` (trailer video only, never screenshots) or
 `mixed`; `transition` `fade` (a soft crossfade, `fade_s` seconds); `hold_beats` (no clip shorter
 than that many beats, and each shows the middle of its clip so the action stays intact);
 `max_s` (the longest a Tokyo Girl edit may be, logo intro included; trending-sound edits
 ignore it and are only limited by their sound: an edit never runs past the end of the sound
 from its start point). Footage is picked by each story's
-tags; the logo intro uses the calmest clip (measured once per trailer).
+tags, least-used first, and never two clips from within 30 s of the same video in one edit (so
+long videos give variety); the logo intro uses the calmest clip (measured once per trailer).
+Besides the trailers, `tokyo_girl.searches` finds official videos by title on Rockstar's own
+YouTube channel (default: *Grand Theft Auto VI: An Extended Look*, lots of cinematic and ambient
+shots; its animal part from 7:44 is tagged `animals` for the wildlife story). A new source is
+fetched on the next daily run instead of waiting for the weekly refetch.
+
+**GTA 5 vs GTA 6 (`/compare [count]`, and `compare_per_day`, default 1, in `daily`)**: the same
+kind of shot from both games, side by side. GTA 5 footage is Rockstar's original 2013 trailers and
+gameplay video (never the PS5 remaster), kept in `data/rockstar_media/.gta5/` so GTA 6 edits never
+use it. Each shot is labelled once by Claude from one frame (theme such as beaches, faces, night
+city, police, wildlife, and how clear it is; `data/compare/labels.json`, about $0.15 for the whole
+library, needs `ANTHROPIC_API_KEY`). An edit pairs up to 6 themes, biggest-difference first, after
+a GTA 6 hook shot: versions A and B are stacked (GTA 5 on top, GTA 6 below), C shows the GTA 5
+shot then the GTA 6 one. Corner labels "GTA 5 · 2013" / "GTA 6 · 2026", the theme as a caption
+above the picture, a question at the end. Silent like the other trailer edits; approved ones are
+copied to `exports/compare/`.
 
 Notes saved before these settings existed were turned into them automatically: in `/rules`
 those notes show as off with "now #N" (the setting that replaced them). **Film look** (exact values, via `/feedback`,
@@ -696,9 +722,11 @@ shots) and moved off them, so no other scene flashes up between two clips.
 
 Post a TikTok / Instagram / YouTube link, or upload the video, in #inspiration. Optional notes
 in the same message: `copy: pacing, colour` (parts: pacing, colour, text, transitions, hook,
-structure, music-sync, look; default all), `name: night-drive`, and anything about what you
+structure, music-sync, look, framing; default all), `name: night-drive`, and anything about what you
 like in it ("love that there's no text until the drop"). The bot opens a thread, measures
-the style and replies with a breakdown and a thumbnail strip, and saves the preset to
+the style (including its **framing**: full screen, a 4:5 or 1:1 picture over blur or bars, a 16:9
+frame in the middle, or two clips stacked, read from where the sharp picture sits) and replies with
+a breakdown and a thumbnail strip, and saves the preset to
 `data/presets/<name>.json`. If a link can't be downloaded (Instagram often needs a login) it
 asks you to upload the file in the thread instead.
 

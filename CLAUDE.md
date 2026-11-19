@@ -70,7 +70,7 @@ It posts to four Discord webhooks, which must stay separate:
 |---|---|---|
 | `discord_webhook_url` | #moments | Clip moments only (`candidate` spikes) |
 | `status_webhook_url` | #status | Bot health: start/restart, streamer live/offline (with category), chat down >5 min and reconnected, Kick 4001 key error, disk <20% free |
-| `summary_webhook_url` | #daily-summary | 22:00 UK daily summary: moments per streamer + top 3 by score (last 24h) |
+| `summary_webhook_url` | #daily-summary | 22:00 UK daily summary: moments per streamer + top 3 by score (last 24h) + server CPU (average, peak, time maxed out, upgrade verdict) |
 | `videos_webhook_url` | #ready-to-post | Legacy only (review off / `lacy deliver`): finished file attached, or a GCS link. Old name `tokyo_girl_webhook_url` still read |
 
 An empty field disables that channel; the message is still logged.
@@ -114,7 +114,9 @@ it in sync when behaviour or config changes.
   if it never connected) and alerts after 5 min, then again on reconnect.
   `LiveWatch` turns polls into live/offline events (offline at startup is silent).
   `next_summary_time` handles GMT/BST; a summary missed while the bot was down is
-  sent on start if it's still before midnight UK.
+  sent on start if it's still before midnight UK. CPU: `status_loop` adds a load-per-core sample every 5 min
+  (`add_cpu_sample`, `status_state.cpu`, 26 h kept); `cpu_summary` -> `messages.cpu_line` in the summary
+  (maxed out = >= `CPU_BUSY` 0.9; >= 2 h = `upgrade` verdict).
 - `spikebot/main.py`: `Bot` wires it together. `ticker()` drives the detectors,
   `poll_state()` refreshes live/category/start time every 120s, `handle()` sets the
   status (`candidate` / `low_score` / `filtered_category`) and saves *every* spike
@@ -190,7 +192,7 @@ it in sync when behaviour or config changes.
 - Whisper never decodes through PyAV: `editor.decode_audio` (ffmpeg -> 16 kHz float32) is handed to
   faster-whisper (PyAV 19 broke `av.open(metadata_errors=)`). `lacy.retry_after_fix` re-runs renders
   that crashed on that once.
-- `spikebot/editor.py`: ffmpeg/yt-dlp helpers: `fetch_segment` (only the clip range of a
+- `spikebot/editor.py`: ffmpeg/yt-dlp helpers: `fetch_segment` (1080p60 when the stream had it: `-S res:1080,fps`; only the clip range of a
   VOD), `layout` (facecam stacked over gameplay for the whole clip), `away_reason`,
   `build_ass(style=)` (word captions, font/size/position/colours, hook length, end card;
   `caption_margin` keeps clear of the hook box and the bottom 320 px), `keep_segments` /
@@ -232,10 +234,34 @@ it in sync when behaviour or config changes.
   `with_intro_shot` = one `calm_shot` under the logo: `Shot.motion` from `measure_motion`, cached in
   library.json, added once to old entries); the logo builds for `logo_s` (song window starts that many
   beats before the drop, `music.window(build_beats=)`) and bursts at the drop (`intro_filter`,
-  `LOGO_GROW`, `logo_width`); `slot_filter(motion, framing)`: motion none = fixed centred crop, `fit_filter`
-  = whole frame over a blurred copy; `transition: fade` renders slots with an overlap and joins them with
+  `LOGO_GROW`, `logo_width`); `slot_filter(motion, framing, smart, fps)` = a -filter_complex graph
+  ([0:v], [1:v] for stack -> [v]): `slot_layout` (smart fill: `Shot.single` close-up -> full screen; stack
+  without `shot2` -> box45), `cover_chain` (crop centred on `Shot.focus`), `BOXES` box45 1080x1350 / box11
+  1080x1080 over `blur_bg`, stack = two 1080x608 (`stack_tops`), `fit_filter` = whole frame over a blurred
+  copy; "high" text with a boxed/stacked picture sits in the band (`BAND_MARGIN`; Remotion text.y 0.035).
+  Faces: `nudity_scan` stores `entry["faces"]` (`safety.flag_times(faces=)` / `frame_faces`, same NudeNet
+  pass, once more for old entries), `subject_of` -> `Shot.focus`/`single`. `edit_fps`: 60 only when every
+  video clip's source is >= 50 fps (`entry["fps"]`, probed once), else `FPS` 30 (no doubled frames, #39);
+  `render_slot`/`join_crossfade`/`render_plan` and Remotion props take it. Stack: `Slot.shot2`/`offset2`
+  (`with_seconds`, kept by `footage_of`/`refit` as key2/offset2). Variety: `choose_shot` skips clips within
+  `NEAR_S` (30 s) of one already in the edit (`near_used`); `KNOWN_RANGES` tags parts of official videos
+  (Extended Look 7:44 = animals; story `wildlife`); `searches` (default the Extended Look) = yt-dlp
+  `ytsearch` on Rockstar's channel with a title filter (`title_regex`, no backslashes); `daily` fetches as
+  soon as a source/search is new (`state.fetched`); downloads prefer 60 fps (`-S res:1080,fps`); `transition: fade` renders slots with an overlap and joins them with
   `join_crossfade` (xfade on each beat); `plain_line` / `countdown_line`; the dark "Ask" box only for a
   card ending in "?". Remotion gets the same via props `motion`, `framing`, `fade`, `logo.size/out`.
+- `spikebot/compare.py`: **GTA 5 vs GTA 6** comparison edits (`/compare [count]` -> `ReviewBot.run_compare`
+  -> `tokyo_girl compare -n`; `daily_compare` tops up `compare_per_day`, default 1, counts in
+  `state.compare_days`). Review items mode `tokyo_girl`, `source.kind: "compare"` (`ReviewAdapter.render` ->
+  `render_variants`, ffmpeg only, label `COMPARE_LABEL`, exports `exports/compare/`). GTA 5 library =
+  `<media_dir>/.gta5` (hidden: GTA 6 edits never see it; `gta5_cfg`, `GTA5_SEARCHES` = Rockstar's 2013
+  trailers/gameplay, never the PS5 remaster; fetched with the GTA 6 media, `GTA5_FETCH`), shots `prefixed`
+  `.gta5/...`. `label_shots`: one frame per shot -> Claude (Sonnet, effort low) theme from `THEMES` +
+  quality 0-3, cached in data/compare/labels.json per shot key. `pick_pairs` (same theme, biggest-difference
+  themes first, best/least-used shots; `keep` = a re-render's pairs), `plan_compare` (hook over a GTA 6 hero
+  shot, then pairs; layout stack = `Slot.shot2`, sequence = GTA 5 40% then GTA 6 60% in 4:5; corner labels
+  via `render_plan(labels=)` / `build_text_ass(labels=)`, theme captions as cards, question last). Versions
+  A/B stack, C sequence (`LAYOUTS`); variant keeps `pairs`, `layout`, `hook_card`, `question`.
 - `spikebot/music.py`: song beat maps (librosa, lazy): `analyse` (bpm, beats filled back to 0,
   drop = biggest loudness rise), `Library` (`data/music/`, cache `library.json`; Tokyo Girl uses only `tokyo_girl.song`
   (default `tokyo-girl`, `TOKYO_GIRL_SONG`), other songs are trending sounds and never replace it),
@@ -306,7 +332,9 @@ it in sync when behaviour or config changes.
   `NOTES_UPGRADE`) turns old notes matching `NOTE_RULES` into setting entries and switches them and
   `NOW_POSSIBLE` "not possible" items off (`upgraded` = "now #N" shown in /rules); new dims `motion`
   (all modes; none = no pans/push-ins/punch zooms, zoom -> cut in `resolve`), Tokyo Girl `framing`
-  fill|fit, `media` clips|mixed, transition `fade`, text_level `plain`, intro `countdown` (`TG_ONLY`,
+  box45 (default)|box11|stack|fill|fit (A/B/C explore only `FRAMING_EXPLORE`; A = the default unless pinned or a
+  preset sets it; `framing_upgrade` / `FRAMING_UPGRADE` switched old fill/fit rules off once; new profiles
+  start with every upgrade flag) + custom `smart_fill` (default 1), `media` clips|mixed, transition `fade`, text_level `plain`, intro `countdown` (`TG_ONLY`,
   `TG_TRANSITIONS`, `TG_TEXT_LEVELS`); Tokyo Girl custom `max_s`, `hold_beats`, `logo_s`, `logo_size`,
   `fade_s` (`TG_CUSTOM`); `resolve()` -> render
   numbers, `grade_filter()`; `Profile` = `data/style_profile.json` (shown/approved/passed/rejected
@@ -425,7 +453,10 @@ it in sync when behaviour or config changes.
   <= 4 min; the reference file is **always deleted** and only numbers are kept (hook *type*,
   never their words or footage). PySceneDetect cuts (ffmpeg fallback), tempo + on-beat share from
   an onset envelope (numpy), signalstats colour -> grade, optional easyocr text (`requirements-ocr.txt`),
-  OpenCV zoom/shake, flash/fade at cuts, structure. Download failure -> bot asks for an upload.
+  OpenCV zoom/shake, flash/fade at cuts, structure, **framing** (`framing`: 8 frames, `sharp_rows` edge share
+  per row, `bands` (median rows; a gap is closed unless no frame ever had an edge there = a stacked divider),
+  `framing_from` -> fill / box45 / box11 / fit / stack; preset part `framing` in `presets.PART_KEYS`, Tokyo
+  Girl/trend only). Download failure -> bot asks for an upload.
 - `tests/test_style.py`, `tests/test_review.py` (store, publisher with fakes, bot flows with fake
   Discord objects, #inspiration flow), `tests/test_review_modes.py` (real ffmpeg: Lacy and Tokyo Girl
   variants, feedback re-render, Lacy rules), `tests/test_inspiration.py`.

@@ -63,9 +63,15 @@ TG_TRANSITIONS = TRANSITIONS + ("fade",)   # Tokyo Girl also has a soft crossfad
 # Camera movement added by the editor: "none" = every shot completely still (no pans,
 # push-ins, punch-in zooms or animated stills), "subtle" = half the drift, "full" = as designed.
 MOTIONS = ("none", "subtle", "full")
-# Tokyo Girl framing of the 16:9 trailers in the 9:16 frame: "fill" crops the sides to fill
-# the screen, "fit" shows the whole frame (nothing cut off) over a blurred copy of itself.
-FRAMINGS = ("fill", "fit")
+# Tokyo Girl framing of the 16:9 trailers in the 9:16 frame: "box45" (default) a big 4:5
+# picture over a blurred copy, text in the bands above/below; "box11" the same at 1:1 (more of
+# a wide shot); "stack" two clips at once, one above the other, each whole; "fill" crops the
+# sides to fill the screen; "fit" shows the whole frame (nothing cut off) over a blur.
+# With smart fill (custom smart_fill, on unless 0) a close-up of one person goes full screen,
+# and every crop is centred on the subject instead of the middle of the frame.
+FRAMINGS = ("box45", "box11", "stack", "fill", "fit")
+# What A/B/C explore when nothing is pinned (Tim, 18 Nov: 4:5 default, 1:1 and stacked to try)
+FRAMING_EXPLORE = ("box45", "box11", "stack")
 # Tokyo Girl source media: "clips" = trailer video only (never screenshots), "mixed" = both.
 MEDIA = ("clips", "mixed")
 # How much on-screen text an edit carries. "none": no captions, no hook box, no end
@@ -92,7 +98,7 @@ TG_LIKE = ("tokyo_girl", "trend")
 DEFAULT = {"grade": "natural", "pace": "normal", "font": "dejavu", "size": "m",
            "position": "low", "colour": "classic", "transition": "flash",
            "ending": "none", "text_level": "minimal", "intro": "none", "motion": "full",
-           "framing": "fill", "media": "mixed"}
+           "framing": "box45", "media": "mixed"}
 TG_ONLY = ("intro", "framing", "media")   # dimensions only Tokyo Girl has
 # Not varied between A/B/C: a rule, not a style to explore. Default unless Tim sets it.
 FIXED = ("media",)
@@ -110,8 +116,9 @@ CUSTOM_KEYS = {
     # held (2+ keeps a clip's action intact), logo build-up before the drop (s), the logo's
     # largest width as a share of the screen, crossfade length (s)
     "max_s": (8, 60), "hold_beats": (1, 8), "logo_s": (1, 8), "logo_size": (0.2, 0.9), "fade_s": (0.1, 1.5),
+    "smart_fill": (0, 1),   # close-ups of one person full screen, crops follow the subject (default 1)
 }
-TG_CUSTOM = ("max_s", "hold_beats", "logo_s", "logo_size", "fade_s")
+TG_CUSTOM = ("max_s", "hold_beats", "logo_s", "logo_size", "fade_s", "smart_fill")
 
 # What the editor does by itself, with no setting (the rule compiler, spikebot/rules.py, reads
 # saved notes against this and the settings menu). Add a line when new code makes a behaviour
@@ -141,6 +148,11 @@ BUILT_IN = (
     " shots, same order) unless the feedback asks for new clips",
     "Tokyo Girl / trend: a Feedback re-render can switch that edit to any sound in the music library"
     " (\"switch the song to impulsive\"); later re-renders of it keep that sound",
+    "Tokyo Girl / trend: never two clips from within 30 s of the same video in one edit (variety across long"
+    " videos like the Extended Look); crops are centred on the subject's face when there is one",
+    "Tokyo Girl / trend: 60 fps when every clip is real 60 fps footage, else 30 fps (never doubled frames)",
+    "GTA 5 vs GTA 6 comparisons: same theme from both games, labelled GTA 5 · 2013 / GTA 6 · 2026, the theme"
+    " as a caption above the picture, captions always on",
 )
 CUSTOM_STR = {"text_colour", "highlight", "hook_style"}
 
@@ -240,7 +252,8 @@ def resolve(style: dict) -> dict:
         "highlight": c["highlight"] if hex_ok(c.get("highlight", "")) else hi,
         "outline": c.get("outline"), "shadow": c.get("shadow"),
         "transition": transition, "motion": motion,
-        "framing": style.get("framing") if style.get("framing") in FRAMINGS else "fill",
+        "framing": style.get("framing") if style.get("framing") in FRAMINGS else DEFAULT["framing"],
+        "smart_fill": bool(num("smart_fill", 1)),
         "media": style.get("media") if style.get("media") in MEDIA else "mixed",
         "max_s": num("max_s", None), "hold_beats": int(num("hold_beats", 1)),
         "logo_s": num("logo_s", None), "logo_size": num("logo_size", 0.78), "fade_s": num("fade_s", 0.45),
@@ -350,6 +363,7 @@ SETTING_INFO = {
     "max_s": ("Max length", "longest the edit may be, in seconds (logo intro included)"),
     "motion": ("Camera motion", "slow pans and push-in zooms on each clip"),
     "framing": ("Framing", "how a wide trailer shot fits the tall 9:16 screen"),
+    "smart_fill": ("Smart fill", "close-ups of one person go full screen and crops follow the subject (0 = off)"),
     "media": ("Footage", "which official Rockstar media the edit may use"),
     "text_level": ("Amount of text", "how much on-screen text the edit shows"),
     "font": ("Font", "the typeface of the on-screen text"),
@@ -380,6 +394,9 @@ VALUE_INFO = {
     ("motion", "none"): "clips stay still: no pans, no zooms",
     ("motion", "subtle"): "slow, gentle pans and zooms",
     ("motion", "full"): "clear pans and push-in zooms on every clip",
+    ("framing", "box45"): "a big 4:5 picture over a blurred copy, text above and below it (the default)",
+    ("framing", "box11"): "a square 1:1 picture over a blurred copy: more of each wide shot",
+    ("framing", "stack"): "two clips at once, one above the other, each shown whole",
     ("framing", "fill"): "the shot is cropped to fill the whole tall screen (sides cut off)",
     ("framing", "fit"): "the whole wide shot is shown, over a blurred copy of itself",
     ("media", "clips"): "trailer video only, never screenshots",
@@ -503,13 +520,16 @@ class Profile:
         try:
             d = json.loads(self.path.read_text(encoding="utf-8"))
         except (FileNotFoundError, ValueError):
-            return _blank()
+            return _blank() | {"upgrades": [NOTES_UPGRADE, FRAMING_UPGRADE]}   # nothing old to upgrade
         d = _blank() | d
         if not d.get("entries") and (d.get("rules") or d.get("pinned") or d.get("custom_pins")):
             d["entries"] = migrate(d)
         if NOTES_UPGRADE not in (d.get("upgrades") or []):
             upgrade_notes(d["entries"])
             d["upgrades"] = list(d.get("upgrades") or []) + [NOTES_UPGRADE]
+        if FRAMING_UPGRADE not in (d.get("upgrades") or []):
+            framing_upgrade(d["entries"])
+            d["upgrades"] = list(d.get("upgrades") or []) + [FRAMING_UPGRADE]
         return d
 
     def save(self) -> None:
@@ -762,6 +782,11 @@ def pick_variants(profile: Profile, mode: str, rng: random.Random,
                 # for one (/feedback or /style) or a preset he chose has one
                 style[dim] = "none"
                 continue
+            if dim == "framing":
+                opts = FRAMING_EXPLORE
+                if i == 0 and base.get(dim) not in opts:
+                    style[dim] = DEFAULT[dim]   # A: the 4:5 default; B/C try 1:1 and stacked
+                    continue
             taken = {v["style"].get(dim) for v in out}
             fresh = [o for o in opts if o not in taken] or list(opts)
             unseen = [o for o in fresh if all(a.get(dim) != o for a in avoid)] or fresh
@@ -1028,6 +1053,22 @@ NOW_POSSIBLE = (r"logo intro stays|fade-out timing|zoom or crop|crop setting|cli
                 r"|prefer video clips|camera movement|static-shot|16:9|safe-area|safe area|4-second|gradual reveal"
                 r"|beat drop|logo expansion|total video length|clip start times|crossfades?|dissolves|framing works"
                 r"|approved phrase list|no-screenshots")
+
+
+FRAMING_UPGRADE = "framing-45"
+
+
+def framing_upgrade(entries: list[dict]) -> list[int]:
+    """Tim, 18 Nov: 4:5 over blur is the new default framing, with 1:1 and stacked to try.
+    Older fill/fit framing rules would block that, so they are switched off once (they can be
+    turned back on in /rules). Returns their numbers."""
+    off = []
+    for e in entries:
+        if e.get("on", True) and e.get("kind") == "setting" and e.get("setting") == "framing" \
+                and e.get("value") in ("fill", "fit"):
+            e["on"], e["upgraded"] = False, "4:5 is the default framing now"
+            off.append(e["n"])
+    return off
 
 
 def upgrade_notes(entries: list[dict], now: float | None = None) -> list[dict]:

@@ -53,7 +53,9 @@ def fetch_segment(vod_url: str, start_s: float, duration_s: float, out: Path) ->
     """Cut [start, start+duration] out of a VOD without downloading the whole thing:
     yt-dlp resolves the HLS playlist, ffmpeg copies just that range."""
     # yt-dlp from this venv (systemd's PATH doesn't include venv/bin)
-    p = run([sys.executable, "-m", "yt_dlp", "-g", "-f", "best[height<=1080]/best", "--no-warnings", vod_url], timeout=120)
+    # 1080p60 when the stream had it (Tim: clips at 60 fps): resolution first, then frame rate
+    p = run([sys.executable, "-m", "yt_dlp", "-g", "-f", "best[height<=1080]/best", "-S", "res:1080,fps",
+             "--no-warnings", vod_url], timeout=120)
     stream = p.stdout.strip().splitlines()[0] if p.stdout.strip() else ""
     if not stream:
         raise EditError("yt-dlp returned no stream URL (VOD private or sub-only?)")

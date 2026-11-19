@@ -341,6 +341,108 @@ def frame_rgb(path: Path, t: float, width: int = 540):
     return np.frombuffer(p.stdout[:width * h * 3], dtype=np.uint8).reshape(h, width, 3)
 
 
+# --------------------------------------------------------------------------
+# Framing: where the sharp picture sits in the 9:16 frame (Tim, 18 Nov)
+# --------------------------------------------------------------------------
+def sharp_rows(img) -> list[float]:
+    """Per row, the share of pixels on a strong edge. Blurred backgrounds and black bars score
+    near 0, real footage high."""
+    import numpy as np
+    g = img.astype(np.float32).mean(axis=2)
+    dx = np.abs(np.diff(g, axis=1))[:-1, :]
+    dy = np.abs(np.diff(g, axis=0))[:, :-1]
+    edges = (dx + dy) > 18.0
+    rows = edges.mean(axis=1)
+    return [float(x) for x in np.append(rows, rows[-1:])]
+
+
+EDGE_ROW = 0.012   # a row of real footage has at least this share of edge pixels (blur / bars: ~0)
+
+
+def bands(rows: list[float], peaks: list[float] | None = None, min_share: float = 0.08) -> list[tuple[int, int]]:
+    """Runs of picture rows (start, end), at least `min_share` of the height. `rows`: the median
+    edge share per row over the sampled frames; `peaks`: the most any frame had. A short gap is
+    closed (a smooth sky in the shot) unless no frame ever had an edge there: that's a divider
+    between two stacked clips. Pure."""
+    n = len(rows)
+    if not n:
+        return []
+    peaks = peaks or rows
+    top = sorted(rows)[int(n * 0.9)] if n > 9 else max(rows)
+    thr = max(EDGE_ROW, 0.1 * top)
+    on = [v >= thr for v in rows]
+    runs, i = [], 0
+    while i < n:
+        if on[i]:
+            j = i
+            while j < n and on[j]:
+                j += 1
+            runs.append([i, j])
+            i = j
+        else:
+            i += 1
+    merged: list[list[int]] = []
+    for a, b in runs:
+        if merged and a - merged[-1][1] <= max(2, n // 25) \
+                and max(peaks[merged[-1][1]:a] or [1.0]) > EDGE_ROW / 2:
+            merged[-1][1] = b
+        else:
+            merged.append([a, b])
+    return [(a, b) for a, b in merged if b - a >= min_share * n]
+
+
+def framing_from(width: int, height: int, found: list[tuple[int, int]]) -> dict:
+    """Which of our framings a reference uses, from its sharp bands. Pure."""
+    if not found:
+        return {"framing": None, "why": "no clear picture area"}
+    if len(found) >= 2:
+        a, b = sorted(found, key=lambda r: r[1] - r[0], reverse=True)[:2]
+        ha, hb = a[1] - a[0], b[1] - b[0]
+        if min(ha, hb) >= 0.6 * max(ha, hb) and (ha + hb) >= 0.35 * height:
+            return {"framing": "stack", "aspect": round(width / max(ha, hb), 2), "why": "two clips stacked"}
+    top, bottom = min(r[0] for r in found), max(r[1] for r in found)
+    big = max(found, key=lambda r: r[1] - r[0])
+    share = (big[1] - big[0]) / height
+    if share >= 0.88 or (bottom - top) / height >= 0.95 and share >= 0.6:
+        return {"framing": "fill", "aspect": round(width / height, 2), "why": "full screen"}
+    aspect = width / (big[1] - big[0])
+    if aspect >= 1.5:
+        name = "fit"           # a wide 16:9 (or wider) picture in the middle
+    elif aspect >= 0.92:
+        name = "box11"
+    elif aspect >= 0.7:
+        name = "box45"
+    else:
+        name = "fill"
+    return {"framing": name, "aspect": round(aspect, 2), "share": round(share, 2),
+            "why": f"a {aspect_name(aspect)} picture covering {share:.0%} of the height"}
+
+
+def aspect_name(a: float) -> str:
+    named = [(16 / 9, "16:9"), (2.39, "2.39:1"), (4 / 3, "4:3"), (1.0, "1:1"), (4 / 5, "4:5"), (3 / 4, "3:4"),
+             (9 / 16, "9:16")]
+    return min(named, key=lambda p: abs(p[0] - a))[1]
+
+
+def framing(path: Path, duration: float, samples: int = 8) -> dict:
+    """Sample frames across the video and measure the sharp picture area (median per row,
+    so a caption in one frame doesn't count as picture)."""
+    import statistics as stats_
+    rows_all = []
+    w = h = 0
+    for i in range(samples):
+        img = frame_rgb(path, duration * (i + 0.5) / samples, width=270)
+        if img is None:
+            continue
+        h, w = img.shape[:2]
+        rows_all.append(sharp_rows(img))
+    if not rows_all:
+        return {"framing": None, "why": "no frames"}
+    rows = [stats_.median(col) for col in zip(*rows_all)]
+    peaks = [max(col) for col in zip(*rows_all)]
+    return framing_from(w, h, bands(rows, peaks))
+
+
 def text_colour(img, box) -> tuple[str, bool]:
     """(text colour hex, has outline) from the pixels inside an OCR box."""
     import numpy as np
@@ -476,6 +578,10 @@ def analyse(path: Path, reader=None) -> dict:
     text = read_text(path, duration, reader)
     job.update(0.6, "Measuring zooms and shake")
     mo = motion(path, cuts, duration)
+    try:
+        fr = framing(path, duration)
+    except Exception as e:  # noqa: BLE001 - framing is a bonus, never fails an analysis
+        fr = {"framing": None, "why": f"not measured ({e})"}
     tr = transitions(frames, cuts)
     loud = loudest_point(env)
     hook_s = text.get("first_change") or (cuts[0] if cuts else None) or min(3.0, duration)
@@ -483,7 +589,7 @@ def analyse(path: Path, reader=None) -> dict:
     return {"duration": round(duration, 2), "size": [info["width"], info["height"]], "audio": info.get("audio"),
             "detector": detector, "cut_times": cuts[:200], "pacing": pace,
             "music": {"bpm": bpm, "phase": phase, "on_beat": on_beat_share(cuts, bpm, phase)},
-            "colour": col, "text": text, "motion": mo, "transitions": tr,
+            "colour": col, "text": text, "motion": mo, "transitions": tr, "framing": fr,
             "structure": {"hook_s": round(min(hook_s, duration), 2),
                           "payoff_s": loud, "payoff": round(loud / duration, 2) if loud else None,
                           "ending": ending, "length_s": round(duration, 1)}}
@@ -510,7 +616,13 @@ def settings_from(a: dict) -> dict:
         out["structure"]["payoff"] = round(min(0.9, max(0.2, s["payoff"])), 2)
     m = a["music"]
     out["music-sync"] = {"on_beat": m["on_beat"] >= 0.6, "bpm": m["bpm"], "beat_share": m["on_beat"]}
+    if (a.get("framing") or {}).get("framing"):
+        out["framing"] = {"framing": a["framing"]["framing"]}
     return out
+
+
+FRAMING_LABEL = {"box45": "4:5 over blur", "box11": "1:1 over blur", "stack": "two clips stacked",
+                 "fill": "full screen", "fit": "whole 16:9 frame over blur"}
 
 
 def breakdown(preset: dict) -> str:
@@ -547,6 +659,10 @@ def breakdown(preset: dict) -> str:
     L.append(f"**Structure** hook {st_['hook_s']}s, payoff at "
              + (f"{st_['payoff_s']}s ({st_['payoff']:.0%})" if st_.get("payoff") else "?")
              + f", ending **{st_['ending']}**")
+    fr = a.get("framing") or {}
+    if fr.get("framing"):
+        L.append(f"**Framing** {fr['why']} → **{FRAMING_LABEL.get(fr['framing'], fr['framing'])}**"
+                 " (trailer and trend edits)")
     if mo.get("available"):
         L.append(f"**Motion** zoom {mo.get('zoom')}, shake {mo.get('shake')} · transitions:"
                  f" {a['transitions']['flash']} flash, {a['transitions']['fade']} fade"

@@ -404,7 +404,8 @@ def test_no_media_fetches_once_and_makes_no_failed_items(tmp_path, monkeypatch):
     monkeypatch.setattr(TG.Library, "shots", lambda self, entries=None: [])
     monkeypatch.setattr(TG, "fetch", lambda lcfg: calls.append(1))
     now = datetime(2026, 11, 16, 6, 50, tzinfo=TG.UK).timestamp()
-    TG.save_state(Path(s["state_file"]), {"last_fetch": now})   # periodic refetch not due
+    TG.save_state(Path(s["state_file"]), {"last_fetch": now,   # periodic refetch not due, no new source
+                                          "fetched": list(s["sources"]) + list(s["searches"]) + [TG.GTA5_FETCH]})
     assert TG.daily(s, now) == []
     assert calls == [1]                                            # fetched because the library was empty
     assert not (Path(s["data_dir"]) / "review" / "items").exists()

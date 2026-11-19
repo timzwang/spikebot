@@ -129,3 +129,43 @@ def test_cli_writes_json(tmp_path, monkeypatch):
     assert code == 0 and res["name"] == "cool-one"
     p = P.Presets(tmp_path / "data/presets").load("cool-one")
     assert p["copy"] == ["pacing", "colour"] and "OCR not installed" in res["text"]
+
+
+# ---- framing (Tim, 18 Nov: take the reference's aspect ratio into account) ----------
+def test_framing_from_bands_names_our_framings():
+    W, H = 270, 480
+    assert I.framing_from(W, H, [(0, 480)])["framing"] == "fill"
+    assert I.framing_from(W, H, [(71, 409)])["framing"] == "box45"          # 270x338 = 4:5
+    assert I.framing_from(W, H, [(105, 375)])["framing"] == "box11"
+    assert I.framing_from(W, H, [(164, 316)])["framing"] == "fit"           # 16:9 in the middle
+    assert I.framing_from(W, H, [(86, 238), (242, 394)])["framing"] == "stack"
+    assert I.framing_from(W, H, [])["framing"] is None
+
+
+def test_bands_close_a_smooth_sky_but_not_a_divider():
+    sky = [0.2] * 100 + [0.0] * 6 + [0.2] * 100             # one frame had edges in the gap: the same shot
+    assert I.bands(sky, peaks=[0.2] * 100 + [0.05] * 6 + [0.2] * 100) == [(0, 206)]
+    assert len(I.bands(sky, peaks=sky)) == 2                 # never an edge there: two stacked clips
+
+
+@pytest.mark.skipif(not shutil.which("ffmpeg"), reason="ffmpeg not installed")
+@pytest.mark.parametrize("name,graph,want", [
+    ("box45", "[1:v][0:v]overlay=0:285", "box45"),
+    ("fit", "[1:v][0:v]overlay=0:656", "fit"),
+])
+def test_framing_measured_from_a_video(tmp_path, name, graph, want):
+    size = "1080x1350" if name == "box45" else "1080x608"
+    out = tmp_path / f"{name}.mp4"
+    subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i",
+                    f"testsrc2=s={size}:r=30:d=3", "-f", "lavfi", "-i", "color=c=0x223344:s=1080x1920:d=3",
+                    "-filter_complex", graph + ",format=yuv420p", str(out)], check=True)
+    fr = I.framing(out, 3.0)
+    assert fr["framing"] == want
+    sets = I.settings_from({"pacing": {"avg_shot_s": 1.0, "cuts": 2}, "colour": None, "text": {},
+                            "transitions": {}, "motion": {}, "music": {"bpm": 0, "phase": 0, "on_beat": 0},
+                            "structure": {"hook_s": 1.0, "ending": "none"}, "framing": fr})
+    assert sets["framing"] == {"framing": want}
+    from spikebot import presets as P
+    assert P.to_style({"copy": ["framing"], "settings": sets}, "tokyo_girl") == {"framing": want}
+    assert P.to_style({"copy": ["framing"], "settings": sets}, "lacy") == {}     # stream clips keep their layout
+    assert P.parse_copy("copy: pacing, aspect") == ["pacing", "framing"]

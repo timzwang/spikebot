@@ -246,6 +246,9 @@ def test_clips_of_an_old_edit_are_read_back_from_its_video(tmp_path):
     now = datetime(2026, 11, 18, 18, 0, tzinfo=TG.UK).timestamp()
     TG.save_state(Path(s["state_file"]), {"last_fetch": now})
     store = R.Store(tmp_path / "data")
+    prof = store.profile()                       # versions that old were all full-screen (fill)
+    prof.add_entry("setting", "tokyo_girl", "framing", "fill")
+    prof.save()
     item = store.load(TG.daily(s, now)[0])
     v = R.variant_of(item, 1, "A")
     truth = [f["key"] for f in v["footage"]]

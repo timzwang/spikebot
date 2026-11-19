@@ -34,3 +34,11 @@ def _no_nudity_model_on_test_patterns(request, monkeypatch):
         return real_scan(path, fps, detector=detector or (lambda frame: []))
     monkeypatch.setattr(safety, "scan", scan)
     monkeypatch.setattr(safety, "find_facecam", lambda *a, **k: None)
+
+
+@pytest.fixture(autouse=True)
+def _no_real_downloads(monkeypatch):
+    """Tests never download from Rockstar / YouTube (a new source makes `daily` fetch at once).
+    A test that checks fetching patches TG.fetch itself."""
+    from spikebot import tokyo_girl as TG
+    monkeypatch.setattr(TG, "fetch", lambda lcfg: None)
