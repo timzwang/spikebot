@@ -708,9 +708,15 @@ name / link like `B_tokyogirl-20261118-004557.mp4`, even from another item) rebu
 exactly that version's clips in the same order, nothing added; the cuts are snapped to the new
 sound's beats.
 
+`variety` 0-1 (default 0.7) keeps a broad range of footage between edits: clips used in the last
+few edits are rested, and the trailer / Extended Look used least lately (per shot it has) is preferred.
+
 **Stream clips**: `lead_in_s` (0-5 s, default 0) starts the clip earlier and snaps back to the start of
 that sentence, so the first words are never cut; `require_facecam` (default 1) skips a clip whose top
-panel doesn't show a real face (e.g. a streamer whose "facecam" area is really part of the game).
+panel doesn't show a real face (e.g. a streamer whose "facecam" area is really part of the game);
+`streamer_only` (default 1) keeps captions, titles and the teaser line to the streamer's own voice:
+Claude marks which transcript lines are game audio (cutscenes, NPCs, radio) once per clip
+(`speakers.json` in the job folder) and those lines are never captioned. Without a key every line stays.
 
 Notes saved before these settings existed were turned into them automatically: in `/rules`
 those notes show as off with "now #N" (the setting that replaced them). **Film look** (exact values, via `/feedback`,

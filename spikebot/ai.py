@@ -179,7 +179,11 @@ def settings_menu() -> str:
     lines.append("Stream clips (lacy) only: lead_in_s 0-5 = seconds added before the clip's start, then snapped"
                  " back to the start of the sentence so the first words are never cut; require_facecam = skip a"
                  " clip whose top panel doesn't show the streamer's real face (e.g. a 'facecam' that is really"
-                 " another part of the game screen), default 1")
+                 " another part of the game screen), default 1; streamer_only = captions come only from the"
+                 " streamer's own voice, never in-game dialogue, NPC lines, radio or game audio, default 1")
+    lines.append("variety 0-1 (Tokyo Girl / trend): clips used in the recent edits are avoided and the edit draws"
+                 " from the trailers / Extended Look used least lately, for a broad range of footage between edits;"
+                 " default 0.7")
     lines.append("Footage is matched to each story's tags; the #inspiration presets Tim approves steer pacing"
                  " and look. Edits are exported silent, but which SOUND an edit is cut to (its beats, drop and"
                  " length) is chosen per edit with the `song` field, never a setting, note or unsupported item."
@@ -414,3 +418,27 @@ def write_voice_hook(name: str, game: str, transcript: str, vibe: list[str] | No
     out = ask_json(VOICE_HOOK_SYSTEM.replace("{name}", name), content, VOICE_HOOK_SCHEMA, base,
                    max_tokens=400, client=client, effort="low", task="feedback")
     return str(out.get("line") or "").strip()
+
+
+# --------------------------------------------------------------------------
+# Stream clips: which transcript lines are the streamer, which are the game
+# --------------------------------------------------------------------------
+SPEAKER_SYSTEM = """You get the transcript of a GTA live-stream clip as numbered lines with times. The audio mixes the
+streamer's own microphone with the game's audio. Return the numbers of the lines that are NOT the streamer
+talking live: scripted cutscene dialogue, NPC / pedestrian lines, in-game radio, TV or phone calls, mission
+voice lines. The streamer reacting, talking to chat, or to friends on voice chat counts as the streamer.
+Judge by wording and context (game dialogue is scripted, in character and about the story; the streamer is
+casual and reacts). When unsure, it is the streamer: leave it out of the list."""
+
+SPEAKER_SCHEMA = {"type": "object", "additionalProperties": False,
+                  "properties": {"game": {"type": "array", "items": {"type": "integer"}}},
+                  "required": ["game"]}
+
+
+def game_lines(name: str, game: str, lines: list[tuple[float, float, str]], base: Path | None = None,
+               client=None) -> list[int]:
+    """Indices of transcript lines that are game audio, not the streamer. Raises AIError."""
+    text = "\n".join(f"{i}. [{a:.1f}-{b:.1f}s] {t}" for i, (a, b, t) in enumerate(lines))
+    out = ask_json(SPEAKER_SYSTEM, f"Streamer: {name}\nGame: {game}\nTranscript:\n{text[:6000]}", SPEAKER_SCHEMA,
+                   base, max_tokens=600, client=client, effort="low", task="feedback")
+    return sorted({int(i) for i in out.get("game") or [] if isinstance(i, int) and 0 <= i < len(lines)})

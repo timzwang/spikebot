@@ -608,6 +608,17 @@ def _render_job_body(job, lcfg, jobs, used_titles, fetch, transcribe, now, revie
         return finish("failed", str(e))
 
 
+def phrase_lines(words: list, gap: float = 0.6, max_words: int = 14) -> list[list[int]]:
+    """Word indices grouped into spoken lines (a pause of `gap` s or `max_words` starts a new one)."""
+    out: list[list[int]] = []
+    for i, w in enumerate(words):
+        if out and w.start - words[out[-1][-1]].end < gap and len(out[-1]) < max_words:
+            out[-1].append(i)
+        else:
+            out.append([i])
+    return out
+
+
 def facecam_required(review_store) -> bool:
     """The require_facecam rule for stream clips (default on)."""
     if review_store is None:
@@ -685,6 +696,36 @@ class ReviewAdapter:
         f.write_text(json.dumps(out, ensure_ascii=False), encoding="utf-8")
         return out
 
+    def streamer_words(self, job: dict, d: Path, words: list) -> list:
+        """streamer_only: the transcript without the lines that are game audio (cutscenes, NPCs, radio),
+        judged once per clip by Claude and kept in speakers.json. Without a key every word stays."""
+        lines = phrase_lines(words)
+        f = d / "speakers.json"
+        game: list[int] | None = None
+        try:
+            saved = json.loads(f.read_text(encoding="utf-8"))
+            if saved.get("n") == len(words):
+                game = saved["game"]
+        except (OSError, ValueError, KeyError):
+            pass
+        if game is None:
+            from . import ai
+            if not ai.available(self.base) or not lines:
+                return words
+            name, _ = who(job)
+            rows = [(words[ix[0]].start, words[ix[-1]].end, " ".join(words[i].text.strip() for i in ix))
+                    for ix in lines]
+            try:
+                game = ai.game_lines(name, game_tag(job.get("category") or ""), rows, base=self.base)
+            except ai.AIError as e:
+                log.info("clip %s: speaker check unavailable (%s): captions keep every line", job["id"], e)
+                return words
+            f.write_text(json.dumps({"n": len(words), "game": game}), encoding="utf-8")
+            if game:
+                log.info("clip %s: %d line(s) are game audio, left out of the captions", job["id"], len(game))
+        drop = {i for g in game if 0 <= g < len(lines) for i in lines[g]}
+        return [w for i, w in enumerate(words) if i not in drop]
+
     def voice_line(self, job: dict, d: Path, words: list, title: str) -> str:
         """The spoken teaser hook (Claude, from what was said), made once per clip and kept in
         voice.json. Falls back to the clip's title, which always passes the title rules."""
@@ -745,7 +786,10 @@ class ReviewAdapter:
         duration = float(job["duration"])
         peak = (job["peak_time"] - job["clip_start"]) if job.get("peak_time") else None
         used = self._used() | {v["title"] for r in item["rounds"] for v in r["variants"]}
-        written = self.clip_copy(job, d, words) if not any(sp.get("from") for sp in specs) else []
+        # streamer_only (default on): captions, titles and hooks come from the streamer's voice only
+        voice = self.streamer_words(job, d, words) if any(
+            st.resolve(sp["style"]).get("streamer_only", True) for sp in specs) else words
+        written = self.clip_copy(job, d, voice) if not any(sp.get("from") for sp in specs) else []
         hooks_used = instagram.PostLog(instagram.settings(self.cfg, self.base)["posts_csv"]).recent_hooks()
         from . import sfx
         dd = Path(self.cfg.get("data_dir", "data"))
@@ -795,14 +839,14 @@ class ReviewAdapter:
             if r.get("opening") == "teaser" and job.get("audio", True):
                 track.update(0.05, f"Version {spec['label']} ({vi + 1}/{len(specs)}): voiceover")
                 line = (base_v.get("teaser") or {}).get("line") if base_v and not texts.get("hook") else None
-                tz = self.teaser(seg, peak, duration, line or self.voice_line(job, d, words, title),
+                tz = self.teaser(seg, peak, duration, line or self.voice_line(job, d, voice, title),
                                  folder, stem)
             lead = float(r.get("lead_in_s") or 0)    # lead_in_s: context before the clip's start
             window = min(float(r["pace"]["window_s"]),
                          float(self.lcfg["max_clip_s"]) - (tz["s"] if tz else 0) - lead)
             segs = editor.keep_segments(words, duration, window, peak, r["pace"]["max_gap_s"], r["payoff"],
                                         lead_in=lead)
-            cut_words = editor.remap_words(words, segs)
+            cut_words = editor.remap_words(voice if r.get("streamer_only", True) else words, segs)
             length = editor.cut_length(segs)
             lead = tz["s"] if tz else 0.0
             peak_cut = None

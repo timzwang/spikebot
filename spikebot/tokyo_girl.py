@@ -1059,6 +1059,9 @@ class Prefs:
     openers: set[str] = field(default_factory=set)    # clips that opened the last N edits
     groups: dict[str, str] = field(default_factory=dict)   # shot key -> same-footage group
     tail: float = 0.0            # crossfade length: prefer clips long enough to run on under the next
+    variety: float = 0.0         # variety 0-1: avoid clips / source videos used in the recent edits
+    recent: set[str] = field(default_factory=set)            # clips of the last few edits
+    src_load: dict[str, float] = field(default_factory=dict)  # recent uses per source video / its shots
 
 
 _groups_cache: dict[tuple, dict[str, str]] = {}
@@ -1075,16 +1078,37 @@ def footage_groups(shots: list[Shot]) -> dict[str, str]:
     return _groups_cache[sig]
 
 
-def prefs_for(r: dict, shots: list[Shot], openers: list[str] | None = None, fade: float = 0.0) -> Prefs:
-    """Prefs from a resolved style (style.resolve)."""
+def recent_load(shots: list[Shot], edits: list[list[str]] | None, variety: float) -> tuple[set[str], dict[str, float]]:
+    """(clips of the last N edits, recent uses per source video divided by its number of shots); N
+    grows with `variety` (0.7 -> the last 8 edits)."""
+    if variety <= 0 or not edits:
+        return set(), {}
+    n = max(1, round(3 + 7 * variety))
+    keys = [k for e in edits[-n:] for k in e]
+    per_src: dict[str, int] = {}
+    for sh in shots:
+        per_src[sh.src] = per_src.get(sh.src, 0) + 1
+    used: dict[str, int] = {}
+    for k in keys:
+        src = k.rpartition("@")[0] or k
+        used[src] = used.get(src, 0) + 1
+    return set(keys), {src: used.get(src, 0) / cnt for src, cnt in per_src.items()}
+
+
+def prefs_for(r: dict, shots: list[Shot], openers: list[str] | None = None, fade: float = 0.0,
+              edits: list[list[str]] | None = None) -> Prefs:
+    """Prefs from a resolved style (style.resolve). `edits`: the clip keys of recent edits (variety)."""
     unique = bool(r.get("unique_clips", True))
     n = int(r.get("opener_rotation") or 0)
+    variety = float(r.get("variety") if r.get("variety") is not None else 0.7)
+    recent, load = recent_load(shots, edits, variety)
     return Prefs(unique=unique, crop_safe=bool(r.get("crop_safe", True)) and r.get("framing", "fill") in CROPPED,
                  relevant=bool(r.get("footage_match", True)), ambient=float(r.get("ambient_bias") or 0),
                  palette=float(r.get("palette_match") or 0), action_first=bool(r.get("action_first")),
                  impact_ending=bool(r.get("impact_ending")),
                  openers=set((openers or [])[-n:]) if n > 0 else set(),
-                 groups=footage_groups(shots) if unique else {}, tail=fade)
+                 groups=footage_groups(shots) if unique else {}, tail=fade, variety=variety, recent=recent,
+                 src_load=load)
 
 
 CROPPED = ("fill", "box45", "box11")   # framings that crop the sides of a 16:9 clip (crop_safe applies)
@@ -1272,6 +1296,12 @@ def _choose_pref(fits: list[Shot], tag: str, dur: float, used_here, uses: dict[s
         if prefs.palette > 0 and anchor is not None and anchor.yuv:
             lim = shot_info.palette_limit(prefs.palette)
             pool = narrow(pool, lambda s: shot_info.colour_distance(s.yuv, anchor.yuv) <= lim)
+        if prefs.variety > 0:     # a broad range between edits: not the recent edits' clips or videos
+            pool = narrow(pool, lambda s: s.key not in prefs.recent)
+            if prefs.src_load:
+                lo = min(prefs.src_load.get(s.src, 0.0) for s in pool)
+                slack = (1.0 - prefs.variety) * 0.6 + 0.05
+                pool = narrow(pool, lambda s: prefs.src_load.get(s.src, 0.0) <= lo + slack)
         least = min(uses.get(s.key, 0) for s in pool)
         cand = [s for s in pool if uses.get(s.key, 0) <= least + 1]
         if prefs.ambient > 0:
@@ -2002,7 +2032,7 @@ class ReviewAdapter:
             if want_pres:   # the "Rockstar Games Presents" shot plays up to the drop
                 lead_s = min(pres.length, 8.0)
             fade = float(r.get("fade_s") or 0.45) if r["transition"] == "fade" else 0.0
-            prefs = prefs_for(r, shots, state.get("openers"), fade)
+            prefs = prefs_for(r, shots, state.get("openers"), fade, state.get("recent_edits"))
             cap = edit_cap(r, self.lcfg, trend)
             plan_cfg, song_start = dict(self.lcfg, max_s=cap, min_s=min(float(self.lcfg["min_s"]), cap)), None
             build_beats = music.BUILD_BEATS
@@ -2111,6 +2141,7 @@ class ReviewAdapter:
                         uses[sh.key] = uses.get(sh.key, 0) + 1
             if plan.slots and not want_pres:   # opener_rotation: what opened the recent edits
                 state["openers"] = (state.get("openers", []) + [plan.slots[0].shot.key])[-40:]
+            state["recent_edits"] = (state.get("recent_edits", []) + [[sl.shot.key for sl in plan.slots]])[-20:]
             state["recent"] = (state.get("recent", []) + [story.id])[-12:]
             hook = plain(fill(texts["hook"], today)) if texts.get("hook") else None
             same_song = ((base_v or {}).get("music") or {}).get("song") == (song or {}).get("name")

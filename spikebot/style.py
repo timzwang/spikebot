@@ -136,18 +136,22 @@ CUSTOM_KEYS = {
     # stream clips: seconds added before the clip's start (snapped back to the sentence start);
     # skip clips whose facecam panel shows no real face (1 = on)
     "lead_in_s": (0, 5), "require_facecam": (0, 1),
+    # stream clips: captions only from the streamer's own voice, never game dialogue (1 = on)
+    "streamer_only": (0, 1),
+    # Tokyo Girl / trend: how strongly clips and source videos used in recent edits are avoided
+    "variety": (0, 1),
     "smart_fill": (0, 1),   # close-ups of one person full screen, crops follow the subject (default 1)
 }
 TG_CUSTOM = ("max_s", "hold_beats", "logo_s", "logo_size", "fade_s", "smart_fill", "logo_fade_s", "end_fade_s",
              "intro_mix",
              "unique_clips", "crop_safe", "action_first", "ambient_bias", "palette_match", "impact_ending",
-             "opener_rotation", "footage_match", "glitch_check")
-LACY_CUSTOM = ("lead_in_s", "require_facecam")   # stream clips only
+             "opener_rotation", "footage_match", "glitch_check", "variety")
+LACY_CUSTOM = ("lead_in_s", "require_facecam", "streamer_only")   # stream clips only
 # Defaults of the on/off and number settings above when no rule sets them (resolve).
 CUSTOM_DEFAULTS = {"logo_fade_s": 0.4, "end_fade_s": 3.0, "intro_mix": 0.0, "unique_clips": 1, "crop_safe": 1,
                    "action_first": 0, "ambient_bias": 0.0, "palette_match": 0.0, "impact_ending": 0,
                    "opener_rotation": 10, "footage_match": 1, "glitch_check": 1, "sharpen": 0.0,
-                   "lead_in_s": 0.0, "require_facecam": 1}
+                   "lead_in_s": 0.0, "require_facecam": 1, "streamer_only": 1, "variety": 0.7}
 
 # What the editor does by itself, with no setting (the rule compiler, spikebot/rules.py, reads
 # saved notes against this and the settings menu). Add a line when new code makes a behaviour
@@ -325,6 +329,7 @@ def resolve(style: dict) -> dict:
         "opener_rotation": int(num("opener_rotation", CUSTOM_DEFAULTS["opener_rotation"])),
         "footage_match": bool(num("footage_match", 1)), "glitch_check": bool(num("glitch_check", 1)),
         "lead_in_s": num("lead_in_s", 0.0), "require_facecam": bool(num("require_facecam", 1)),
+        "streamer_only": bool(num("streamer_only", 1)), "variety": num("variety", CUSTOM_DEFAULTS["variety"]),
     }
 
 
@@ -410,8 +415,8 @@ CATEGORIES = (
                                "lead_in_s", "glitch_check")),
     ("footage", "🎬 Footage & camera", ("motion", "framing", "media", "unique_clips", "crop_safe", "action_first",
                                        "ambient_bias", "palette_match", "impact_ending", "opener_rotation",
-                                       "footage_match", "require_facecam")),
-    ("text", "🔤 Text & captions", ("text_level", "font", "size", "position", "colour", "text_px", "text_y",
+                                       "footage_match", "require_facecam", "variety")),
+    ("text", "🔤 Text & captions", ("streamer_only", "text_level", "font", "size", "position", "colour", "text_px", "text_y",
                                    "outline", "shadow", "words", "text_colour", "highlight")),
     ("hook", "🪝 Hook, intro & ending", ("hook", "hook_s", "hook_style", "intro", "ending", "opening", "logo_s",
                                         "logo_size", "logo_fade_s", "end_fade_s", "intro_mix")),
@@ -486,6 +491,10 @@ SETTING_INFO = {
                      " (1 = on)"),
     "lead_in_s": ("Lead-in", "seconds added before the clip's start so the first sentence is complete"),
     "require_facecam": ("Real facecam only", "skip clips whose top panel doesn't show the streamer's face (1 = on)"),
+    "streamer_only": ("Streamer's voice only", "captions only from what the streamer says, never game dialogue or"
+                      " NPC lines (1 = on)"),
+    "variety": ("Footage variety", "how strongly clips and trailers used in recent edits are avoided (0 = off,"
+                " 0.7 = default, 1 = strongest)"),
 }
 VALUE_INFO = {
     ("transition", "cut"): "a straight cut, no effect: one clip simply replaces the other",

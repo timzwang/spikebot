@@ -187,7 +187,10 @@ it in sync when behaviour or config changes.
   labels per shot (`entry["labels"]`, `VERSION`, retry after 6 h; `UNSAFE` shots never used; `presents_segments`;
   `STORY_TAGS`); `Library.add_extra` / `needs_extra` / `presents_shots`; `Library.label_ask` = test hook.
   Lacy: `editor.keep_segments(lead_in=)`, `lacy.facecam_required(review_store)`, `safety.real_facecam`
-  (conftest stubs it to None). Tested in `tests/test_rule_requests.py`.
+  (conftest stubs it to None), `streamer_only` -> `ReviewAdapter.streamer_words` (`phrase_lines` +
+  `ai.game_lines`, cache `speakers.json`; captions, clip copy and the teaser line use it). Tokyo Girl
+  `variety` (0.7): `recent_load` from `state["recent_edits"]` -> `Prefs.recent` / `src_load` in `_choose_pref`.
+  Tested in `tests/test_rule_requests.py`.
 - `spikebot/highlights.py` + `Bot.highlights_loop`: clip streamers' VOD **audio only**, a 30 min
   chunk per 10 min tick (`plan_scan`, state data/highlights/state.json, category history `cats`),
   `envelope` / `peaks` (robust z vs the last 3 min), `pick` (away from chat spikes, 2 per hour) ->

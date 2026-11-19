@@ -43,7 +43,7 @@ def plan_of(shots_durs, fade=0.0) -> TG.Plan:
 # ---- settings ---------------------------------------------------------------------------------
 NEW = ("logo_fade_s", "end_fade_s", "intro_mix", "unique_clips", "crop_safe", "action_first", "ambient_bias",
        "palette_match", "impact_ending", "opener_rotation", "footage_match", "glitch_check", "sharpen",
-       "lead_in_s", "require_facecam")
+       "lead_in_s", "require_facecam", "streamer_only", "variety")
 
 
 def test_every_new_setting_is_real_and_in_the_menu():
@@ -533,3 +533,45 @@ def test_card_shows_intro_and_glitch_notes():
     p = D.round_payload(item, {"n": 1, "kind": "initial", "variants": [v]})
     text = p["embeds"][0]["fields"][0]["value"]   # one column per version
     assert "⚠️ No Rockstar shot" in text and "🛠️ Glitch check" in text
+
+
+
+# ---- #85 streamer's voice only, #86 footage variety -------------------------------------------------
+def test_captions_keep_only_the_streamers_voice(tmp_path, monkeypatch):
+    from spikebot import lacy as L
+    ws = [editor.Word(0.0, 0.3, "bro"), editor.Word(0.35, 0.6, "look"), editor.Word(2.0, 2.4, "Lucia,"),
+          editor.Word(2.45, 2.9, "we"), editor.Word(2.95, 3.3, "go"), editor.Word(5.0, 5.4, "no"), editor.Word(5.5, 5.9, "way")]
+    assert L.phrase_lines(ws) == [[0, 1], [2, 3, 4], [5, 6]]
+    seen = []
+
+    def fake(name, game, rows, base=None, client=None):
+        seen.append(rows)
+        return [1]                                  # "Lucia, we go" is a cutscene line
+    monkeypatch.setattr(ai, "available", lambda base=None: True)
+    monkeypatch.setattr(ai, "game_lines", fake)
+    ad = L.ReviewAdapter({}, tmp_path, lcfg={"channel": "lacy"})
+    job = {"id": "lacy-1", "channel": "lacy", "platform": "twitch", "category": "Grand Theft Auto VI"}
+    out = ad.streamer_words(job, tmp_path, ws)
+    assert [w.text for w in out] == ["bro", "look", "no", "way"] and seen[0][1][2] == "Lucia, we go"
+    assert [w.text for w in ad.streamer_words(job, tmp_path, ws)] == ["bro", "look", "no", "way"]
+    assert len(seen) == 1                           # cached in speakers.json
+    monkeypatch.setattr(ai, "available", lambda base=None: False)
+    assert ad.streamer_words(job, tmp_path / "new", ws) == ws      # no key: every line stays
+    assert S.resolve(S.default_style("lacy"))["streamer_only"] and S.valid_modes("streamer_only", 1) == ["lacy"]
+
+
+def test_variety_avoids_recent_clips_and_busy_trailers():
+    t2 = [vshot("trailer2.mp4", i * 10, i * 10 + 5) for i in range(4)]
+    ext = [vshot("extended_look.mp4", i * 10, i * 10 + 5) for i in range(8)]
+    shots = t2 + ext
+    edits = [[t2[0].key, t2[1].key, t2[2].key], [t2[3].key, t2[0].key]]
+    recent, load = TG.recent_load(shots, edits, 0.7)
+    assert t2[0].key in recent and load["trailer2.mp4"] > load["extended_look.mp4"] == 0
+    r = S.resolve(S.default_style("trend"))
+    p = TG.prefs_for(r, shots, edits=edits)
+    assert p.variety == 0.7 and p.recent == recent
+    picks = {TG.choose_shot(shots, "city", 2.0, [], {}, random.Random(i), p).src for i in range(20)}
+    assert picks == {"extended_look.mp4"}            # the trailer used in every recent edit is rested
+    off = TG.prefs_for(dict(r, variety=0.0), shots, edits=edits)
+    assert not off.recent and off.variety == 0
+    assert TG.recent_load(shots, None, 0.7) == (set(), {})
