@@ -54,6 +54,48 @@ SONG_QUOTED = re.compile(r"(?i)\b(?:song|sound|music|track|audio)\b[^\"“\n]{0,
 SONG = SONG_TO   # used to spot sound requests in "can't do" lines
 
 
+# "use the clips from B1", "same clips as in version C2", or a pasted file name / link
+# "B_tokyogirl-20261118-004557.mp4": which earlier version's clips to reuse.
+FILE_REF = re.compile(r"(?i)\b([a-cp]\d{0,2})_((?:tokyogirl|trend|lacy)-\d{8}-\d{6}(?:-\d+)?)")
+LABEL_REF = re.compile(r"(?i)\b(?:clips?|footage|shots?|scenes?)\b.{0,40}?\b(?:from|in|of|as|like)\s+"
+                       r"(?:the\s+)?(?:version\s+|variant\s+|edit\s+)?([a-cp])(\d{1,2})\b")
+
+
+def footage_ref(text: str) -> dict | None:
+    """{"label", "round" (or None), "item" (or None)} of the version whose clips Tim names."""
+    m = FILE_REF.search(text or "")
+    if m:
+        lab = m.group(1).upper()
+        return {"label": lab, "round": None, "item": m.group(2), "exact": True}
+    m = LABEL_REF.search(text or "")
+    if m:
+        return {"label": m.group(1).upper(), "round": int(m.group(2)), "item": None, "exact": False}
+    return None
+
+
+def find_version(item: dict, ref: dict) -> dict | None:
+    """The variant a footage_ref points at in `item`: "B1" = label B1, else B in round 1; a file
+    name's label ("B", "B2") exactly, newest round first."""
+    rounds = item.get("rounds") or []
+    if ref.get("exact"):
+        for r in reversed(rounds):
+            for v in r.get("variants") or []:
+                if v.get("label", "").upper() == ref["label"]:
+                    return v
+        return None
+    name = f"{ref['label']}{ref['round']}"
+    for r in rounds:
+        for v in r.get("variants") or []:
+            if v.get("label", "").upper() == name:
+                return v
+    n = int(ref["round"])
+    if 1 <= n <= len(rounds):
+        for v in rounds[n - 1].get("variants") or []:
+            if v.get("label", "").upper() == ref["label"]:
+                return v
+    return None
+
+
 def footage_of(text: str) -> str:
     """"keep" / "new" / "default" from the wording (rule parser)."""
     if NEW_FOOTAGE.search(text or "") and not KEEP_FOOTAGE.search(text or ""):

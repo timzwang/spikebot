@@ -63,13 +63,22 @@ def props_for(plan, lcfg: dict, r: dict, cards: list[tuple[float, float, str]], 
             files[names[key]] = path.resolve()
         return names[key]
 
+    from .tokyo_girl import end_fade, focus_of
     shots = []
-    for sl in plan.slots:
+    fade = float(r.get("fade_s") or 0.45) if r.get("transition") == "fade" else 0
+    for i, sl in enumerate(plan.slots):
         sh = sl.shot
+        nxt = plan.slots[i + 1] if i + 1 < len(plan.slots) else None
         shots.append({"src": public(media / sh.src), "kind": sh.kind, "start": round(sl.start, 4),
                       "dur": round(sl.dur, 4), "offset": round(sl.offset, 3), "pan": sl.pan,
                       "punch": bool(sl.punch), "flash": bool(sl.flash), "srcW": sh.w, "srcH": sh.h,
-                      "crop": list(sh.crop) if sh.crop else None})
+                      "crop": list(sh.crop) if sh.crop else None,
+                      # this clip's crossfade in, and how long it runs on under the next clip
+                      "fadeIn": round(float(sl.fade_in or (fade if i else 0)), 4),
+                      "tail": round(float((nxt.fade_in or fade) if nxt is not None and fade else 0), 4),
+                      # seconds of clean source; after that the last frame is held (never another scene)
+                      "hold": round(float(sl.hold), 4) if sl.hold is not None else None,
+                      "focus": round(focus_of(sl, r), 3)})
     g = r.get("grade") or {}
     look = r.get("look") or {}
     scale = float(r.get("scale") or 1.0)
@@ -83,10 +92,10 @@ def props_for(plan, lcfg: dict, r: dict, cards: list[tuple[float, float, str]], 
              "cards": [{"from": a, "to": b, "text": t, "ask": i == len(cards) - 1 and t.replace("*", "").rstrip().endswith("?")}
                        for i, (a, b, t) in enumerate(cards)],
              # the logo builds until `until` (the drop), then bursts away over `out` seconds
-             "logo": ({"src": public(logo), "until": round(intro_s, 4), "out": 0.4,
+             "logo": ({"src": public(logo), "until": round(intro_s, 4), "out": float(r.get("logo_fade_s") or 0.4),
                        "size": float(r.get("logo_size") or 0.78)} if logo and intro_s else None),
              "motion": r.get("motion") or "full", "framing": r.get("framing") or "fill",
-             "fade": float(r.get("fade_s") or 0.45) if r.get("transition") == "fade" else 0,
+             "fade": fade, "endFade": end_fade(r, plan.duration),
              "look": {"saturation": g.get("saturation", 1.0), "contrast": g.get("contrast", 1.0),
                       "brightness": g.get("brightness", 0.0), "warmth": g.get("warmth", 0.0),
                       "grain": float(look.get("grain") or 0), "vignette": bool(look.get("vignette")),
@@ -231,7 +240,16 @@ def render(plan, lcfg: dict, out: Path, r: dict, cards, logo: Path | None = None
         code, text = run_with_progress(cmd, root, env, timeout)
         if code != 0 or not part.exists():
             raise RemotionError(f"remotion failed ({code}): {text.strip()[-400:]}")
-        # faststart + guarantee there is no audio stream at all
+        # faststart + guarantee there is no audio stream at all (+ sharpening, which CSS can't do)
+        sharp = post_filter(r)
+        codec = (["-vf", sharp, "-c:v", "libx264", "-preset", "medium", "-crf", str(CRF), "-pix_fmt", "yuv420p"]
+                 if sharp else ["-c:v", "copy"])
         subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-i", str(part), "-an",
-                        "-c:v", "copy", "-movflags", "+faststart", str(out)], check=True, timeout=300)
+                        *codec, "-movflags", "+faststart", str(out)], check=True, timeout=600)
     return out
+
+
+def post_filter(r: dict) -> str:
+    """ffmpeg filters applied after Remotion: sharpening (the "4K look")."""
+    from . import style as st
+    return st.sharpen_filter(((r or {}).get("look") or {}).get("sharpen") or 0)

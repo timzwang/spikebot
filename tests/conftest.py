@@ -34,3 +34,4 @@ def _no_nudity_model_on_test_patterns(request, monkeypatch):
         return real_scan(path, fps, detector=detector or (lambda frame: []))
     monkeypatch.setattr(safety, "scan", scan)
     monkeypatch.setattr(safety, "find_facecam", lambda *a, **k: None)
+    monkeypatch.setattr(safety, "real_facecam", lambda *a, **k: None)   # synthetic streams have no faces

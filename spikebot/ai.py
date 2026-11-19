@@ -61,7 +61,7 @@ def api_key(base: Path | None = None) -> str | None:
 def model_name(base: Path | None = None, task: str = "study") -> str:
     """`task="feedback"` -> SPIKEBOT_FEEDBACK_MODEL (default Sonnet 5.5); anything else ->
     SPIKEBOT_AI_MODEL (default Opus 5.5). .env next to config wins over the environment."""
-    var, default = ("SPIKEBOT_FEEDBACK_MODEL", FEEDBACK_MODEL) if task == "feedback" \
+    var, default = ("SPIKEBOT_FEEDBACK_MODEL", FEEDBACK_MODEL) if task in ("feedback", "labels") \
         else ("SPIKEBOT_AI_MODEL", MODEL)
     if base is not None:
         v = _dotenv(Path(base) / ".env").get(var)
@@ -133,9 +133,13 @@ def settings_menu() -> str:
         "opening hook and captions only around the payoff (Lacy) / only the opening card (Tokyo Girl); "
         "full = every spoken word captioned (Lacy) / every story card (Tokyo Girl); plain = Tokyo Girl and trend edits only:"
         " one short factual line such as 'GTA 6 is almost here...' or the release countdown, never a question)",
-        "intro: none, logo, countdown  (Tokyo Girl and trend edits only: logo = the official GTA VI logo builds up over logo_s"
-        " seconds over a calm trailer shot, then bursts outward and fades exactly on the song's drop, never"
-        " wider than logo_size of the screen; countdown = a plain 'N days until GTA 6' line instead)",
+        "intro: none, logo, countdown, rockstar_presents  (Tokyo Girl and trend edits only: logo = the official GTA VI"
+        " logo builds up over logo_s seconds over a calm trailer shot, then bursts outward (over logo_fade_s"
+        " seconds) exactly on the song's drop, never wider than logo_size of the screen; countdown = a plain"
+        " 'N days left until GTA 6 releases' line instead; rockstar_presents = the trailer's own 'Rockstar Games"
+        " Presents' shot over the ocean and skyscrapers, where the text fades in, plays up to the drop (the plain"
+        " black title card is never used); intro_mix = share of logo-intro edits that use rockstar_presents"
+        " instead, so not every edit starts with the logo)",
         "ending: " + ", ".join(st.ENDINGS) + "  (Lacy only: end card)",
         "hook: Lacy tones " + ", ".join(st.HOOKS["lacy"]) + "; Tokyo Girl / trend story kinds "
         + ", ".join(st.HOOKS["tokyo_girl"]) + "  (needs mode lacy, tokyo_girl or trend)",
@@ -151,10 +155,29 @@ def settings_menu() -> str:
                  " fewest beats each clip is held (2+ keeps a clip's action intact, fewer cuts); logo_s = seconds"
                  " the logo builds before the drop; logo_size = the logo's largest width as a share of the screen"
                  " (0.6 = 60%); fade_s = crossfade length in seconds")
+    lines.append("Tokyo Girl / trend footage choice (0/1 = off/on unless a range is given): unique_clips = never"
+                 " the same clip (or the same footage from another trailer file) twice in one edit, default 1;"
+                 " crop_safe = prefer shots whose main subject sits inside the 9:16 crop and centre the crop on it,"
+                 " default 1; action_first = the most action-packed clips go in the first third, default 0;"
+                 " ambient_bias 0-1 = how strongly calm scenery / atmospheric / establishing shots are preferred;"
+                 " palette_match 0-1 = clips must share the opening clip's colour palette (hue and tone), 0 = off;"
+                 " impact_ending = the last clip is an impactful closing shot (someone walking away from the camera,"
+                 " a car driving into the distance), default 0; opener_rotation 0-20 = the opening clip is never one"
+                 " that opened the last N edits, default 10; footage_match = only clips that fit the edit (action,"
+                 " atmosphere, the story's tags), never filler or title cards, default 1; glitch_check = the"
+                 " finished edit is scanned for stray frames, broken fades and cuts off the beat and re-rendered,"
+                 " default 1; end_fade_s 0-6 = the last seconds fade slowly to black, default 3")
+    lines.append("sharpen 0-1: sharpening / clarity on every kind of edit (the TikTok '4K' look; 0 = off, 0.5 ="
+                 " clear, 1 = strong)")
+    lines.append("Stream clips (lacy) only: lead_in_s 0-5 = seconds added before the clip's start, then snapped"
+                 " back to the start of the sentence so the first words are never cut; require_facecam = skip a"
+                 " clip whose top panel doesn't show the streamer's real face (e.g. a 'facecam' that is really"
+                 " another part of the game screen), default 1")
     lines.append("Footage is matched to each story's tags; the #inspiration presets Tim approves steer pacing"
                  " and look. Edits are exported silent, but which SOUND an edit is cut to (its beats, drop and"
                  " length) is chosen per edit with the `song` field, never a setting, note or unsupported item."
-                 " Which clips a re-render uses is the `footage` field.")
+                 " Which clips a re-render uses is the `footage` field (keep = same clips; naming another version"
+                 " such as 'use the clips from B1' or its file name reuses that version's clips).")
     lines.append("Value 'auto' (or null) clears a pinned setting so the editor goes back to learning it.")
     return "\n".join(lines)
 

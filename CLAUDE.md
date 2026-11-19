@@ -168,6 +168,25 @@ it in sync when behaviour or config changes.
   `nudity_scan` -> library entry `nsfw` times -> `build_shots` skips those shots. Also
   `find_facecam` / `facecam_from_faces` (the face that stays put = the webcam) for clip profiles
   with `facecam_auto` (no box in config); the job stores `facecam`.
+- **Rule-request settings (#40-#84)**: `style.CUSTOM_KEYS` + `TG_CUSTOM` / `LACY_CUSTOM` (stream clips only) /
+  `CUSTOM_DEFAULTS`, read by `resolve`: `logo_fade_s`, `end_fade_s` (3), `intro_mix`, `unique_clips` (1),
+  `crop_safe` (1), `action_first`, `ambient_bias`, `palette_match`, `impact_ending`, `opener_rotation` (10),
+  `footage_match` (1), `glitch_check` (1), `sharpen` (all kinds, `style.sharpen_filter` in `look_filter`;
+  Remotion gets it as an ffmpeg post-pass, `remotion.post_filter`), `lead_in_s`, `require_facecam` (1); intro
+  `rockstar_presents`. Tokyo Girl picking: `tokyo_girl.Prefs` / `prefs_for(r, shots, openers, fade)` ->
+  `choose_shot(..., prefs, anchor)` (`narrow` = soft filters; `footage_groups` = same footage across files via
+  `shot_info.dup_groups`), `action_order`, `impact_end`, opener history `state["openers"]`. Crossfades:
+  `cut_fades` (per cut, <= half of either clip, whole frames) + `clean_plan` (per-slot `tails`, `Slot.hold` =
+  clean seconds, then the last frame is held: tpad in ffmpeg, `<Freeze>` in Remotion) = `prepare`; `end_fade`,
+  `focus_of` (crop on `Shot.focus`). `ReviewAdapter.pick_intro` / `presents` / `glitch_pass` (`edit_cuts`,
+  `glitches`, `fix_glitches`); clip reuse `spec["footage_from"]` (`review.named_version`, `feedback.footage_ref`
+  / `find_version`: "B1" or `B_<item id>`), `trim_to`, `plan_from_footage`. `spikebot/shot_info.py`: one
+  72x40 2 fps decode per file (`entry["looks"]`: YUV, 12-strip detail, 64-bit hash) -> `shot_stats` (focus only
+  moves off-centre when the centre crop would cut the subject off). `spikebot/shot_labels.py`: Claude vision
+  labels per shot (`entry["labels"]`, `VERSION`, retry after 6 h; `UNSAFE` shots never used; `presents_segments`;
+  `STORY_TAGS`); `Library.add_extra` / `needs_extra` / `presents_shots`; `Library.label_ask` = test hook.
+  Lacy: `editor.keep_segments(lead_in=)`, `lacy.facecam_required(review_store)`, `safety.real_facecam`
+  (conftest stubs it to None). Tested in `tests/test_rule_requests.py`.
 - `spikebot/highlights.py` + `Bot.highlights_loop`: clip streamers' VOD **audio only**, a 30 min
   chunk per 10 min tick (`plan_scan`, state data/highlights/state.json, category history `cats`),
   `envelope` / `peaks` (robust z vs the last 3 min), `pick` (away from chat spikes, 2 per hour) ->

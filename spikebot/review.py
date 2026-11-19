@@ -407,6 +407,12 @@ def _specs_for(item: dict, req: dict, store: Store, rng: random.Random,
         spec = {"label": f"{base['label'][0]}{n}", "style": new, "preset": base.get("preset"),
                 "experimental": False, "texts": res["texts"], "from": base, "intents": res["intents"],
                 "keep_footage": res.get("footage", "keep") != "new", "song": res.get("song")}
+        src = named_version(store, item, req.get("notes", ""))
+        if src is not None and res.get("footage") != "new":   # "use the clips from B1"
+            v, where = src
+            if v is not base:
+                spec.update(footage_from=v, footage_dir=str(where), keep_footage=True)
+                res["comment"] = (res.get("comment") or "") + f". Clips: every clip of {v['label']}, same order"
         profile.feedback(item["id"], base["label"], req.get("notes", ""), res["intents"], base["style"], new,
                          style_mode(item))
         profile.save()
@@ -429,6 +435,24 @@ def _specs_for(item: dict, req: dict, store: Store, rng: random.Random,
                 "texts": {}, "from": base, "keep_footage": True}
         return [spec], f"Re-rendered {base['label']} with preset **{p['name']}** ({', '.join(p.get('copy') or [])})"
     raise ValueError(f"unknown request {kind!r}")
+
+
+def named_version(store: Store, item: dict, notes: str) -> tuple[dict, Path] | None:
+    """(variant, its folder) when feedback names a version to take the clips from: "B1", or a
+    pasted file name like B_tokyogirl-20261118-004557 (this item or another one)."""
+    from . import feedback as fb
+    ref = fb.footage_ref(notes)
+    if not ref:
+        return None
+    src = item
+    if ref.get("item") and ref["item"] != item["id"]:
+        try:
+            src = store.load(ref["item"])
+        except (OSError, ValueError):
+            log.info("feedback names %s, which isn't in the review store", ref["item"])
+            return None
+    v = fb.find_version(src, ref)
+    return (v, store.dir(src["id"])) if v else None
 
 
 def render_round(store: Store, item_id: str, cfg: dict, base: Path, req: dict | None = None,

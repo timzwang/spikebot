@@ -555,6 +555,12 @@ def _render_job_body(job, lcfg, jobs, used_titles, fetch, transcribe, now, revie
                 facecam = found
                 job["facecam"] = found
                 log.info("clip job %s: facecam found at %s", job["id"], found)
+        if facecam_required(review_store):   # require_facecam: the top panel must be a real face
+            track.update(0.18, "Checking the facecam shows a face")
+            from . import safety
+            if safety.real_facecam(seg, facecam) is False:
+                return finish("skipped", "no real face in the facecam panel (it shows another part of the"
+                                         " screen): require_facecam")
         lay = editor.layout(info["width"], info["height"], facecam, src_fps=info.get("fps"))
         away = editor.away_reason(seg, lay, duration)
         if away:
@@ -593,6 +599,18 @@ def _render_job_body(job, lcfg, jobs, used_titles, fetch, transcribe, now, revie
         return job
     except editor.EditError as e:
         return finish("failed", str(e))
+
+
+def facecam_required(review_store) -> bool:
+    """The require_facecam rule for stream clips (default on)."""
+    if review_store is None:
+        return True
+    try:
+        v = review_store.profile().custom_pins("lacy").get("require_facecam")
+    except Exception as e:  # noqa: BLE001 - an unreadable profile keeps the default
+        log.warning("style profile unreadable (%s): require_facecam stays on", e)
+        return True
+    return True if v is None else bool(float(v))
 
 
 def _render_single(job, lcfg, jobs, used_titles, seg, lay, words, lang, duration, day, finish):
@@ -725,8 +743,10 @@ class ReviewAdapter:
                                              tone=None if tone == "matched" else tone)
                 hooks_used.add(social)
                 caps = instagram.captions(job | {"title": title}, social)
-            window = min(float(r["pace"]["window_s"]), float(self.lcfg["max_clip_s"]))
-            segs = editor.keep_segments(words, duration, window, peak, r["pace"]["max_gap_s"], r["payoff"])
+            lead = float(r.get("lead_in_s") or 0)    # lead_in_s: context before the clip's start
+            window = min(float(r["pace"]["window_s"]), float(self.lcfg["max_clip_s"]) - lead)
+            segs = editor.keep_segments(words, duration, window, peak, r["pace"]["max_gap_s"], r["payoff"],
+                                        lead_in=lead)
             cut_words = editor.remap_words(words, segs)
             length = editor.cut_length(segs)
             stem = f"r{n}_{spec['label']}"

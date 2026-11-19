@@ -76,9 +76,10 @@ TEXT_LEVELS = ("none", "minimal", "full")
 # Tokyo Girl also has "plain": one short factual line (e.g. "GTA 6 is almost here...", the
 # release countdown), never a question or a story card.
 TG_TEXT_LEVELS = TEXT_LEVELS + ("plain",)
-# Tokyo Girl intro: the official GTA VI logo builds up and bursts away on the drop, or a
-# plain "N days until GTA 6" countdown line.
-INTROS = ("none", "logo", "countdown")
+# Tokyo Girl intro: the official GTA VI logo builds up and bursts away on the drop, a
+# plain "N days until GTA 6" countdown line, or the trailer's own "Rockstar Games Presents"
+# shot (the one over the ocean and skyscrapers where the text fades in) up to the drop.
+INTROS = ("none", "logo", "countdown", "rockstar_presents")
 ENDINGS = ("none", "question", "cta")
 HOOKS = {
     "lacy": ("matched", "funny", "shock", "hype", "neutral"),
@@ -110,8 +111,32 @@ CUSTOM_KEYS = {
     # held (2+ keeps a clip's action intact), logo build-up before the drop (s), the logo's
     # largest width as a share of the screen, crossfade length (s)
     "max_s": (8, 60), "hold_beats": (1, 8), "logo_s": (1, 8), "logo_size": (0.2, 0.9), "fade_s": (0.1, 1.5),
+    # how fast the logo bursts away on the drop (s), the final fade to black (s, 0 = none)
+    "logo_fade_s": (0.1, 2.0), "end_fade_s": (0, 6),
+    # share of logo-intro edits that open with "Rockstar Games Presents" instead (0 = never)
+    "intro_mix": (0, 1),
+    # footage choice (Tokyo Girl / trend): never the same clip twice in one edit; subject inside the
+    # 9:16 crop; most action-packed clips first; calm / ambient shots preferred; clips of a similar
+    # colour palette; an impactful closing shot; fresh opening clip (last N edits); only clips that
+    # match the edit (no filler); check the finished edit for stray frames / broken fades
+    "unique_clips": (0, 1), "crop_safe": (0, 1), "action_first": (0, 1), "ambient_bias": (0, 1),
+    "palette_match": (0, 1), "impact_ending": (0, 1), "opener_rotation": (0, 20), "footage_match": (0, 1),
+    "glitch_check": (0, 1),
+    # every kind: sharpening / clarity ("4K look", 0 = off)
+    "sharpen": (0, 1),
+    # stream clips: seconds added before the clip's start (snapped back to the sentence start);
+    # skip clips whose facecam panel shows no real face (1 = on)
+    "lead_in_s": (0, 5), "require_facecam": (0, 1),
 }
-TG_CUSTOM = ("max_s", "hold_beats", "logo_s", "logo_size", "fade_s")
+TG_CUSTOM = ("max_s", "hold_beats", "logo_s", "logo_size", "fade_s", "logo_fade_s", "end_fade_s", "intro_mix",
+             "unique_clips", "crop_safe", "action_first", "ambient_bias", "palette_match", "impact_ending",
+             "opener_rotation", "footage_match", "glitch_check")
+LACY_CUSTOM = ("lead_in_s", "require_facecam")   # stream clips only
+# Defaults of the on/off and number settings above when no rule sets them (resolve).
+CUSTOM_DEFAULTS = {"logo_fade_s": 0.4, "end_fade_s": 3.0, "intro_mix": 0.0, "unique_clips": 1, "crop_safe": 1,
+                   "action_first": 0, "ambient_bias": 0.0, "palette_match": 0.0, "impact_ending": 0,
+                   "opener_rotation": 10, "footage_match": 1, "glitch_check": 1, "sharpen": 0.0,
+                   "lead_in_s": 0.0, "require_facecam": 1}
 
 # What the editor does by itself, with no setting (the rule compiler, spikebot/rules.py, reads
 # saved notes against this and the settings menu). Add a line when new code makes a behaviour
@@ -141,6 +166,26 @@ BUILT_IN = (
     " shots, same order) unless the feedback asks for new clips",
     "Tokyo Girl / trend: a Feedback re-render can switch that edit to any sound in the music library"
     " (\"switch the song to impulsive\"); later re-renders of it keep that sound",
+    "Tokyo Girl / trend: Feedback can reuse the exact clips of ANY earlier version of the edit, named like"
+    " \"B1\" or by its file name (B_tokyogirl-20261118-004557): every one of its clips in the same order,"
+    " no new clips added (the edit ends with its last clip) and no reordering (action_first never reorders"
+    " kept clips). Every version's clip list (file, in/out, order) is saved with it",
+    "Tokyo Girl / trend: every crossfade blends exactly the two neighbouring clips, start to finish: a fade is"
+    " never longer than half of either clip, a clip's fade tail never runs into another scene of the trailer"
+    " (it holds its last frame instead), so no third image flashes in and nothing is cut off mid-fade",
+    "Tokyo Girl / trend: frame counts come from the beat times, so cuts never drift off the beat; the"
+    " glitch_check setting re-checks every cut of the finished edit against the beat plan",
+    "Tokyo Girl / trend: every trailer shot is labelled once by a vision check (action, atmosphere, scenery,"
+    " walking/driving away, strip club, twerking, title cards...); shots labelled strip club, twerking, pole"
+    " dancing or sexually suggestive are never used, nor the plain black \"Rockstar Games Presents\" title card",
+    "Tokyo Girl / trend: the countdown intro reads \"N days left until GTA 6 releases\"",
+    "Tokyo Girl / trend: files stay silent, so the sound is faded in the app; the card's sound note says to"
+    " fade it out with the picture over the last end_fade_s seconds",
+    "Tokyo Girl / trend: #inspiration references are studied automatically (cut length, pacing, beat sync,"
+    " grade, text use, zoom/shake, flashes/fades) and saved as presets; the B version is built on an approved"
+    " preset",
+    "Tokyo Girl / trend: a new intro replaces the old opener within the same length (the edit keeps its"
+    " length; it can grow only by the intro's own bar)",
 )
 CUSTOM_STR = {"text_colour", "highlight", "hook_style"}
 
@@ -250,8 +295,27 @@ def resolve(style: dict) -> dict:
         "text_level": style.get("text_level") if style.get("text_level") in TG_TEXT_LEVELS else "full",
         "intro": style.get("intro") if style.get("intro") in INTROS else "none",
         "look": {"grain": float(c.get("grain") or 0), "vignette": bool(c.get("vignette")),
-                 "letterbox": bool(c.get("letterbox"))},
+                 "letterbox": bool(c.get("letterbox")), "sharpen": num("sharpen", 0.0)},
+        "logo_fade_s": num("logo_fade_s", CUSTOM_DEFAULTS["logo_fade_s"]),
+        "end_fade_s": num("end_fade_s", CUSTOM_DEFAULTS["end_fade_s"]),
+        "intro_mix": num("intro_mix", 0.0),
+        "unique_clips": bool(num("unique_clips", 1)), "crop_safe": bool(num("crop_safe", 1)),
+        "action_first": bool(num("action_first", 0)), "ambient_bias": num("ambient_bias", 0.0),
+        "palette_match": num("palette_match", 0.0), "impact_ending": bool(num("impact_ending", 0)),
+        "opener_rotation": int(num("opener_rotation", CUSTOM_DEFAULTS["opener_rotation"])),
+        "footage_match": bool(num("footage_match", 1)), "glitch_check": bool(num("glitch_check", 1)),
+        "lead_in_s": num("lead_in_s", 0.0), "require_facecam": bool(num("require_facecam", 1)),
     }
+
+
+def sharpen_filter(amount: float) -> str:
+    """Clarity for the "4K look" TikTok editors use: an unsharp mask on luma (and a little on
+    colour) plus a touch of local contrast. 0 = nothing; 1 = strong but no halos at 1080p."""
+    a = max(0.0, min(1.0, float(amount or 0)))
+    if a <= 1e-3:
+        return ""
+    return (f"unsharp=lx=5:ly=5:la={1.2 * a:.3f}:cx=5:cy=5:ca={0.3 * a:.3f},"
+            f"eq=contrast={1 + 0.04 * a:.3f}")
 
 
 def grade_filter(g: dict) -> str:
@@ -270,6 +334,9 @@ def look_filter(look: dict, mode: str, width: int = 1080, height: int = 1920) ->
     """Film-look ffmpeg filters (grain, vignette, cinema bars) for a resolved style.
     Cinema bars only in Tokyo Girl: the Lacy layout needs the full frame."""
     parts = []
+    sharp = sharpen_filter((look or {}).get("sharpen") or 0)
+    if sharp:
+        parts.append(sharp)
     if (look or {}).get("vignette"):
         parts.append("vignette=angle=PI/5")
     g = float((look or {}).get("grain") or 0)
@@ -316,13 +383,16 @@ def _blank() -> dict:
 # one before it.
 CATEGORIES = (
     ("look", "🎨 Colour & look", ("grade", "saturation", "contrast", "brightness", "warmth", "grain",
-                                 "vignette", "letterbox")),
-    ("pace", "✂️ Pace & cuts", ("pace", "shot_s", "payoff", "transition", "hold_beats", "fade_s", "max_s")),
-    ("footage", "🎬 Footage & camera", ("motion", "framing", "media")),
+                                 "vignette", "letterbox", "sharpen")),
+    ("pace", "✂️ Pace & cuts", ("pace", "shot_s", "payoff", "transition", "hold_beats", "fade_s", "max_s",
+                               "lead_in_s", "glitch_check")),
+    ("footage", "🎬 Footage & camera", ("motion", "framing", "media", "unique_clips", "crop_safe", "action_first",
+                                       "ambient_bias", "palette_match", "impact_ending", "opener_rotation",
+                                       "footage_match", "require_facecam")),
     ("text", "🔤 Text & captions", ("text_level", "font", "size", "position", "colour", "text_px", "text_y",
                                    "outline", "shadow", "words", "text_colour", "highlight")),
     ("hook", "🪝 Hook, intro & ending", ("hook", "hook_s", "hook_style", "intro", "ending", "logo_s",
-                                        "logo_size")),
+                                        "logo_size", "logo_fade_s", "end_fade_s", "intro_mix")),
     ("sound", "🔊 Sound", ("sfx",)),
     ("note", "📝 Notes (being turned into settings, or waiting for new editor code)", ()),
     ("unsupported", "🚫 Asked for, not possible yet", ()),
@@ -371,6 +441,27 @@ SETTING_INFO = {
     "logo_s": ("Logo build-up", "beats the GTA VI logo builds before it bursts on the drop"),
     "logo_size": ("Logo size", "logo width as a share of the screen"),
     "sfx": ("Sound effects", "volume of whooshes and hits on Lacy clips (0 = off)"),
+    "sharpen": ("Sharpening", "extra definition / clarity, the TikTok \"4K\" look (0 = off, 1 = strong)"),
+    "logo_fade_s": ("Logo fade-out", "seconds the GTA VI logo takes to burst away on the drop (lower = faster)"),
+    "end_fade_s": ("End fade", "seconds the last clip fades out to black (0 = no fade)"),
+    "intro_mix": ("Rockstar intro share", "share of logo-intro edits that open with \"Rockstar Games Presents\""
+                  " instead (0 = never, 0.3 = about 1 in 3)"),
+    "unique_clips": ("No repeated clips", "never use the same clip twice in one edit (1 = on)"),
+    "crop_safe": ("Crop-safe shots", "prefer shots whose subject sits inside the tall crop and frame the crop on"
+                  " it, so nothing looks cut off (1 = on)"),
+    "action_first": ("Action first", "the most action-packed clips go near the start to grab attention (1 = on)"),
+    "ambient_bias": ("Atmospheric clips", "how strongly calm scenery / mood shots are preferred (0 = no"
+                     " preference, 1 = strongly)"),
+    "palette_match": ("Matching colours", "how strictly the clips share one colour palette (0 = off, 1 = strict)"),
+    "impact_ending": ("Impact ending", "the last clip is an impactful closing shot, e.g. someone walking away or a"
+                      " car driving into the distance (1 = on)"),
+    "opener_rotation": ("Fresh opening clip", "the opening clip is never one used to open the last N edits"),
+    "footage_match": ("Relevant clips only", "only clips that fit the edit (action, atmosphere, its story), never"
+                      " filler or title cards (1 = on)"),
+    "glitch_check": ("Glitch check", "the finished edit is checked for stray frames and off-beat cuts and fixed"
+                     " (1 = on)"),
+    "lead_in_s": ("Lead-in", "seconds added before the clip's start so the first sentence is complete"),
+    "require_facecam": ("Real facecam only", "skip clips whose top panel doesn't show the streamer's face (1 = on)"),
 }
 VALUE_INFO = {
     ("transition", "cut"): "a straight cut, no effect: one clip simply replaces the other",
@@ -391,6 +482,8 @@ VALUE_INFO = {
     ("intro", "none"): "straight into the footage",
     ("intro", "logo"): "the GTA VI logo builds up and bursts on the drop",
     ("intro", "countdown"): "a days-to-launch countdown before the drop",
+    ("intro", "rockstar_presents"): "the trailer's \"Rockstar Games Presents\" shot over the ocean and"
+                                    " skyscrapers, up to the drop",
     ("ending", "none"): "no special ending",
     ("ending", "question"): "ends on a question to get comments",
     ("ending", "cta"): "ends with a call to action (follow / comment)",
@@ -456,6 +549,8 @@ def valid_modes(setting: str | None, value) -> list[str]:
     out = []
     for m in STYLE_MODES:
         if setting in TG_CUSTOM and m not in TG_LIKE:
+            continue
+        if setting in LACY_CUSTOM and m != "lacy":
             continue
         try:
             set_value(default_style(m), setting, str(value), m)

@@ -135,6 +135,10 @@ def round_payload(item: dict, rnd: dict, extra: str = "", entry_on: dict | None 
             lines.append(song)
         elif v.get("silent"):
             lines.append("🎵 add the official sound in the app")
+        if v.get("intro_note"):     # e.g. no Rockstar Games Presents shot yet: the logo was used
+            lines.append("⚠️ " + v["intro_note"][:160])
+        if v.get("glitch_note"):    # the glitch check fixed (or couldn't fix) a stray cut
+            lines.append("🛠️ " + v["glitch_note"][:160])
         if item["mode"] == "lacy" and v.get("title"):
             lines.append(f"“{v['title'][:100]}”")
         embeds.append({"title": v["label"] + (" · 🧪" if v.get("experimental") else ""),

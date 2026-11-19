@@ -267,3 +267,64 @@ def find_facecam(path: Path, samples: int = 10) -> dict | None:
         if len(rows) >= samples:
             break
     return facecam_from_faces(rows)
+
+
+# --------------------------------------------------------------------------
+# Is the facecam a real face? (style setting require_facecam, stream clips)
+# --------------------------------------------------------------------------
+FACE_SCORE = 0.35
+FACECAM_MIN_SHARE = 0.25    # a face in at least 2 of 8 sampled frames = a real webcam (looking down is fine)
+
+
+def face_share(per_frame: list[list[dict]]) -> float:
+    """Share of frames whose detections include a face. Pure."""
+    if not per_frame:
+        return 0.0
+    hit = sum(1 for dets in per_frame
+              if any(d.get("class") in FACES and float(d.get("score") or 0) >= FACE_SCORE for d in dets))
+    return hit / len(per_frame)
+
+
+def facecam_face_share(path: Path, box: dict, samples: int = 8, detector=None) -> float:
+    """Share of `samples` frames (spread over the clip) where the facecam box shows a face.
+    `box` = fractions x, y, w, h of the frame. Raises Unavailable without NudeNet."""
+    det = detector or detect
+    if detector is None:
+        _detector()
+    probe = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "json",
+                            str(path)], capture_output=True, text=True, timeout=60)
+    try:
+        dur = float(json.loads(probe.stdout)["format"]["duration"])
+    except (ValueError, KeyError, TypeError):
+        return 0.0
+    fps = max(samples / max(dur, 1.0), 0.05)
+    rows = []
+    for _, f in frames(Path(path), fps=fps, width=1280):
+        h, w = f.shape[:2]
+        x0, y0 = int(w * float(box.get("x", 0))), int(h * float(box.get("y", 0)))
+        x1, y1 = int(min(w, x0 + w * float(box.get("w", 1)))), int(min(h, y0 + h * float(box.get("h", 1))))
+        crop = f[y0:y1, x0:x1]
+        if crop.size == 0:
+            continue
+        if crop.shape[1] < 320:   # the detector wants a reasonable size
+            import cv2
+            k = 320 / crop.shape[1]
+            crop = cv2.resize(crop, (320, max(1, int(crop.shape[0] * k))))
+        rows.append(det(crop))
+        if len(rows) >= samples:
+            break
+    return face_share(rows)
+
+
+def real_facecam(path: Path, box: dict, samples: int = 8, detector=None) -> bool | None:
+    """True when the facecam box shows the streamer's face, False when it doesn't (e.g. a
+    "facecam" that is really another part of the game screen), None when it can't be checked."""
+    try:
+        share = facecam_face_share(path, box, samples, detector)
+    except Unavailable as e:
+        log.error("%s: facecam not checked", e)
+        return None
+    except Exception as e:  # noqa: BLE001 - an unchecked clip goes on to review (Tim still approves)
+        log.warning("facecam check of %s failed: %s", Path(path).name, e)
+        return None
+    return share >= FACECAM_MIN_SHARE

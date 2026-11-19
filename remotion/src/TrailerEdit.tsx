@@ -1,13 +1,17 @@
 import React from 'react';
 import {
-  AbsoluteFill, Easing, Img, OffthreadVideo, Sequence, interpolate, spring, staticFile,
+  AbsoluteFill, Easing, Freeze, Img, OffthreadVideo, Sequence, interpolate, spring, staticFile,
   useCurrentFrame, useVideoConfig,
 } from 'remotion';
 
+// fadeIn: this shot's crossfade from the previous one (s); tail: how long it runs on under the
+// next one; hold: seconds of clean source, after which its last frame is held (never another
+// scene of the trailer); focus: where the crop is centred across the frame (0.5 = middle).
 export type Shot = {
   src: string; kind: 'video' | 'image'; start: number; dur: number; offset: number;
   pan: number; punch: boolean; flash: boolean; srcW: number; srcH: number;
   crop: [number, number, number, number] | null;
+  fadeIn?: number; tail?: number; hold?: number | null; focus?: number;
 };
 export type Card = {from: number; to: number; text: string; ask: boolean};
 export type Look = {
@@ -24,6 +28,7 @@ export type EditProps = {
   fps: number; width: number; height: number; duration: number;
   shots: Shot[]; cards: Card[]; logo: Logo | null;
   look: Look; text: TextStyle; motion: Motion; framing: 'fill' | 'fit'; fade: number;
+  endFade?: number;   // seconds the end fades to black
 };
 
 export const defaultProps: EditProps = {
@@ -39,9 +44,12 @@ const AMOUNT: Record<Motion, number> = {none: 0, subtle: 0.5, full: 1};
 
 const Media: React.FC<{shot: Shot; style: React.CSSProperties}> = ({shot, style}) => {
   const {fps} = useVideoConfig();
-  return shot.kind === 'video'
-    ? <OffthreadVideo src={staticFile(shot.src)} trimBefore={Math.round(shot.offset * fps)} muted style={style} />
-    : <Img src={staticFile(shot.src)} style={style} />;
+  const frame = useCurrentFrame();
+  if (shot.kind !== 'video') return <Img src={staticFile(shot.src)} style={style} />;
+  const video = <OffthreadVideo src={staticFile(shot.src)} trimBefore={Math.round(shot.offset * fps)} muted style={style} />;
+  if (shot.hold == null) return video;
+  const last = Math.max(0, Math.floor(shot.hold * fps) - 1);
+  return <Freeze frame={last} active={frame > last}>{video}</Freeze>;
 };
 
 // One shot. 'fill': cover-cropped, with a slow eased push + drift scaled by `motion` (none
@@ -87,8 +95,12 @@ const ShotView: React.FC<{shot: Shot; motion: Motion; framing: 'fill' | 'fit'; f
     blur = interpolate(frame, [0, 6], [10, 0], {extrapolateRight: 'clamp'});
   }
   const room = Math.max(0, cw * scale - W);
-  const drift = Math.min(140, room / 2) * shot.pan * (p - 0.5) * amount;
-  const left = W / 2 - (cx + cw / 2) * scale + drift;
+  const focus = shot.focus ?? 0.5;
+  const framed = Math.abs(focus - 0.5) > 0.001;
+  const drift = Math.min(framed ? 60 : 140, room / 2) * shot.pan * (p - 0.5) * amount;
+  // centre the crop on `focus` (the subject), never past the picture's edges
+  const want = W / 2 - (cx + cw * focus) * scale + drift;
+  const left = Math.min(-cx * scale, Math.max(W - (cx + cw) * scale, want));
   const top = H / 2 - (cy + ch / 2) * scale;
   const style: React.CSSProperties = {
     position: 'absolute', left, top, width: shot.srcW * scale, height: shot.srcH * scale,
@@ -179,6 +191,16 @@ const LogoView: React.FC<{logo: Logo}> = ({logo}) => {
   );
 };
 
+// The last seconds fade slowly to black (end_fade_s).
+const EndFade: React.FC = () => {
+  const frame = useCurrentFrame();
+  const {durationInFrames} = useVideoConfig();
+  const o = interpolate(frame, [0, Math.max(1, durationInFrames - 1)], [0, 1], {
+    easing: Easing.inOut(Easing.quad), extrapolateLeft: 'clamp', extrapolateRight: 'clamp',
+  });
+  return <AbsoluteFill style={{backgroundColor: 'black', opacity: o}} />;
+};
+
 const Grain: React.FC<{amount: number}> = ({amount}) => {
   const frame = useCurrentFrame();
   const seed = frame % 7;
@@ -198,6 +220,11 @@ export const TrailerEdit: React.FC<EditProps> = (props) => {
   const {fps, shots, cards, logo, look, text, height: H, motion, framing, fade} = props;
   const f = (s: number) => Math.round(s * fps);
   const fadeF = fade > 0 ? Math.max(1, f(fade)) : 0;
+  // each cut's own fade (never longer than half of either clip: only two clips ever blend)
+  const fadeIn = (i: number) => (i === 0 ? 0 : (shots[i].fadeIn != null ? f(shots[i].fadeIn as number) : fadeF));
+  const tail = (i: number) => (i < shots.length - 1 ? fadeIn(i + 1) : 0);
+  const endF = f(props.endFade ?? 0);
+  const total = f(props.duration);
   const grade = `saturate(${look.saturation}) contrast(${look.contrast}) brightness(${1 + look.brightness})`
     + (look.warmth > 0 ? ` sepia(${Math.min(0.35, look.warmth * 2.5)})` : '')
     + (look.warmth < 0 ? ` hue-rotate(${look.warmth * 60}deg)` : '');
@@ -208,8 +235,8 @@ export const TrailerEdit: React.FC<EditProps> = (props) => {
         {shots.map((s, i) => (
           // with a crossfade each shot runs on under the next one while it fades in
           <Sequence key={i} from={f(s.start)}
-            durationInFrames={Math.max(1, f(s.start + s.dur) - f(s.start) + (i < shots.length - 1 ? fadeF : 0))}>
-            <ShotView shot={s} motion={motion ?? 'full'} framing={framing ?? 'fill'} fadeIn={i > 0 ? fadeF : 0} />
+            durationInFrames={Math.max(1, f(s.start + s.dur) - f(s.start) + tail(i))}>
+            <ShotView shot={s} motion={motion ?? 'full'} framing={framing ?? 'fill'} fadeIn={fadeIn(i)} />
           </Sequence>
         ))}
       </AbsoluteFill>
@@ -230,6 +257,9 @@ export const TrailerEdit: React.FC<EditProps> = (props) => {
           <div style={{position: 'absolute', top: 0, left: 0, right: 0, height: bar * 2, background: 'black'}} />
           <div style={{position: 'absolute', bottom: 0, left: 0, right: 0, height: bar * 2, background: 'black'}} />
         </>
+      ) : null}
+      {endF > 0 ? (
+        <Sequence from={Math.max(0, total - endF)} durationInFrames={endF}><EndFade /></Sequence>
       ) : null}
     </AbsoluteFill>
   );

@@ -106,7 +106,7 @@ def test_plan_holds_clips_keeps_them_intact_and_starts_on_a_calm_clip():
 
 def test_plain_and_countdown_lines_are_facts_not_questions():
     assert TG.plain_line(date(2026, 11, 17)) == "2 days until GTA 6"
-    assert TG.countdown_line(date(2026, 11, 18)) == "1 day until GTA 6"
+    assert TG.countdown_line(date(2026, 11, 18)) == "1 day left until GTA 6 releases"
     assert TG.plain_line(date(2026, 11, 19)) == "GTA 6 is out today"
     assert TG.plain_line(date(2026, 12, 1)) == "GTA 6 is out now"
     ass = TG.build_text_ass([(0, 2, "2 days until GTA 6")], "DejaVu Sans", 100)

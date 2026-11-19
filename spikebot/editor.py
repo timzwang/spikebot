@@ -398,10 +398,11 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 # --------------------------------------------------------------------------
 def keep_segments(words: list[Word], duration: float, window_s: float, peak: float | None,
                   max_gap_s: float | None, payoff: float | None = None,
-                  pad: float = 0.25, peak_keep: float = 3.0) -> list[tuple[float, float]]:
+                  pad: float = 0.25, peak_keep: float = 3.0, lead_in: float = 0.0) -> list[tuple[float, float]]:
     """[(start, end)] of the source to keep, in order.
     1. A window of `window_s` placed so the chat peak lands at `payoff` of the way
-       through (default 55%).
+       through (default 55%); `lead_in` seconds are added before it (lead_in_s: the context
+       before the hook) and the start snaps back to where that sentence began.
     2. With `max_gap_s`, silences longer than that are cut out (jump cuts), but the
        few seconds around the peak are always kept: the reaction may be laughter
        that has no words."""
@@ -411,6 +412,7 @@ def keep_segments(words: list[Word], duration: float, window_s: float, peak: flo
         peak = duration * 0.55
     start = min(max(0.0, peak - window_s * payoff), max(0.0, duration - window_s))
     end = min(duration, start + window_s)
+    start = max(0.0, start - max(0.0, float(lead_in or 0)))
     start, end = snap_window(words, start, end, duration, pad)
     if not max_gap_s:
         return [(round(start, 3), round(end, 3))]

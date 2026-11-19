@@ -600,7 +600,13 @@ one bar) over the calmest trailer clip, then on the song's drop grows quickly wh
 transparent, never wider than `logo_size` of the screen (e.g. 0.6). The sound note on each card
 says where to start the song so the drop lands there. Put Rockstar's official transparent logo
 PNG at `/opt/spikebot/data/brand/gta6_logo.png`; without the file the intro is skipped.
-`intro: countdown` shows a plain "N days until GTA 6" line instead.
+`intro: countdown` shows a plain "N days left until GTA 6 releases" line instead.
+`intro: rockstar_presents` opens with the trailer's own "Rockstar Games Presents" shot (over the ocean
+and skyscrapers, where the text fades in) up to the drop; the plain black title card is never used.
+`intro_mix` (0-1) sends that share of logo-intro edits to the Rockstar opening instead, so not every
+edit starts with the logo. `logo_fade_s` sets how fast the logo bursts away (default 0.4 s), and
+`end_fade_s` (default 3) fades the last seconds slowly to black; the card's sound note reminds you
+to fade the sound out over the same seconds in the app (the files stay silent).
 
 **Movement, framing and footage** (all settings, so `/feedback` and `/rules` control them):
 `motion` `none` (every shot completely still: no pans, push-ins, punch-in zooms or animated
@@ -613,6 +619,35 @@ than that many beats, and each shows the middle of its clip so the action stays 
 ignore it and are only limited by their sound: an edit never runs past the end of the sound
 from its start point). Footage is picked by each story's
 tags; the logo intro uses the calmest clip (measured once per trailer).
+
+**Footage choice** (Tokyo Girl / trend, 0/1 unless a range is given): `unique_clips` (default 1: never
+the same clip twice in an edit, and the same footage in two files, e.g. a trailer and its extended
+look, counts as one); `crop_safe` (default 1, fill framing: prefer shots whose subject fits the 9:16
+crop and move the crop onto the subject when the middle would cut it off); `footage_match` (default 1:
+only clips that fit the edit, never filler or title cards); `action_first` (most action-packed clips in
+the first third); `ambient_bias` 0-1 (prefer calm, atmospheric shots); `palette_match` 0-1 (clips close
+to the opening clip's colours); `impact_ending` (end on someone walking away or a car driving into the
+distance); `opener_rotation` 0-20 (default 10: the opening clip is never one that opened the last N
+edits); `glitch_check` (default 1: the finished edit is scanned for stray frames, broken fades and
+off-beat cuts and re-rendered with the bad clip replaced or held). `sharpen` 0-1 works on every kind of
+edit (the TikTok "4K look": unsharp mask plus a touch of contrast).
+
+Every crossfade blends exactly the two clips next to it: a fade is never longer than half of either
+clip, and a clip whose fade tail would run into another scene of the trailer holds its last clean
+frame instead. Each trailer file is measured once (colour, where the detail sits, picture hashes:
+`spikebot/shot_info.py`) and, with `ANTHROPIC_API_KEY`, every shot is labelled once by a vision check
+(`spikebot/shot_labels.py`, Sonnet, roughly 1p per 16 shots, cached in `library.json`): action,
+atmosphere, walking/driving away, title cards, "Rockstar Games Presents", and strip club / twerking /
+suggestive, which are never used.
+
+**Reusing another version's clips**: Feedback such as "use all the clips from B1" (or a pasted file
+name / link like `B_tokyogirl-20261118-004557.mp4`, even from another item) rebuilds the edit from
+exactly that version's clips in the same order, nothing added; the cuts are snapped to the new
+sound's beats.
+
+**Stream clips**: `lead_in_s` (0-5 s, default 0) starts the clip earlier and snaps back to the start of
+that sentence, so the first words are never cut; `require_facecam` (default 1) skips a clip whose top
+panel doesn't show a real face (e.g. a streamer whose "facecam" area is really part of the game).
 
 Notes saved before these settings existed were turned into them automatically: in `/rules`
 those notes show as off with "now #N" (the setting that replaced them). **Film look** (exact values, via `/feedback`,
