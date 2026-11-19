@@ -185,6 +185,18 @@ def nearest(options: dict[str, float], value: float) -> str:
     return min(options, key=lambda k: abs(options[k] - value))
 
 
+def for_mode(presets: dict[str, dict], mode: str) -> dict[str, dict]:
+    """The presets that teach this kind of edit (#inspiration sorts references into edits,
+    stream clips and other videos; "other" teaches nothing automatically). Presets from
+    before the sorting (no `modes`) keep applying everywhere."""
+    out = {}
+    for name, p in presets.items():
+        modes = p.get("modes")
+        if modes is None or mode in modes or (mode == "trend" and "tokyo_girl" in modes):
+            out[name] = p
+    return out
+
+
 def to_style(preset: dict, mode: str) -> dict:
     """The copied parts of a preset as a (partial) style for this mode."""
     out: dict = {}

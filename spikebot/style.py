@@ -64,7 +64,7 @@ TG_TRANSITIONS = TRANSITIONS + ("fade",)   # Tokyo Girl also has a soft crossfad
 # push-ins, punch-in zooms or animated stills), "subtle" = half the drift, "full" = as designed.
 MOTIONS = ("none", "subtle", "full")
 # Tokyo Girl framing of the 16:9 trailers in the 9:16 frame: "box45" (default) a big 4:5
-# picture over a blurred copy, text in the bands above/below; "box11" the same at 1:1 (more of
+# picture on black bars (Tim, 19 Nov: no blur), text in the bands above/below; "box11" the same at 1:1 (more of
 # a wide shot); "stack" two clips at once, one above the other, each whole; "fill" crops the
 # sides to fill the screen; "fit" shows the whole frame (nothing cut off) over a blur.
 # With smart fill (custom smart_fill, on unless 0) a close-up of one person goes full screen,
@@ -86,6 +86,9 @@ TG_TEXT_LEVELS = TEXT_LEVELS + ("plain",)
 # plain "N days until GTA 6" countdown line.
 INTROS = ("none", "logo", "countdown")
 ENDINGS = ("none", "question", "cta")
+# Stream clips: how the clip opens. "teaser" = its biggest moment plays first under an AI
+# voiceover hook, then the clip itself (Tim, 19 Nov: the experimental version C unless pinned).
+OPENINGS = ("normal", "teaser")
 HOOKS = {
     "lacy": ("matched", "funny", "shock", "hype", "neutral"),
     "tokyo_girl": ("news", "theory", "meme", "couple"),
@@ -98,7 +101,7 @@ TG_LIKE = ("tokyo_girl", "trend")
 DEFAULT = {"grade": "natural", "pace": "normal", "font": "dejavu", "size": "m",
            "position": "low", "colour": "classic", "transition": "flash",
            "ending": "none", "text_level": "minimal", "intro": "none", "motion": "full",
-           "framing": "box45", "media": "mixed"}
+           "framing": "box45", "media": "mixed", "opening": "normal"}
 TG_ONLY = ("intro", "framing", "media")   # dimensions only Tokyo Girl has
 # Not varied between A/B/C: a rule, not a style to explore. Default unless Tim sets it.
 FIXED = ("media",)
@@ -185,6 +188,7 @@ def dims(mode: str) -> dict[str, tuple[str, ...]]:
            "text_level": TG_TEXT_LEVELS if tg else TEXT_LEVELS, "motion": MOTIONS}
     if mode == "lacy":
         out["ending"] = ENDINGS
+        out["opening"] = OPENINGS
     if tg:
         out["intro"] = INTROS
         out["framing"] = FRAMINGS
@@ -202,6 +206,7 @@ def default_style(mode: str) -> dict:
     s["hook"] = HOOKS.get(mode, ("matched",))[0]
     if mode != "lacy":
         s.pop("ending")
+        s.pop("opening")
     if mode not in TG_LIKE:
         for k in TG_ONLY:
             s.pop(k)
@@ -258,6 +263,7 @@ def resolve(style: dict) -> dict:
         "max_s": num("max_s", None), "hold_beats": int(num("hold_beats", 1)),
         "logo_s": num("logo_s", None), "logo_size": num("logo_size", 0.78), "fade_s": num("fade_s", 0.45),
         "ending": style.get("ending") if style.get("ending") in ENDINGS else "none",
+        "opening": style.get("opening") if style.get("opening") in OPENINGS else "normal",
         "hook_s": c.get("hook_s"), "payoff": c.get("payoff"),
         "hook_style": c.get("hook_style"),
         "text_level": style.get("text_level") if style.get("text_level") in TG_TEXT_LEVELS else "full",
@@ -310,6 +316,8 @@ def describe(style: dict) -> str:
             bits.append(f"{k} **{style[k]}**")
     if style.get("ending") not in (None, "none"):
         bits.append(f"ending **{style['ending']}**")
+    if style.get("opening") == "teaser":
+        bits.append("opening **teaser** (voiceover hook)")
     if c:
         bits.append("custom " + ", ".join(f"{k}={v}" for k, v in sorted(c.items())))
     return " · ".join(bits)
@@ -334,7 +342,7 @@ CATEGORIES = (
     ("footage", "🎬 Footage & camera", ("motion", "framing", "media")),
     ("text", "🔤 Text & captions", ("text_level", "font", "size", "position", "colour", "text_px", "text_y",
                                    "outline", "shadow", "words", "text_colour", "highlight")),
-    ("hook", "🪝 Hook, intro & ending", ("hook", "hook_s", "hook_style", "intro", "ending", "logo_s",
+    ("hook", "🪝 Hook, intro & ending", ("hook", "hook_s", "hook_style", "intro", "ending", "opening", "logo_s",
                                         "logo_size")),
     ("sound", "🔊 Sound", ("sfx",)),
     ("note", "📝 Notes (being turned into settings, or waiting for new editor code)", ()),
@@ -382,6 +390,7 @@ SETTING_INFO = {
     "hook_style": ("Hook style", "how the opening line is written"),
     "intro": ("Intro", "what plays before the first beat drop"),
     "ending": ("Ending", "what the edit ends on"),
+    "opening": ("Opening", "stream clips: start normally, or tease the big moment first under an AI voiceover hook"),
     "logo_s": ("Logo build-up", "beats the GTA VI logo builds before it bursts on the drop"),
     "logo_size": ("Logo size", "logo width as a share of the screen"),
     "sfx": ("Sound effects", "volume of whooshes and hits on Lacy clips (0 = off)"),
@@ -394,7 +403,7 @@ VALUE_INFO = {
     ("motion", "none"): "clips stay still: no pans, no zooms",
     ("motion", "subtle"): "slow, gentle pans and zooms",
     ("motion", "full"): "clear pans and push-in zooms on every clip",
-    ("framing", "box45"): "a big 4:5 picture over a blurred copy, text above and below it (the default)",
+    ("framing", "box45"): "a big 4:5 picture with black bars above and below it, text in the bars (the default)",
     ("framing", "box11"): "a square 1:1 picture over a blurred copy: more of each wide shot",
     ("framing", "stack"): "two clips at once, one above the other, each shown whole",
     ("framing", "fill"): "the shot is cropped to fill the whole tall screen (sides cut off)",
@@ -409,6 +418,8 @@ VALUE_INFO = {
     ("intro", "logo"): "the GTA VI logo builds up and bursts on the drop",
     ("intro", "countdown"): "a days-to-launch countdown before the drop",
     ("ending", "none"): "no special ending",
+    ("opening", "normal"): "the clip starts at its beginning",
+    ("opening", "teaser"): "the clip's big moment plays first while an AI voice reads a hook, then the clip",
     ("ending", "question"): "ends on a question to get comments",
     ("ending", "cta"): "ends with a call to action (follow / comment)",
     ("pace", "slow"): "longer clips, fewer cuts",
@@ -776,6 +787,10 @@ def pick_variants(profile: Profile, mode: str, rng: random.Random,
                 continue
             if dim in FIXED:
                 style[dim] = DEFAULT[dim]
+                continue
+            if dim == "opening" and base.get(dim) not in opts:
+                # the voiceover teaser is the experimental version's: C tries it, A/B open normally
+                style[dim] = "teaser" if experimental else "normal"
                 continue
             if dim == "ending" and base.get("ending") not in opts:
                 # end cards ("Would you have done the same?") add nothing unless Tim asks

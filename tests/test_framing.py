@@ -75,7 +75,9 @@ def test_slot_layout_smart_fill_and_stack_fallback():
 def test_ffmpeg_graphs_for_each_framing():
     wide = shot()
     box = TG.slot_filter(slot(wide), 1.0, "none", "box45")
-    assert "crop=1080:1350:" in box and f"overlay=0:{TG.box_top('box45')}" in box and "boxblur" in box
+    # 4:5 sits on plain black bars, never a blurred copy (Tim, 19 Nov)
+    assert "crop=1080:1350:" in box and f"pad=1080:1920:0:{TG.box_top('box45')}:color=black" in box
+    assert "boxblur" not in box and "split" not in box
     assert box.startswith("[0:v]") and box.endswith("[v]")
     sq = TG.slot_filter(slot(wide), 1.0, "none", "box11")
     assert "crop=1080:1080:" in sq and "overlay=0:420" in sq

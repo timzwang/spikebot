@@ -3,8 +3,10 @@ import pytest
 
 @pytest.fixture(autouse=True)
 def _no_real_ai(monkeypatch):
-    """Tests never call the real Claude API (a developer's key in the environment is ignored)."""
+    """Tests never call the real Claude API (a developer's key in the environment is ignored)
+    or a real text-to-speech service (render subprocesses inherit the switch)."""
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setenv("SPIKEBOT_VOICE", "off")
 
 
 @pytest.fixture(autouse=True)

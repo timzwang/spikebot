@@ -225,6 +225,13 @@ BANNED = re.compile(
 ENGLISH = re.compile(r"^[A-Za-z0-9 '’!?.,:&()\-]+$")
 
 
+def voice_line_ok(line: str, name: str = "Lacy") -> bool:
+    """A spoken teaser line: the streamer's name, 5-14 words, plain English, no banned words."""
+    n = len((line or "").split())
+    return (name.lower() in (line or "").lower() and 5 <= n <= 14 and not BANNED.search(line)
+            and bool(ENGLISH.match(line)))
+
+
 def title_ok(title: str, name: str = "Lacy") -> bool:
     return (name.lower() in title.lower() and 10 <= len(title) <= 100
             and not BANNED.search(title) and bool(ENGLISH.match(title)))
@@ -660,6 +667,45 @@ class ReviewAdapter:
         f.write_text(json.dumps(out, ensure_ascii=False), encoding="utf-8")
         return out
 
+    def voice_line(self, job: dict, d: Path, words: list, title: str) -> str:
+        """The spoken teaser hook (Claude, from what was said), made once per clip and kept in
+        voice.json. Falls back to the clip's title, which always passes the title rules."""
+        name, _ = who(job)
+        f = d / "voice.json"
+        try:
+            line = json.loads(f.read_text(encoding="utf-8")).get("line") or ""
+            if voice_line_ok(line, name):
+                return line
+        except (OSError, ValueError):
+            pass
+        from . import ai
+        if ai.available(self.base):
+            try:
+                line = ai.write_voice_hook(name, game_tag(job.get("category") or ""),
+                                           " ".join(w.text.strip() for w in words), job.get("vibe"), base=self.base)
+                if voice_line_ok(line, name):
+                    f.write_text(json.dumps({"line": line}, ensure_ascii=False), encoding="utf-8")
+                    return line
+                log.info("clip %s: AI voiceover line %r breaks the rules, using the title", job["id"], line)
+            except ai.AIError as e:
+                log.info("clip %s: AI voiceover line unavailable (%s), using the title", job["id"], e)
+        return title
+
+    def teaser(self, seg: Path, peak: float | None, duration: float, line: str, folder: Path,
+               stem: str) -> dict:
+        """The teaser opening: {line, voice (mp3 path or None), s (length), window (source start,
+        end)}. Without a voice the line still shows on screen."""
+        from . import voice as voice_
+        vo = voice_.speak(line, folder / f"{stem}_vo.mp3", self.cfg)
+        vo_s = editor.probe(vo).get("duration") if vo else None
+        length = editor.teaser_length(vo_s)
+        try:
+            levels = editor.loudness(editor.decode_audio(seg))
+        except editor.EditError:
+            levels = []
+        return {"line": line, "voice": vo, "s": length,
+                "window": editor.teaser_window(levels, peak, duration, length)}
+
     def _used(self) -> set[str]:
         if self.used_titles is not None:
             return set(self.used_titles)
@@ -725,11 +771,19 @@ class ReviewAdapter:
                                              tone=None if tone == "matched" else tone)
                 hooks_used.add(social)
                 caps = instagram.captions(job | {"title": title}, social)
-            window = min(float(r["pace"]["window_s"]), float(self.lcfg["max_clip_s"]))
+            stem = f"r{n}_{spec['label']}"
+            # experimental opening: the big moment first under an AI voiceover hook, then the clip
+            tz = None
+            if r.get("opening") == "teaser" and job.get("audio", True):
+                track.update(0.05, f"Version {spec['label']} ({vi + 1}/{len(specs)}): voiceover")
+                line = (base_v.get("teaser") or {}).get("line") if base_v and not texts.get("hook") else None
+                tz = self.teaser(seg, peak, duration, line or self.voice_line(job, d, words, title),
+                                 folder, stem)
+            window = min(float(r["pace"]["window_s"]), float(self.lcfg["max_clip_s"]) - (tz["s"] if tz else 0))
             segs = editor.keep_segments(words, duration, window, peak, r["pace"]["max_gap_s"], r["payoff"])
             cut_words = editor.remap_words(words, segs)
             length = editor.cut_length(segs)
-            stem = f"r{n}_{spec['label']}"
+            lead = tz["s"] if tz else 0.0
             peak_cut = None
             if peak is not None:
                 off = 0.0
@@ -744,7 +798,8 @@ class ReviewAdapter:
                 ass = folder / f"{stem}.ass"
                 # Lacy mode: never a watermark, channel logo or "6" overlay.
                 ass.write_text(editor.build_ass(cut_words, title, length, lay.cam_h, watermark=None, style=r,
-                                                focus=editor.caption_focus(peak_cut)),
+                                                focus=editor.caption_focus(peak_cut), lead=lead,
+                                                lead_text=tz["line"] if tz else ""),
                                encoding="utf-8")
             mp4 = folder / f"{stem}.mp4"
             look = st.grade_filter(r["grade"])
@@ -752,10 +807,20 @@ class ReviewAdapter:
             vol = float((spec["style"].get("custom") or {}).get("sfx", sfx.DEFAULT_VOLUME))
             cue_list = sfx.cues(segs, peak_cut, r["transition"], sfx_lib,
                                 random.Random(f"{item['id']}{n}{spec['label']}sfx"), vol)
-            editor.render_variant(seg, mp4, lay, ass, w, h, segs, ",".join(x for x in (look, fx) if x),
-                                  r["transition"], audio=bool(job.get("audio", True)), sfx_cues=cue_list)
+            if tz:   # the clip starts after the teaser: every effect moves with it
+                cue_list = [sfx.Cue(c.file, c.at + lead, c.volume) for c in cue_list]
+            try:
+                editor.render_variant(seg, mp4, lay, ass, w, h, segs, ",".join(x for x in (look, fx) if x),
+                                      r["transition"], audio=bool(job.get("audio", True)), sfx_cues=cue_list,
+                                      teaser=tz["window"] if tz else None, voice=tz["voice"] if tz else None)
+            finally:
+                if tz and tz["voice"]:
+                    Path(tz["voice"]).unlink(missing_ok=True)
             if ass is not None:
                 ass.unlink(missing_ok=True)
+            if tz:
+                length += lead
+                peak_cut = None if peak_cut is None else peak_cut + lead
             track.update(0.85, f"Version {spec['label']} ({vi + 1}/{len(specs)}): preview")
             prev = editor.preview(mp4, folder / f"{stem}_preview.mp4", preview_bytes, length)
             out.append({"label": spec["label"], "style": spec["style"], "preset": spec.get("preset"),
@@ -763,7 +828,8 @@ class ReviewAdapter:
                         "description": description(title, job["category"], job["channel"], name, platform),
                         "tags": tags(job["category"], name, platform), "hook": social, "captions": caps,
                         "file": mp4.name, "preview": prev.name, "duration": round(length, 1),
-                        "cuts": len(segs) - 1, "peak": peak_cut})
+                        "cuts": len(segs) - 1, "peak": peak_cut,
+                        "teaser": {"line": tz["line"], "voice": bool(tz["voice"]), "s": tz["s"]} if tz else None})
         return out
 
     def validate(self, item: dict, v: dict) -> None:

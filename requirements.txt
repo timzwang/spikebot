@@ -5,6 +5,8 @@ yt-dlp>=2026.10.26
 faster-whisper>=1.1,<2
 # Tokyo Girl mode only: big edits go to a private bucket with a signed link (imported lazily)
 google-cloud-storage>=2.14,<4
+# Stream clips' voiceover teaser (version C): free neural voices, render subprocess only
+edge-tts>=7.2,<8
 # Discord approval bot (#ready-to-post buttons, /style, /preset, #inspiration)
 discord.py>=2.5,<3
 # #inspiration style analysis (shot detection + OpenCV motion); run in a subprocess

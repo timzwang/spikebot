@@ -104,6 +104,47 @@ def test_end_to_end_with_fake_ocr(tmp_path):
     assert len(res["text"]) < 2000
     style = P.to_style(p, "tokyo_girl")
     assert style["custom"]["hook_style"] == "pov" and "transition" not in style  # transitions not copied
+    # fast, beat-synced cutting and no webcam: an edit, so it teaches the trailer / trend edits only
+    assert res["kind"] == "edit" and p["kind"] == "edit" and p["modes"] == ["tokyo_girl", "trend"]
+    assert "**Type** an **edit**" in res["text"]
+    assert set(P.for_mode({"ref": p}, "trend")) == {"ref"} and not P.for_mode({"ref": p}, "lacy")
+
+
+# ---- what kind of video it is (Tim, 19 Nov) ---------------------------------------------
+def analysis(cuts_per_s=0.1, cuts=2, avg=8.0, on_beat=0.0, audio=True, words=3, duration=30.0):
+    return {"duration": duration, "audio": audio, "pacing": {"cuts_per_s": cuts_per_s, "cuts": cuts, "avg_shot_s": avg},
+            "music": {"on_beat": on_beat, "bpm": 0}, "text": {"words_per_screen": words}}
+
+
+def test_video_kind_from_tim_then_claude_then_measurements():
+    assert I.kind_from_note("love the captions type: clip") == "stream_clip"
+    assert I.kind_from_note("Type: Edit, name: x") == "edit" and I.kind_from_note("kind: other") == "other"
+    assert I.kind_from_note("just a note") is None
+    a = analysis()
+    assert I.classify(a, None, "other", facecam=None)[0] == "other"                     # Tim's word wins
+    assert I.classify(a, {"kind": "edit", "kind_why": "montage"}, None, facecam=None) == ("edit", "montage")
+    assert I.classify(a, None, None, facecam=lambda p: True, path=Path("x"))[0] == "stream_clip"   # a webcam
+    assert I.guess_kind(analysis(cuts_per_s=1.2, cuts=20, avg=0.8))[0] == "edit"
+    assert I.guess_kind(analysis(on_beat=0.8, cuts=8, cuts_per_s=0.3, avg=3))[0] == "edit"
+    assert I.guess_kind(analysis())[0] == "stream_clip"                    # long takes, talking, short captions
+    assert I.guess_kind(analysis(audio=False))[0] == "other"
+
+
+def test_stream_clip_and_other_presets_teach_the_right_editor():
+    a = analysis(duration=26.0) | {"colour": None, "structure": {"hook_s": 2.0, "ending": "none"},
+                                   "transitions": {}, "motion": {}, "framing": {"framing": "fill"}}
+    a["pacing"] |= {"shortest_s": 1, "longest_s": 9}
+    clip = I.make_preset("c", list(P.PARTS), a, {"platform": "upload"}, None, "stream_clip", "webcam")
+    assert clip["modes"] == ["lacy"] and clip["settings"]["pacing"] == {"pace": "fast"}   # a 26 s clip
+    assert "framing" not in clip["copy"] and "music-sync" not in clip["copy"] and "framing" not in clip["settings"]
+    assert P.to_style(clip, "lacy")["pace"] == "fast"
+    other = I.make_preset("o", list(P.PARTS), a, {"platform": "upload"}, None, "other")
+    assert other["modes"] == [] and set(other["copy"]) == {"colour", "text", "look"}
+    old = {"name": "old", "settings": {}}          # presets from before the sorting apply everywhere
+    every = {"c": clip, "o": other, "old": old}
+    assert set(P.for_mode(every, "lacy")) == {"c", "old"} and set(P.for_mode(every, "tokyo_girl")) == {"old"}
+    assert "stream clip" in I.breakdown(clip | {"analysis": a | {"size": [1080, 1920], "detector": "ffmpeg",
+                                                                  "pacing": a["pacing"] | {"cuts": 2}}})
 
 
 @needs_ffmpeg

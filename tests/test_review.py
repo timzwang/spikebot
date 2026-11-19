@@ -318,11 +318,15 @@ def test_round_payload_and_buttons(tmp_path):
     store, item = new_item(tmp_path)
     p = DB.round_payload(item, item["rounds"][0])
     assert "`" + item["id"] + "`" in p["content"] and "Expires" not in p["content"]
-    assert [e["title"].split(" ")[0] for e in p["embeds"]] == ["A", "B", "C"]
-    assert "🧪" in p["embeds"][2]["title"]
+    # one embed: A | B | C side by side as columns (short, scannable), not one box each
+    assert len(p["embeds"]) == 1
+    cols = p["embeds"][0]["fields"]
+    assert [f["name"].split(" ")[1] for f in cols] == ["A", "B", "C"] and all(f["inline"] for f in cols)
+    assert "🧪" in cols[2]["name"] and "🧪" not in cols[0]["name"]
     # kept short: length + title, no style details or caption walls
-    assert all("fields" not in e and len(e["description"]) < 200 for e in p["embeds"])
+    assert all(len(f["value"]) < 200 and f["value"].count("\n") <= 3 for f in cols)
     assert "grade" not in str(p["embeds"]) and "cuts" not in str(p["embeds"])
+    assert p["content"].count("\n") == 0
     labels = [b["label"] for row in p["rows"] for b in row]
     assert labels == ["Approve A", "Approve B", "Approve C", "Redo (3 new)", "Reject", "Feedback", "Edit caption"]
     for row in p["rows"]:
@@ -454,7 +458,7 @@ def test_bot_posts_round_with_previews_and_thread(tmp_path):
     b, reg = bot_for(tmp_path, store)
     asyncio.run(b.scan(T))
     msg = reg[100].sent[0]
-    assert len(msg.kw["files"]) == 3 and len(msg.kw["embeds"]) == 3
+    assert len(msg.kw["files"]) == 3 and len(msg.kw["embeds"]) == 1
     item = store.load(item["id"])
     assert item["thread_id"] == 999 and item["rounds"][0]["message_id"] == msg.id
     asyncio.run(b.scan(T))
@@ -882,12 +886,12 @@ def test_clip_card_shows_streamer_and_vod_time_only():
         {"label": "A", "duration": 31.2, "title": "Adin Ross did NOT expect this in GTA 6", "style": {"grade": "moody"}}]}
     p = DB.round_payload(item, rnd)
     assert p["content"].startswith("**Adin Ross** · GTA VI · [VOD at 1:02:03]")
-    assert p["embeds"][0]["description"] == "31.2s\n“Adin Ross did NOT expect this in GTA 6”"
+    assert p["embeds"][0]["fields"][0]["value"] == "**31.2s**\n“Adin Ross did NOT expect this in GTA 6”"
     tg = {"id": "tg1", "mode": "tokyo_girl", "source": {}}
     v = {"label": "B", "duration": 18.0, "silent": True, "music": {"song": "Tokyo Girl", "start_s": 42.4},
          "music_note": "🎵 Sound: **Tokyo Girl** — start it at **0:42** · <https://www.tiktok.com/music/x-1>"}
-    e = DB.round_payload(tg, {"n": 1, "kind": "initial", "variants": [v]})["embeds"][0]
-    assert "🎵 **Tokyo Girl** · start **0:42** · [sound](https://www.tiktok.com/music/x-1)" in e["description"]
+    e = DB.round_payload(tg, {"n": 1, "kind": "initial", "variants": [v]})["embeds"][0]["fields"][0]
+    assert "🎵 Tokyo Girl\n▶ **0:42** · [sound](https://www.tiktok.com/music/x-1)" in e["value"]
 
 
 def test_trend_command_shows_one_bar_from_the_start(tmp_path, monkeypatch):

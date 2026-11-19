@@ -57,6 +57,74 @@ class InspirationError(RuntimeError):
     pass
 
 
+# What kind of video the reference is decides what it teaches (Tim, 19 Nov):
+#   edit         a montage cut from footage, usually to music -> Tokyo Girl + trend edits (all parts)
+#   stream_clip  a moment from a livestream (streamer's voice, webcam, speech captions) -> stream
+#                clips (Lacy, Adin Ross, Seal); pacing = clip length, no framing / beat sync
+#   other        anything else (vlog, podcast, news, meme...) -> kept for reference only: never
+#                rotated into B automatically, only used with /preset apply
+KINDS = ("edit", "stream_clip", "other")
+KIND_MODES = {"edit": ["tokyo_girl", "trend"], "stream_clip": ["lacy"], "other": []}
+KIND_PARTS = {"edit": presets_.PARTS,
+              "stream_clip": ("pacing", "colour", "text", "transitions", "hook", "structure", "look"),
+              "other": ("colour", "text", "look")}
+KIND_LABEL = {"edit": "an **edit** → used for Tokyo Girl and trend edits",
+              "stream_clip": "a **stream clip** → used for stream clips (Lacy, Adin Ross, Seal)",
+              "other": "**another kind of video** → saved for reference only (use it with `/preset apply`)"}
+KIND_WORDS = {"edit": "edit", "edits": "edit", "montage": "edit", "trailer": "edit", "trend": "edit",
+              "clip": "stream_clip", "clips": "stream_clip", "stream": "stream_clip", "stream_clip": "stream_clip",
+              "stream-clip": "stream_clip", "streamclip": "stream_clip", "other": "other", "reference": "other"}
+
+
+def kind_from_note(note: str) -> str | None:
+    """Tim's own word wins: `type: edit` / `type: clip` / `type: other` (also "kind:")."""
+    m = re.search(r"(?i)\b(?:type|kind)\s*:\s*([a-z_\- ]+)", note or "")
+    if not m:
+        return None
+    for w in re.split(r"[\s,]+", m.group(1).strip().lower()):
+        if w in KIND_WORDS:
+            return KIND_WORDS[w]
+    return None
+
+
+def guess_kind(a: dict, facecam: bool | None = None) -> tuple[str, str]:
+    """(kind, why) from the measurements alone (no AI): a webcam that stays put = a stream
+    clip; fast or beat-synced cutting = an edit; anything else = other. Pure."""
+    p, m = a.get("pacing") or {}, a.get("music") or {}
+    if facecam:
+        return "stream_clip", "a webcam stays in the same spot all the way through"
+    if p.get("cuts_per_s", 0) >= 0.5 or (m.get("on_beat", 0) >= 0.6 and p.get("cuts", 0) >= 6):
+        return "edit", f"{p.get('cuts_per_s', 0)} cuts a second" + (", cut on the beat" if m.get("on_beat", 0) >= 0.6 else "")
+    if p.get("avg_shot_s", 0) >= 4 and a.get("audio") and (a.get("text") or {}).get("words_per_screen", 9) <= 4:
+        return "stream_clip", "long takes with talking and short word captions"
+    return "other", "slow cutting and no webcam"
+
+
+def has_facecam(path: Path) -> bool | None:
+    """None when the face model can't run here."""
+    try:
+        from . import safety
+        return safety.find_facecam(path) is not None
+    except Exception as e:  # noqa: BLE001 - a bonus check, never fails an analysis
+        log.info("facecam check skipped: %s", e)
+        return None
+
+
+def classify(a: dict, art: dict | None, forced: str | None = None, facecam=has_facecam,
+             path: Path | None = None) -> tuple[str, str]:
+    """(kind, why): Tim's `type:` > Claude's read of the frames > the measurements."""
+    if forced in KINDS:
+        return forced, "you said so"
+    if art and art.get("kind") in KINDS:
+        return art["kind"], art.get("kind_why") or "Claude's read of the frames"
+    return guess_kind(a, facecam(path) if path is not None and facecam else None)
+
+
+def clip_pace(length_s: float) -> str:
+    """A stream clip's pace is how long it runs (our clip window), not its shot length."""
+    return "fast" if length_s <= 32 else "normal" if length_s <= 48 else "slow"
+
+
 def links(text: str) -> list[str]:
     return [u.rstrip(").,>") for u in URL_RE.findall(text or "") if host_ok(u.rstrip(").,>"))]
 
@@ -621,7 +689,7 @@ def settings_from(a: dict) -> dict:
     return out
 
 
-FRAMING_LABEL = {"box45": "4:5 over blur", "box11": "1:1 over blur", "stack": "two clips stacked",
+FRAMING_LABEL = {"box45": "4:5 box", "box11": "1:1 over blur", "stack": "two clips stacked",
                  "fill": "full screen", "fit": "whole 16:9 frame over blur"}
 
 
@@ -630,7 +698,9 @@ def breakdown(preset: dict) -> str:
     a = preset["analysis"]
     s = preset["settings"]
     p, m, c, t, mo = a["pacing"], a["music"], a.get("colour") or {}, a.get("text") or {}, a.get("motion") or {}
+    kind = preset.get("kind") or "edit"
     L = [f"**Preset `{preset['name']}` saved** · copies: {', '.join(preset['copy'])}",
+         f"**Type** {KIND_LABEL.get(kind, kind)}" + (f" ({preset['kind_why']})" if preset.get("kind_why") else ""),
          f"**Length** {a['duration']:.1f}s · {a['size'][0]}x{a['size'][1]}",
          f"**Pacing** {p['cuts']} cuts, avg shot {p['avg_shot_s']}s ({p['cuts_per_s']}/s,"
          f" {p['shortest_s']}-{p['longest_s']}s) → pace **{s['pacing']['pace']}** ({a['detector']})"]
@@ -660,7 +730,7 @@ def breakdown(preset: dict) -> str:
              + (f"{st_['payoff_s']}s ({st_['payoff']:.0%})" if st_.get("payoff") else "?")
              + f", ending **{st_['ending']}**")
     fr = a.get("framing") or {}
-    if fr.get("framing"):
+    if fr.get("framing") and kind == "edit":
         L.append(f"**Framing** {fr['why']} → **{FRAMING_LABEL.get(fr['framing'], fr['framing'])}**"
                  " (trailer and trend edits)")
     if mo.get("available"):
@@ -668,12 +738,19 @@ def breakdown(preset: dict) -> str:
                  f" {a['transitions']['flash']} flash, {a['transitions']['fade']} fade"
                  f" → **{s['transitions']['transition']}**")
     L.append("Edit with `/preset edit`, combine with `/preset combine`, use with `/preset apply`."
+             " Wrong type? Send it again with `type: edit`, `type: clip` or `type: other`."
              " The reference video has been deleted.")
     return "\n".join(L)[:1990]
 
 
-def make_preset(name: str, copy: list[str], analysis: dict, source: dict, art: dict | None = None) -> dict:
+def make_preset(name: str, copy: list[str], analysis: dict, source: dict, art: dict | None = None,
+                kind: str = "edit", kind_why: str = "") -> dict:
     sets = settings_from(analysis)
+    if kind == "stream_clip":
+        sets["pacing"] = {"pace": clip_pace(analysis["duration"])}
+        sets.pop("framing", None)
+    allowed = KIND_PARTS.get(kind, presets_.PARTS)
+    copy = [c for c in copy if c in allowed] or list(allowed)
     if art:
         look = {}
         ok, _bad = st.apply_settings(art.get("settings") or [], "all")
@@ -683,7 +760,8 @@ def make_preset(name: str, copy: list[str], analysis: dict, source: dict, art: d
         if look:
             sets["look"] = look
     out = {"name": name, "created": time.time(), "source": source, "copy": copy,
-           "settings": sets, "analysis": analysis}
+           "settings": sets, "analysis": analysis, "kind": kind, "kind_why": kind_why,
+           "modes": KIND_MODES.get(kind, [])}
     if art:
         out["art"] = art
     return out
@@ -756,7 +834,7 @@ def art_text(preset: dict) -> str | None:
 
 def run(name: str, copy: list[str], data_dir: Path, out_dir: Path, url: str | None = None,
         file: Path | None = None, reader=None, note: str = "", base: Path | None = None,
-        ai_client=None) -> dict:
+        ai_client=None, kind: str | None = None, facecam=has_facecam) -> dict:
     """Download (if a link), analyse, save the preset, make the strip. The reference
     video is always deleted. Returns {ok, name, text, strip} or {ok: False, error, ask_upload}."""
     store = presets_.Presets(data_dir / "presets")
@@ -779,12 +857,15 @@ def run(name: str, copy: list[str], data_dir: Path, out_dir: Path, url: str | No
         name = store.unique_name(name)
         job.update(0.75, "Claude is studying what makes it good")
         art = study(src, a, note, base, ai_client)
+        job.update(0.9, "Working out what kind of video it is")
+        kind, why = classify(a, art, kind, facecam, src)
         job.update(0.95, "Saving the preset")
-        preset = make_preset(name, copy, a, {"url": url, "platform": platform_of(url) if url else "upload"}, art)
+        preset = make_preset(name, copy, a, {"url": url, "platform": platform_of(url) if url else "upload"}, art,
+                             kind, why)
         store.save(preset)
         strip = thumbnail_strip(src, out_dir / f"{name}_strip.jpg", a["duration"])
         return {"ok": True, "name": name, "text": breakdown(preset), "art": art_text(preset),
-                "strip": str(strip) if strip else None}
+                "strip": str(strip) if strip else None, "kind": kind}
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
         if file is not None:
@@ -803,6 +884,7 @@ def main(argv: list[str] | None = None) -> int:
     an.add_argument("--copy", default="")
     an.add_argument("--json", help="write the result here")
     an.add_argument("--note", default="", help="Tim's words about why he sent it")
+    an.add_argument("--kind", choices=KINDS, help="Tim's type: edit | stream_clip | other (else detected)")
     args = ap.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     from .review import load_cfg
@@ -816,7 +898,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         res = run(presets_.clean_name(args.name), presets_.parse_copy("copy: " + args.copy) if args.copy
                   else list(presets_.PARTS), data_dir, out_dir, args.url, Path(args.file) if args.file else None,
-                  note=args.note, base=base)
+                  note=args.note, base=base, kind=args.kind)
     except progress.Cancelled:   # the reference file is still deleted (run's finally)
         res = {"ok": False, "cancelled": True, "error": "cancelled"}
     if args.json:

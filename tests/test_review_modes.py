@@ -167,7 +167,7 @@ def test_trending_sound_edits_use_each_sound_and_not_tokyo_girl(tmp_path):
     assert DB.mode_label(item)[0] == "Trending sound"
     card = DB.round_payload(item, item["rounds"][0])
     assert "Trending sound" in card["content"]
-    assert all(trend["name"] in e["description"] and "start" in e["description"] for e in card["embeds"])
+    assert all(trend["name"] in f["value"] and "▶" in f["value"] for f in card["embeds"][0]["fields"])
     assert TG.items_on(TG.load_state(Path(s["state_file"])), "2026-11-17") == 0   # not Tokyo Girl's quota
 
 

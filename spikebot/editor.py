@@ -308,7 +308,7 @@ def caption_focus(peak: float | None) -> tuple[float, float] | None:
 
 def build_ass(words: list[Word], hook: str, duration: float, cam_h: int,
               watermark: str | None = None, style: dict | None = None,
-              focus: tuple[float, float] | None = None) -> str:
+              focus: tuple[float, float] | None = None, lead: float = 0.0, lead_text: str = "") -> str:
     """Captions file: the hook/title line under the facecam, and word-by-word
     captions (current word highlighted) over the gameplay.
     `style` is style.resolve() output (font, size, position, colours, words per
@@ -316,8 +316,15 @@ def build_ass(words: list[Word], hook: str, duration: float, cam_h: int,
     text_level "none": nothing at all. "minimal": the hook for 2.5 s and captions
     only for words inside `focus` (the lines around the payoff); no focus = no
     captions. "full": the hook all the way through and every word.
-    `watermark` is an optional corner text; Lacy mode always passes None."""
+    `watermark` is an optional corner text; Lacy mode always passes None.
+    `lead` seconds of teaser play before the clip (`duration` is the clip's own length): the
+    teaser shows `lead_text` (the voiceover line) in the hook box, then everything else runs
+    as usual, `lead` seconds later."""
     r = style or {}
+    if lead > 0:
+        words = [Word(w.start + lead, w.end + lead, w.text) for w in words]
+        focus = (focus[0] + lead, focus[1] + lead) if focus else None
+        duration += lead
     level = r.get("text_level") or "full"
     font = r.get("font") or FONT
     scale = float(r.get("scale") or 1.0)
@@ -350,12 +357,14 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
     if level == "none":
         return head
     if r.get("hook_s"):
-        hook_end = ass_time(min(duration, float(r["hook_s"])))
+        hook_end = ass_time(min(duration, lead + float(r["hook_s"])))
     elif level == "minimal":
-        hook_end = ass_time(min(duration, MINIMAL_HOOK_S))
+        hook_end = ass_time(min(duration, lead + MINIMAL_HOOK_S))
     else:
         hook_end = end
-    lines = [f"Dialogue: 1,{ass_time(0)},{hook_end},Hook,,0,0,0,,{ass_escape(hook)}"] if hook.strip() else []
+    lines = [f"Dialogue: 1,{ass_time(lead)},{hook_end},Hook,,0,0,0,,{ass_escape(hook)}"] if hook.strip() else []
+    if lead > 0 and lead_text.strip():
+        lines.append(f"Dialogue: 1,{ass_time(0)},{ass_time(lead)},Hook,,0,0,0,,{ass_escape(lead_text)}")
     if watermark:
         lines.append(f"Dialogue: 1,{ass_time(0)},{end},Mark,,0,0,0,,{ass_escape(watermark)}")
     ending = END_TEXT.get(r.get("ending") or "")
@@ -496,23 +505,42 @@ def render(src: Path, out: Path, lay: Layout, ass_file: Path | None) -> Path:
 
 def render_variant(src: Path, out: Path, lay: Layout, ass_file: Path | None, src_w: int, src_h: int,
                    segments: list[tuple[float, float]], grade: str = "", transition: str = "cut",
-                   audio: bool = True, sfx_cues: list | None = None) -> Path:
+                   audio: bool = True, sfx_cues: list | None = None,
+                   teaser: tuple[float, float] | None = None, voice: Path | None = None) -> Path:
     """One review variant: keep `segments` of the source (jump cuts), optional
     zoom punch-in on every other segment or a white flash at each cut, then the
-    facecam layout, colour grade and captions."""
+    facecam layout, colour grade and captions.
+    `teaser` (source start, end): that moment plays first, with the clip's sound ducked under
+    the `voice` file (the AI voiceover hook), then a white flash into the clip itself. The
+    captions file and `sfx_cues` must already be on that longer timeline."""
     parts, labels = [], []
+    if teaser is not None and audio:
+        ta, tb = teaser
+        parts.append(f"[0:v]trim=start={ta:.3f}:end={tb:.3f},setpts=PTS-STARTPTS[tv]")
+        clip_a = (f"[0:a]atrim=start={ta:.3f}:end={tb:.3f},asetpts=PTS-STARTPTS,"
+                  "aformat=sample_rates=48000:channel_layouts=stereo")
+        if voice is not None:
+            ms = int(VOICE_DELAY_S * 1000)
+            parts.append(clip_a + f",volume={TEASER_DUCK}[tg]")
+            parts.append(f"[1:a]aformat=sample_rates=48000:channel_layouts=stereo,adelay={ms}|{ms},apad[vo]")
+            parts.append("[tg][vo]amix=inputs=2:normalize=0:duration=first[ta]")
+        else:
+            parts.append(clip_a + "[ta]")
+        labels += ["[tv]", "[ta]"]
+    else:
+        teaser, voice = None, None
     for i, (a, b) in enumerate(segments):
         v = f"[0:v]trim=start={a:.3f}:end={b:.3f},setpts=PTS-STARTPTS"
         if transition == "zoom" and i % 2 == 1:
             v += f",scale={even(src_w * 1.12)}:{even(src_h * 1.12)},crop={src_w}:{src_h}"
-        if transition == "flash" and i > 0:
+        if (transition == "flash" and i > 0) or (teaser is not None and i == 0):
             v += ",fade=t=in:st=0:d=0.12:color=white"
         parts.append(v + f"[sv{i}]")
         labels.append(f"[sv{i}]")
         if audio:
             parts.append(f"[0:a]atrim=start={a:.3f}:end={b:.3f},asetpts=PTS-STARTPTS[sa{i}]")
             labels.append(f"[sa{i}]")
-    n = len(segments)
+    n = len(segments) + (1 if teaser is not None else 0)
     parts.append("".join(labels) + f"concat=n={n}:v=1:a={1 if audio else 0}[cv]" + ("[ca]" if audio else ""))
     vf = lay.filter("[cv]")
     if grade:
@@ -520,13 +548,13 @@ def render_variant(src: Path, out: Path, lay: Layout, ass_file: Path | None, src
     if ass_file is not None:
         vf += f",ass={ass_file.name}"
     graph = ";".join(parts) + ";" + vf + "[v]"
-    extra_inputs: list[str] = []
+    extra_inputs: list[str] = ["-i", str(Path(voice).resolve())] if voice is not None else []
     amap = "[ca]"
     if audio and sfx_cues:
         from .sfx import mix_graph
         for c in sfx_cues:
             extra_inputs += ["-i", str(Path(c.file).resolve())]
-        graph += ";" + mix_graph(sfx_cues, 1)
+        graph += ";" + mix_graph(sfx_cues, 1 + (voice is not None))
         amap = "[am]"
     run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-i", str(src.resolve()), *extra_inputs,
          "-filter_complex", graph, "-map", "[v]", *(["-map", amap] if audio else []),
@@ -534,6 +562,54 @@ def render_variant(src: Path, out: Path, lay: Layout, ass_file: Path | None, src
          *(["-c:a", "aac", "-b:a", "160k", "-ar", "48000"] if audio else []),
          "-movflags", "+faststart", str(out.resolve())], timeout=1800, cwd=(ass_file or out).parent)
     return out
+
+
+# --------------------------------------------------------------------------
+# Teaser opening (experimental): the clip's big moment first, under an AI voiceover hook
+# --------------------------------------------------------------------------
+TEASER_MIN_S, TEASER_MAX_S = 2.5, 4.5   # how long the teaser plays before the clip
+TEASER_DUCK = 0.35                      # the clip's own sound under the voiceover
+VOICE_DELAY_S = 0.12                    # the voice starts just after the first frame
+REACTION_BEFORE, REACTION_AFTER = 6.0, 1.5   # chat reacts late: the loud moment is before the peak
+
+
+def teaser_length(voice_s: float | None) -> float:
+    """Seconds of teaser: the voiceover plus a beat, kept between TEASER_MIN_S and TEASER_MAX_S."""
+    want = (voice_s or 0.0) + VOICE_DELAY_S + 0.45
+    return round(min(TEASER_MAX_S, max(TEASER_MIN_S, want)), 2)
+
+
+def loudness(samples, rate: int = 16000, hop_s: float = 0.1) -> list[float]:
+    """RMS level per `hop_s` window of mono float samples."""
+    import numpy as np
+    hop = max(1, int(rate * hop_s))
+    n = len(samples) // hop
+    if n == 0:
+        return []
+    x = np.asarray(samples[: n * hop], dtype=np.float32).reshape(n, hop)
+    return [float(v) for v in np.sqrt((x * x).mean(axis=1))]
+
+
+def teaser_window(levels: list[float], peak: float | None, duration: float, length: float,
+                  hop_s: float = 0.1) -> tuple[float, float]:
+    """(start, end) of the source for the teaser: centred a little before the loudest moment
+    (the streamer's reaction) in the few seconds before chat's peak, which lags the action.
+    No audio levels: just before the peak; no peak either: the middle. Pure."""
+    peak = duration * 0.55 if peak is None else peak
+    centre = max(0.0, peak - 2.0)
+    if levels:
+        lo = max(0, int((peak - REACTION_BEFORE) / hop_s))
+        hi = min(len(levels), int((peak + REACTION_AFTER) / hop_s) + 1)
+        if hi > lo:
+            # smooth over 0.5 s so one click doesn't win
+            k = 5
+            sm = [sum(levels[max(lo, i - k // 2):min(hi, i + k // 2 + 1)]) for i in range(lo, hi)]
+            best = max(range(len(sm)), key=lambda i: sm[i])
+            if sm[best] > 0:
+                centre = (lo + best) * hop_s
+    length = min(length, duration)
+    start = min(max(0.0, centre - length * 0.55), max(0.0, duration - length))
+    return round(start, 3), round(start + length, 3)
 
 
 def preview(src: Path, out: Path, max_bytes: int, duration: float | None = None) -> Path:

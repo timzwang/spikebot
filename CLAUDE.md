@@ -38,9 +38,8 @@ per phase).
 
 - **Editor:** vertical 1080x1920, word-level captions, programme watermark/hashtags (Lacy mode
   already has a Lacy-only version in `editor.py`/`lacy.py`; captions follow `text_level`:
-  `minimal` = 2.5 s hook + captions only around the payoff, `none` = no text),
-  optional AI voiceover hook.
-- (Done: review queue + Discord approval bot, uploader with windows/caps, #inspiration presets,
+  `minimal` = 2.5 s hook + captions only around the payoff, `none` = no text).
+- (Done: AI voiceover teaser on stream clips' version C, review queue + Discord approval bot, uploader with windows/caps, #inspiration presets,
   stream-clip editor for every programme channel via `lacy.profiles`.)
 
 ## Deadlines
@@ -181,8 +180,19 @@ it in sync when behaviour or config changes.
 - #announcements: `ReviewBot.announce` (channel id or the one named "announcements", else
   #status): new rules (`announce_new_rules`), compiler notices, live links, blocked videos,
   deploy request `announce {text}`.
-- Review cards (`round_payload`) are minimal: streamer/category/VOD time or song + start, length,
-  clip title. No style details.
+- Review cards (`round_payload`) are minimal: one header line (streamer/category/VOD time/id), then ONE
+  embed whose inline fields are A | B | C side by side (`variant_cell`: length, song + start or clip title,
+  🎙️/🎞️ teaser; `VARIANT_DOT`). No style details.
+- **Voiceover teaser** (stream clips, style dim `opening` normal|teaser, lacy only; `pick_variants` gives
+  "teaser" to the experimental C unless pinned/preset): `ReviewAdapter.voice_line` (Claude
+  `ai.write_voice_hook`, cached in the job's voice.json, `voice_line_ok`, else the title) -> `teaser()`
+  (`voice.speak` -> mp3, `editor.teaser_length`, `teaser_window` on `loudness` = loudest moment in the 6 s
+  before chat's peak) -> `build_ass(lead=, lead_text=)` + `render_variant(teaser=, voice=)` (teaser first,
+  clip audio ducked `TEASER_DUCK` under the voice, white flash into the clip; sfx cues shifted). Window
+  shrinks so teaser + clip <= `max_clip_s`. Variant `teaser` {line, voice, s}; Feedback re-renders keep it.
+  `spikebot/voice.py`: engines edge (edge-tts, free) then google (Cloud TTS via the VM's metadata token),
+  config `clips.voice`; `SPIKEBOT_VOICE=off` (tests/conftest.py) = never a real service. Tested in
+  `tests/test_teaser.py`.
 - Kick key: `kick_pusher_credentials` tries the realtime descriptor, then `pusher_from_js` on
   kick.com's scripts; cached 6 h, failures 30 min.
 - **Text rules** (`style.LOCKED` / `enforce`, applied to every rendered spec in `review.specs_for`; saved
@@ -236,8 +246,8 @@ it in sync when behaviour or config changes.
   beats before the drop, `music.window(build_beats=)`) and bursts at the drop (`intro_filter`,
   `LOGO_GROW`, `logo_width`); `slot_filter(motion, framing, smart, fps)` = a -filter_complex graph
   ([0:v], [1:v] for stack -> [v]): `slot_layout` (smart fill: `Shot.single` close-up -> full screen; stack
-  without `shot2` -> box45), `cover_chain` (crop centred on `Shot.focus`), `BOXES` box45 1080x1350 / box11
-  1080x1080 over `blur_bg`, stack = two 1080x608 (`stack_tops`), `fit_filter` = whole frame over a blurred
+  without `shot2` -> box45), `cover_chain` (crop centred on `Shot.focus`), `BOXES` box45 1080x1350 on black bars
+  (`BLACK_BARS`, `pad`, no blur; Remotion skips its blur layer too) / box11 1080x1080 over `blur_bg`, stack = two 1080x608 (`stack_tops`), `fit_filter` = whole frame over a blurred
   copy; "high" text with a boxed/stacked picture sits in the band (`BAND_MARGIN`; Remotion text.y 0.035).
   Faces: `nudity_scan` stores `entry["faces"]` (`safety.flag_times(faces=)` / `frame_faces`, same NudeNet
   pass, once more for old entries), `subject_of` -> `Shot.focus`/`single`. `edit_fps`: 60 only when every
@@ -438,6 +448,12 @@ it in sync when behaviour or config changes.
   `Job.adopt(pid)` for jobs the bot creates; `force_stopped` pids aren't reported as crashes).
   `/cancel [run|all|q-<item>]` + the bar's Cancel button (`rv|cancel|<job id>`). Tested in
   `tests/test_cancel.py`.
+- #inspiration **video kind** (`inspiration.KINDS` edit | stream_clip | other): `classify` = Tim's `type:`
+  (`kind_from_note`, bot passes `--kind`) > Claude (`ART_SCHEMA.kind`) > `guess_kind` (webcam via
+  `safety.find_facecam`, cut rate, beat sync). Preset gets `kind`, `kind_why`, `modes` (`KIND_MODES`: edit ->
+  tokyo_girl+trend, stream_clip -> lacy, other -> none) and `copy` limited to `KIND_PARTS`; stream clips' pace
+  = `clip_pace(length)`. `presets.for_mode` filters what `review._specs_for` rotates into B (no `modes` =
+  old preset, everywhere); `/preset apply` still applies any preset.
 - `spikebot/inspiration.py`: style analysis in a subprocess (`python -m spikebot.inspiration
   analyse --url|--file --name --copy --json`). yt-dlp only for tiktok/instagram/youtube hosts,
   <= 4 min; the reference file is **always deleted** and only numbers are kept (hook *type*,

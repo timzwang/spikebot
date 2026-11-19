@@ -4,8 +4,8 @@ import {
   useCurrentFrame, useVideoConfig,
 } from 'remotion';
 
-// layout (from spikebot/tokyo_girl.slot_layout): 'fill' full screen, 'box45' / 'box11' a picture in
-// `box` over a blurred copy, 'stack' this clip in `box` and `second` in its own box below,
+// layout (from spikebot/tokyo_girl.slot_layout): 'fill' full screen, 'box45' a 4:5 picture in `box` on
+// black bars, 'box11' a picture in `box` over a blurred copy, 'stack' this clip in `box` and `second` in its own box below,
 // 'fit' the whole frame over a blur. focus: where the subject is (fractions of the picture).
 export type Layout = 'fill' | 'fit' | 'box45' | 'box11' | 'stack';
 type Rect = [number, number, number, number];
@@ -91,16 +91,18 @@ const ShotView: React.FC<{shot: Shot; motion: Motion; framing: Layout; fadeIn: n
       </AbsoluteFill>
     );
   }
-  // a boxed picture (or two stacked) over a blurred, darker copy of the clip
+  // a boxed picture (or two stacked) over a blurred, darker copy of the clip; 4:5 on plain black bars
   const cover = Math.max(W / cw, H / ch);
   const boxes: [Source, Rect, number][] = [[shot, shot.box ?? [0, 0, W, H], shot.pan]];
   if (layout === 'stack' && shot.second) boxes.push([shot.second, shot.second.box, -shot.pan]);
   return (
     <AbsoluteFill style={{overflow: 'hidden', backgroundColor: 'black', opacity}}>
-      <AbsoluteFill style={{filter: 'blur(36px) brightness(0.82) saturate(0.85)', transform: 'scale(1.08)'}}>
-        <Media shot={shot} style={{position: 'absolute', width: shot.srcW * cover, height: shot.srcH * cover,
-          left: W / 2 - (cx + cw / 2) * cover, top: H / 2 - (cy + ch / 2) * cover}} />
-      </AbsoluteFill>
+      {layout === 'box45' ? null : (
+        <AbsoluteFill style={{filter: 'blur(36px) brightness(0.82) saturate(0.85)', transform: 'scale(1.08)'}}>
+          <Media shot={shot} style={{position: 'absolute', width: shot.srcW * cover, height: shot.srcH * cover,
+            left: W / 2 - (cx + cw / 2) * cover, top: H / 2 - (cy + ch / 2) * cover}} />
+        </AbsoluteFill>
+      )}
       {boxes.map(([m, [bx, by, bw, bh], pan], i) => (
         <div key={i} style={{position: 'absolute', left: bx, top: by, width: bw, height: bh, overflow: 'hidden'}}>
           <Cover m={m} tw={bw} th={bh} pan={pan} punch={shot.punch} motion={motion} />

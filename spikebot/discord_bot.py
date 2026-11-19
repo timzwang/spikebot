@@ -60,7 +60,7 @@ def mode_label(item: dict) -> tuple[str, int]:
     if item["mode"] == "lacy" and src.get("streamer") and src["streamer"] != "Lacy":   # Adin Ross, Seal...
         return src["streamer"], (0x53FC18 if src.get("platform") == "kick" else 0x9146FF)
     return MODE_LABEL.get(item["mode"], (item["mode"], 0x5865F2))
-VARIANT_COLOUR = {"A": 0x3BA55D, "B": 0x5865F2, "C": 0xFAA61A, "P": 0xEB459E}
+VARIANT_DOT = {"A": "🟢", "B": "🔵", "C": "🟠", "P": "🟣"}   # which column is which, at a glance
 SEP = "|"
 
 
@@ -100,19 +100,34 @@ def vod_time(link: str | None) -> str | None:
 
 
 def song_line(v: dict) -> str | None:
-    """"🎵 Tokyo Girl · start 0:42" (+ the sound's link) for a silent edit."""
+    """"🎵 Tokyo Girl\n▶ 0:42 · [sound](link)" (where to start the sound) for a silent edit."""
     m = v.get("music") or {}
     if not m.get("song"):
         return None
     start = float(m.get("start_s") or 0)
     link = re.search(r"<(https?://[^>]+)>", v.get("music_note") or "")
-    return (f"🎵 **{m['song']}** · start **{int(start // 60)}:{int(start % 60):02d}**"
+    return (f"🎵 {m['song']}\n▶ **{int(start // 60)}:{int(start % 60):02d}**"
             + (f" · [sound]({link.group(1)})" if link else ""))
 
 
+def variant_cell(item: dict, v: dict) -> str:
+    """One column of the card: length, the sound (start time) or the clip title."""
+    lines = [f"**{v.get('duration', '?')}s**" + (" · ✏️" if v.get("edited") else "")
+             + ((" · 🎙️ teaser" if v["teaser"].get("voice") else " · 🎞️ teaser") if v.get("teaser") else "")]
+    song = song_line(v)
+    if song:
+        lines.append(song)
+    elif v.get("silent"):
+        lines.append("🎵 add the sound in the app")
+    if item["mode"] == "lacy" and v.get("title"):
+        lines.append(f"“{v['title'][:90]}”")
+    return "\n".join(lines)[:1000]
+
+
 def round_payload(item: dict, rnd: dict, extra: str = "", entry_on: dict | None = None) -> dict:
-    """Message for one review round, kept short so several can be reviewed at once: who / which
-    song and where to start it, length, and the buttons. Nothing about styles or settings."""
+    """Message for one review round, kept short so several can be reviewed at once: one header
+    line (who / category / VOD), then ONE embed with A | B | C side by side as columns (length,
+    sound + start, or the clip title), and the buttons. Nothing about styles or settings."""
     label, colour = mode_label(item)
     src = item.get("source") or {}
     kind = {"redo": " · redo", "feedback": " · after feedback", "preset": " · preset"}.get(rnd["kind"], "")
@@ -130,20 +145,10 @@ def round_payload(item: dict, rnd: dict, extra: str = "", entry_on: dict | None 
         head.append("⚠️ Nudity check couldn't run: look before approving (it re-checks before posting).")
     if extra:
         head.append(extra)
-    embeds = []
-    for v in rnd["variants"]:
-        lines = [f"{v.get('duration', '?')}s" + (" · ✏️ edited" if v.get("edited") else "")]
-        song = song_line(v)
-        if song:
-            lines.append(song)
-        elif v.get("silent"):
-            lines.append("🎵 add the official sound in the app")
-        if item["mode"] == "lacy" and v.get("title"):
-            lines.append(f"“{v['title'][:100]}”")
-        embeds.append({"title": v["label"] + (" · 🧪" if v.get("experimental") else ""),
-                       "color": VARIANT_COLOUR.get(v["label"][0], 0x99AAB5),
-                       "description": "\n".join(lines)[:600]})
-    return {"content": "\n".join(head)[:1900], "embeds": embeds[:9],
+    fields = [{"name": f"{VARIANT_DOT.get(v['label'][0], '⚪')} {v['label']}" + (" 🧪" if v.get("experimental") else ""),
+               "value": variant_cell(item, v), "inline": True} for v in rnd["variants"][:24]]
+    embeds = [{"color": colour, "fields": fields}] if fields else []
+    return {"content": "\n".join(head)[:1900], "embeds": embeds,
             "rows": buttons(item, rnd),
             "allowed_mentions": {"parse": []}}
 
@@ -478,7 +483,7 @@ def style_overview(profile: st.Profile, presets: dict[str, dict]) -> str:
     return "\n".join(lines)[:1990]
 
 
-STYLE_SETTINGS = ["grade", "pace", "font", "size", "position", "colour", "transition", "ending",
+STYLE_SETTINGS = ["grade", "pace", "font", "size", "position", "colour", "transition", "ending", "opening",
                   "text_level", "intro", "motion", "framing", "media", "hook:lacy", "hook:tokyo_girl",
                   "hook:trend"]
 
@@ -1340,10 +1345,11 @@ class ReviewBot:
                                     " paste a TikTok sound link (Share sound > Copy link), upload the audio,"
                                     " or put `sound:` before a link to a video that uses it. Optional notes:"
                                     " `copy: pacing, colour, text, transitions, hook, structure, music-sync, look, framing`,"
-                                    " `name: my-preset`, and anything about what you like in it.",
+                                    " `name: my-preset`, `type: edit / clip / other` (else I work it out), and anything about what you like in it.",
                                     mention_author=False)
             return
         pending = self.pending_uploads.pop(ch.id, None) if in_thread else None
+        kind = inspiration.kind_from_note(message.content) or (pending or {}).get("kind")
         copy = presets_.parse_copy(message.content) if "copy:" in message.content.lower() or not pending \
             else pending["copy"]
         if in_thread:
@@ -1352,22 +1358,23 @@ class ReviewBot:
             thread = await message.create_thread(name=f"Inspiration {datetime.now():%d %b %H:%M}"[:95],
                                                  auto_archive_duration=1440)
         jobs = [("url", u) for u in urls] + [("file", a) for a in videos]
-        for i, (kind, src) in enumerate(jobs):
+        for i, (what, src) in enumerate(jobs):
             name = presets_.parse_name(message.content) or (pending or {}).get("name")
             if not name or len(jobs) > 1:
-                plat = inspiration.platform_of(src) if kind == "url" else "upload"
+                plat = inspiration.platform_of(src) if what == "url" else "upload"
                 name = f"{name or plat}-{datetime.now():%m%d}" + (f"-{i + 1}" if len(jobs) > 1 else "")
-            await thread.send(f"🔎 Analysing{' ' + src if kind == 'url' else ' your upload'} → preset"
+            await thread.send(f"🔎 Analysing{' ' + src if what == 'url' else ' your upload'} → preset"
                               f" `{name}` (copies: {', '.join(copy)})…", suppress_embeds=True)
             path = None
-            if kind == "file":
+            if what == "file":
                 tmp = self.data_dir / "inspiration" / "uploads"
                 tmp.mkdir(parents=True, exist_ok=True)
                 path = tmp / f"{uuid.uuid4().hex}{Path(src.filename).suffix or '.mp4'}"
                 await src.save(path)
-            note = re.sub(r"https?://\S+|\b(copy|name)\s*:[^\n]*", " ", message.content or "", flags=re.I).strip()
-            res = await self.analyse(name, copy, url=src if kind == "url" else None, file=path, note=note,
-                                     channel_id=thread.id)
+            note = re.sub(r"https?://\S+|\b(copy|name|type|kind)\s*:[^\n]*", " ", message.content or "",
+                          flags=re.I).strip()
+            res = await self.analyse(name, copy, url=src if what == "url" else None, file=path, note=note,
+                                     channel_id=thread.id, kind=kind)
             if res.get("ok"):
                 f = discord.File(res["strip"], filename=f"{res['name']}_strip.jpg") if res.get("strip") else None
                 await thread.send(res["text"], file=f) if f else await thread.send(res["text"])
@@ -1376,7 +1383,7 @@ class ReviewBot:
                 if res.get("strip"):
                     Path(res["strip"]).unlink(missing_ok=True)
             elif res.get("ask_upload"):
-                self.pending_uploads[thread.id] = {"name": name, "copy": copy}
+                self.pending_uploads[thread.id] = {"name": name, "copy": copy, "kind": kind}
                 await thread.send(f"⚠️ I couldn't download that link ({res.get('error')}).\n"
                                   "**Please upload the video file directly here in this thread** and I'll analyse it.")
             elif res.get("cancelled"):
@@ -1870,12 +1877,14 @@ class ReviewBot:
             pj.finish(ok, "" if ok else why, state)
 
     async def analyse(self, name: str, copy: list[str], url: str | None = None, file: Path | None = None,
-                      note: str = "", channel_id: int | None = None) -> dict:
+                      note: str = "", channel_id: int | None = None, kind: str | None = None) -> dict:
         out = self.data_dir / "inspiration" / f"result_{uuid.uuid4().hex}.json"
         out.parent.mkdir(parents=True, exist_ok=True)
         cmd = [sys.executable, "-m", "spikebot.inspiration", "--config", self.config_path, "analyse",
                "--name", name, "--copy", ",".join(copy), "--json", str(out), "--note", note[:800]]
         cmd += ["--url", url] if url else ["--file", str(file)]
+        if kind:
+            cmd += ["--kind", kind]
         pj = self.progress_job(f"Studying `{name}`", channel_id, "🔎") if channel_id else None
         res: dict = {}
         try:

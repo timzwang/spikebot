@@ -391,7 +391,7 @@ def specs_for(item: dict, req: dict, store: Store, rng: random.Random,
 def _specs_for(item: dict, req: dict, store: Store, rng: random.Random,
                base_dir: Path | None, ai_client, sounds: list[str] | None) -> tuple[list[dict], str]:
     profile = store.profile()
-    presets = store.presets().all()
+    presets = presets_.for_mode(store.presets().all(), style_mode(item))
     kind = req["kind"]
     if kind in ("initial", "redo"):
         specs = st.pick_variants(profile, style_mode(item), rng, presets, avoid=shown_styles(item))

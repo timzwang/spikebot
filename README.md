@@ -146,6 +146,14 @@ Rewards). Off by default. It only ever touches `twitch.tv/lacy`.
    quietly under his voice. Put royalty-free files (e.g. Pixabay sound effects) in
    `/opt/spikebot/data/sfx/whoosh/`, `.../hit/` and `.../riser/`; no files = no effects.
    Volume via `/feedback` ("quieter sound effects", or `sfx` 0-1; 0 turns them off).
+   **Voiceover teaser** (version C, setting `opening`): the hook line is written by Claude
+   from the transcript (5-14 words, the streamer's name, no banned words; else the clip
+   title) and read by a free neural voice (`edge-tts`, Microsoft Edge voices, no key), or
+   Google Cloud Text-to-Speech through the VM's service account if Edge fails (needs the
+   Text-to-Speech API enabled; 1M characters a month free). Optional `clips.voice` in
+   `config.json`: `edge_voice` (default `en-US-AndrewNeural`), `edge_rate` (`+8%`),
+   `google_voice`, `engines`. If no voice works the teaser still plays with the line on
+   screen (the card shows 🎞️ instead of 🎙️).
 5. Title always contains "Lacy" and is neutral or funny (it never uses negative,
    mocking or drama words; see `TITLES` / `BANNED` in `spikebot/lacy.py`). Description
    includes `#Lacy #Shorts`.
@@ -468,12 +476,19 @@ Girl sound in the app, paste the matching caption line from the `.txt`.
 Every clip from every mode (Lacy, Tokyo Girl, and the stream-clip editor later) waits for
 your approval. **Nothing is posted anywhere until you press Approve.**
 
-**What you see in #ready-to-post**: one message per clip with **3 preview videos A/B/C**.
-Each card shows the YouTube title, Instagram and TikTok captions (long-press to copy) and its
-style: colour grade, pace, text (font/size/position/colour), transition and hook type.
+**What you see in #ready-to-post**: one compact message per clip with **3 preview videos
+A/B/C**: one header line (streamer · category · VOD time · id), then a single box with
+🟢 A | 🔵 B | 🟠 C side by side as columns (length, the sound and where to start it, or the
+clip title; 🎙️ marks the voiceover teaser), then the buttons. Captions and hashtags are in
+#tiktok-queue after approval, not on the card.
 A is the look you approve most, B is built on one of your most-approved #inspiration
-presets (rotating), C is **🧪 experimental** (settings it has tried least) so you keep
-seeing new ideas. A thread opens under each clip for everything that follows.
+presets of that kind (rotating), C is **🧪 experimental** (settings it has tried least) so you
+keep seeing new ideas. On stream clips C also **opens with a voiceover teaser**: the clip's
+big moment (the loudest reaction just before chat peaked) plays first for 2.5-4.5 s while an
+AI voice reads a hook ("Lacy thought this heist was easy..."), shown on screen too, then a
+white flash into the clip itself. Pin it for every version with `/style opening teaser`, or
+turn it off with `/style opening normal`. A thread opens under each clip for everything that
+follows.
 
 | Button | What happens |
 |---|---|
@@ -609,8 +624,8 @@ PNG at `/opt/spikebot/data/brand/gta6_logo.png`; without the file the intro is s
 **Movement, framing and footage** (all settings, so `/feedback` and `/rules` control them):
 `motion` `none` (every shot completely still: no pans, push-ins, punch-in zooms or animated
 stills; a zoom transition becomes a cut) / `subtle` / `full`, for every mode. Tokyo Girl only:
-`framing` **`box45`** (the default since 18 Nov: a big 4:5 picture over a blurred copy, the hook
-in the band above it), `box11` (the same at 1:1: more of each wide shot), `stack` (two clips at
+`framing` **`box45`** (the default since 18 Nov: a big 4:5 picture on black bars (no blur, 19 Nov), the hook
+in the bar above it), `box11` (a 1:1 picture over a blurred copy: more of each wide shot), `stack` (two clips at
 once, one above the other, each whole), `fit` (the whole 16:9 trailer frame over a blurred copy)
 or `fill` (cropped to fill the screen). Version A uses 4:5; B and C try 1:1 and stacked, so your
 approvals show which works (older `fill`/`fit` rules were switched off once; turn them back on in
@@ -701,8 +716,21 @@ shots) and moved off them, so no other scene flashes up between two clips.
 
 Post a TikTok / Instagram / YouTube link, or upload the video, in #inspiration. Optional notes
 in the same message: `copy: pacing, colour` (parts: pacing, colour, text, transitions, hook,
-structure, music-sync, look, framing; default all), `name: night-drive`, and anything about what you
-like in it ("love that there's no text until the drop"). The bot opens a thread, measures
+structure, music-sync, look, framing; default all), `name: night-drive`, `type: edit / clip /
+other`, and anything about what you like in it ("love that there's no text until the drop").
+
+**It works out what kind of video it is** and only teaches the matching editor (the reply's
+**Type** line says which and why):
+
+| Type | How it's spotted | What it teaches |
+|---|---|---|
+| **edit** | a montage cut from footage, usually to music: fast or beat-synced cuts, no webcam | Tokyo Girl and trend edits (every part, incl. framing and beat sync) |
+| **stream clip** | a livestream moment: the streamer talking, a webcam that stays put, speech captions | stream clips (Lacy, Adin Ross, Seal): pacing from the clip's length, captions, hook, colour, transitions; never framing or beat sync |
+| **other** | anything else (vlog, podcast, news, meme...) | nothing automatically: kept as a reference, used only with `/preset apply` |
+
+Claude decides from the frames when `ANTHROPIC_API_KEY` is set, otherwise the measurements do
+(webcam check, cut rate, beat sync). `type:` in your message always wins; send it again with
+`type:` if it guessed wrong. Presets saved before 19 Nov have no type and still apply everywhere. The bot opens a thread, measures
 the style (including its **framing**: full screen, a 4:5 or 1:1 picture over blur or bars, a 16:9
 frame in the middle, or two clips stacked, read from where the sharp picture sits) and replies with
 a breakdown and a thumbnail strip, and saves the preset to

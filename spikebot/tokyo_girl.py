@@ -1053,6 +1053,7 @@ def fit_filter(pre: list[str], flash: bool) -> str:
 
 
 BOXES = {"box45": (1080, 1350), "box11": (1080, 1080)}   # the picture's size in the 9:16 frame
+BLACK_BARS = ("box45",)    # boxes drawn on black (the others sit over a blurred copy)
 BAND_MARGIN = 70          # "high" text with a boxed / stacked picture: in the band above it
 STACK_H, STACK_GAP = 608, 16                               # two 16:9 clips, one above the other
 
@@ -1114,8 +1115,8 @@ def _pre(shot: Shot) -> list[str]:
 def slot_filter(slot: Slot, zoom: float, motion: str = "full", framing: str = "fill",
                 extra: float = 0.0, smart: bool = True, fps: int | None = None) -> str:
     """The -filter_complex graph ([0:v], and [1:v] for a stacked slot -> [v]) for one clip:
-    "fill" cover-crops to 1080x1920 with a slow pan; "box45"/"box11" a cover-cropped 4:5 / 1:1
-    picture over a blurred copy; "stack" two 16:9 clips one above the other; "fit" the whole
+    "fill" cover-crops to 1080x1920 with a slow pan; "box45" a cover-cropped 4:5 picture with
+    black bars above and below; "box11" a 1:1 picture over a blurred copy; "stack" two 16:9 clips one above the other; "fit" the whole
     frame over a blurred copy. See slot_layout for smart fill."""
     fps = fps or FPS
     sh = slot.shot
@@ -1125,6 +1126,10 @@ def slot_filter(slot: Slot, zoom: float, motion: str = "full", framing: str = "f
         return "[0:v]" + fit_filter(_pre(sh), slot.flash).replace(f"fps={FPS}", f"fps={fps}") + "[v]"
     if kind == "fill":
         return "[0:v]" + ",".join(cover_chain(sh, slot.pan, slot.dur, zoom, motion, W, H, _pre(sh)) + [tail]) + "[v]"
+    if kind in BLACK_BARS:   # 4:5: plain black bars above and below the picture (Tim, 19 Nov)
+        bw, bh = BOXES[kind]
+        return ("[0:v]" + ",".join(cover_chain(sh, slot.pan, slot.dur, zoom, motion, bw, bh, _pre(sh)))
+                + f",pad={W}:{H}:0:{box_top(kind)}:color=black,{tail}[v]")
     if kind in BOXES:
         bw, bh = BOXES[kind]
         pre = ",".join(_pre(sh))
