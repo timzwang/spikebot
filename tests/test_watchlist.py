@@ -161,3 +161,40 @@ def test_bot_alert_cap_and_rank(tmp_path):
     asyncio.run(bot.handle(("twitch", "lacy"), spike("lacy", 4.0)))    # programme: always
     assert [r["channel"] for r in sent] == ["kaicenat", "lacy"]
     assert sent[1]["rank"] == 3 and sent[1]["rank_of"] == 3
+
+
+def test_live_count_is_accurate(tmp_path, monkeypatch):
+    """Regression: the stats panel said 2/35 live while far more were live."""
+    cfg = {"channels": [{"platform": "twitch", "name": "lacy", "programme": "Lacy"},
+                        {"platform": "kick", "name": "adinross", "programme": "Adin"},
+                        {"platform": "kick", "name": "blocked", "programme": None}],
+           "data_dir": str(tmp_path / "data"),
+           "discovery": {"enabled": True, "min_viewers": 1000, "max_channels": 5}}
+    bot = m.Bot(cfg)
+    bot.notifier = FakeNotifier()
+    now = 1_800_000_000.0
+    asyncio.run(bot.discovery_tick([stream("kaicenat", 90000), stream("xqc", 40000)], now=now))
+    # discovered streams count as live straight away, before any poll
+    assert bot.live_count(now) == (2, 3)
+
+    class Helix:
+        async def stream_states(self, logins):
+            return {l: {"live": l in ("lacy", "kaicenat", "xqc"), "category": "Grand Theft Auto VI"}
+                    for l in logins}
+    bot.helix = Helix()
+
+    async def kick_info(slug):
+        if slug == "blocked":
+            raise RuntimeError("HTTP 403 (Cloudflare)")
+        return {"livestream": {"is_live": True, "categories": [{"name": "Grand Theft Auto VI"}]}}
+    monkeypatch.setattr(m, "kick_channel_info", kick_info)
+    monkeypatch.setattr(m.time, "time", lambda: now + 5)
+    asyncio.run(bot.poll_once())
+    # lacy + 2 discovered + adinross live; the blocked Kick channel is unchecked (quiet chat)
+    assert bot.live_count(now + 10) == (4, 1)
+    bot.on_msg(("kick", "blocked"))(now + 8, "u", "LUL")     # busy chat = live while unchecked
+    assert bot.live_count(now + 10) == (5, 1)
+    snap = bot.stats_snapshot(now + 10)
+    assert snap["live"] == 5 and snap["watching"] == 5 and snap["unchecked"] == 1
+    # an old lookup doesn't count any more
+    assert bot.live_count(now + 10 + m.LIVE_FRESH_S + 1)[1] == 5

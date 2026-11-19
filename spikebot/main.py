@@ -35,6 +35,8 @@ from .sources import (TwitchChatPool, TwitchHelix, kick_channel_info, kick_strea
 
 log = logging.getLogger("spikebot")
 UK = ZoneInfo("Europe/London")
+LIVE_FRESH_S = 600     # a live/offline lookup counts this long (polls run every 120 s)
+CHAT_LIVE_S = 300      # unchecked channel with chat this recent = live
 
 
 def parse_time(s: str | None) -> float | None:
@@ -145,6 +147,9 @@ class Bot:
         self.names: dict[tuple[str, str], str] = {}
         self.state: dict[tuple[str, str], dict] = {}
         self.counts: dict[tuple[str, str], int] = {}
+        self.state_at: dict[tuple[str, str], float] = {}   # last successful live/offline lookup
+        self.last_msg: dict[tuple[str, str], float] = {}   # last chat message seen
+        self._poll_warned: dict[str, float] = {}
         for c in self.channels:
             self._register(c)
         # Twitch chat for every channel shares a few sockets (sources.TwitchChatPool)
@@ -220,6 +225,8 @@ class Bot:
                            "stream_id": stream.get("id"), "user_id": stream.get("user_id"),
                            "viewers": stream.get("viewer_count")}
         self.conn.down_since.setdefault(key, now)
+        self.live.update(key, self.state[key])   # it came from the live list: live now
+        self.state_at[key] = now
         self.discovered[login] = now
         self.pool.add(login, self.on_msg(key), self.on_status(key))
         return key
@@ -229,7 +236,8 @@ class Bot:
         if not self.meta.get(key, {}).get("discovered"):
             return
         self.pool.remove(login)
-        for d in (self.detectors, self.meta, self.names, self.state, self.counts):
+        for d in (self.detectors, self.meta, self.names, self.state, self.counts, self.state_at,
+                  self.last_msg):
             d.pop(key, None)
         self.conn.down_since.pop(key, None)
         self.conn.announced.discard(key)
@@ -254,6 +262,13 @@ class Bot:
     async def discovery_tick(self, top: list[dict], now: float) -> None:
         fixed = {n for p, n in self.meta if p == "twitch" and not self.meta[(p, n)].get("discovered")}
         wl_.seen(self.discovered, top, self.disc, now)
+        for t in top:   # the top list is fresh proof these streams are live
+            key = ("twitch", (t.get("user_login") or "").lower())
+            if key in self.detectors:
+                self.state[key] = dict(self.state.get(key) or {}, live=True,
+                                       category=t.get("game_name", ""), viewers=t.get("viewer_count"))
+                self.live.live[key] = True
+                self.state_at[key] = now
         add, drop = wl_.plan(self.discovered, top, fixed, self.disc, now)
         for login in drop:
             self.drop_discovered(login)
@@ -272,6 +287,7 @@ class Bot:
         def cb(ts: float, user: str, text: str) -> None:
             det.add_message(ts, user, text)
             self.counts[key] += 1
+            self.last_msg[key] = ts
         return cb
 
     async def poll_state(self) -> None:
@@ -279,6 +295,14 @@ class Bot:
         while True:
             await self.poll_once()
             await asyncio.sleep(120)
+
+    def _poll_warn(self, what: str, err) -> None:
+        """Lookup failures used to be debug-only, which hid a wrong live count: warn, at
+        most every 30 min per kind."""
+        now = time.time()
+        if now - self._poll_warned.get(what, 0.0) >= 1800:
+            self._poll_warned[what] = now
+            log.warning("live status lookup failed (%s): %s", what, err)
 
     async def poll_once(self) -> None:
         fresh: dict = {}
@@ -288,15 +312,27 @@ class Bot:
                 for login, st in (await self.helix.stream_states(twitch)).items():
                     fresh[("twitch", login)] = st
             except Exception as e:  # noqa: BLE001
-                log.debug("twitch state batch failed: %s", e)
-        for key in [k for k in list(self.detectors) if k[0] == "kick"]:
+                self._poll_warn("twitch", e)
+        kick = [k for k in list(self.detectors) if k[0] == "kick"]
+        gate = asyncio.Semaphore(4)   # a few at a time: Cloudflare dislikes bursts
+
+        async def info(slug):
+            async with gate:
+                return await kick_channel_info(slug)
+        results = await asyncio.gather(*(info(k[1]) for k in kick), return_exceptions=True)
+        for key, info in zip(kick, results):
+            if isinstance(info, BaseException):
+                self._poll_warn(f"kick/{key[1]}", info)
+                continue
             try:
-                fresh[key] = kick_stream_state(await kick_channel_info(key[1]))
+                fresh[key] = kick_stream_state(info)
             except Exception as e:  # noqa: BLE001
-                log.debug("state %s/%s failed: %s", *key, e)
+                self._poll_warn(f"kick/{key[1]}", e)
+        now = time.time()
         for key, st in fresh.items():
             if key not in self.detectors:  # dropped meanwhile
                 continue
+            self.state_at[key] = now
             self.state[key] = st
             change = self.live.update(key, st)
             if change and not self.meta[key].get("discovered"):  # no #status spam for auto-watch
@@ -657,11 +693,25 @@ class Bot:
             except Exception as e:  # noqa: BLE001 - alerts must never take the bot down
                 log.warning("status loop error: %s", e)
 
+    def live_count(self, now: float) -> tuple[int, int]:
+        """(live, unchecked) over every watched channel. A channel's live/offline comes from a
+        lookup in the last 10 min; without one (no Twitch keys, Kick blocked, just added) busy
+        chat in the last 5 min counts as live, and it is reported as unchecked."""
+        live = unchecked = 0
+        for key in list(self.detectors):
+            if now - self.state_at.get(key, 0.0) <= LIVE_FRESH_S:
+                live += bool(self.live.live.get(key))
+            else:
+                unchecked += 1
+                live += now - self.last_msg.get(key, 0.0) <= CHAT_LIVE_S
+        return live, unchecked
+
     def stats_snapshot(self, now: float) -> dict:
         """For the Discord stats channels: live streamers, moments since UK midnight."""
         from datetime import datetime as _dt
         midnight = _dt.fromtimestamp(now, UK).replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
-        return {"live": sum(1 for v in self.live.live.values() if v), "watching": len(self.detectors),
+        live, unchecked = self.live_count(now)
+        return {"live": live, "unchecked": unchecked, "watching": len(self.detectors),
                 "moments_today": len(self.store.candidates_since(midnight)), "started": self.started_at}
 
     def summary_message(self, now: float) -> dict:
@@ -843,6 +893,7 @@ ENV_KEYS = {"TWITCH_CLIENT_ID": "twitch_client_id",
             "YOUTUBE_CLIENT_ID": "youtube_client_id",
             "YOUTUBE_CLIENT_SECRET": "youtube_client_secret",
             "YOUTUBE_REFRESH_TOKEN": "youtube_refresh_token",
+            "YOUTUBE_API_KEY": "youtube_api_key",   # read-only: channel totals for 📊 Stats
             # IG_ACCESS_TOKEN is read straight from .env by instagram.Token (it gets refreshed)
             "IG_USER_ID": "ig_user_id",
             "IG_MAX_REELS_PER_DAY": "ig_max_reels_per_day",

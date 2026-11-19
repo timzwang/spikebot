@@ -421,7 +421,17 @@ it in sync when behaviour or config changes.
   `progress_loop` / `progress_tick`: one message per job file in data/progress/ (edited, deleted
   when done, kept on failure; ids in `_messages.json`). `stats_loop` / `stats_tick`: 📊 Stats
   category of locked voice channels (`stat_names`, ids in data/discord_stats.json), renamed
-  every 10 min; `stats_source` = `main.Bot.stats_snapshot`.
+  as their numbers change (see Stats below); `stats_source` = `main.Bot.stats_snapshot`.
+  Stats: `stats_loop` checks every 60 s; `renames_due` / `note_rename` keep each channel to Discord's 2 renames
+  per 10 min (normally one per `RENAME_GAP_S` ~5 min; `/stats` = `force`, limit only), history in
+  data/discord_stats.json `renamed`. `stat_names` adds views/likes/followers (`compact`, platforms in brackets)
+  and `launch_text` (`GTA6_LAUNCH` = 00:00 GMT 19 Nov 2026, `review.stats.gta6_launch`). `main.Bot.live_count`:
+  lookup in the last `LIVE_FRESH_S` wins (`state_at`; discovered streams live on add and from each top list),
+  else chat in the last `CHAT_LIVE_S` = live and the channel is `unchecked`; failed lookups `_poll_warn`.
+  `social_loop` -> `spikebot/socialstats.py` (`refresh` every `social_every_s`: YouTube Data API with
+  `YOUTUBE_API_KEY` or the OAuth token if it has youtube.readonly, channel from `youtube_channel` or an uploaded
+  video; Instagram followers/likes + per-post `views` insights in turns; TikTok not counted; last good numbers
+  kept `STALE_S`; data/social_stats.json). Tested in `tests/test_socialstats.py`.
   `archive_inspiration` (from `scan_loop`, every 10 min): the bot's #inspiration threads with no
   message for `review.inspiration_archive_hours` (12) are archived (`stale_threads`, snowflake times).
 - `spikebot/help.py` (pure): **/help** [category] [search] (ephemeral): `COMMANDS` (name, `cat`, what, how, tags)
@@ -489,7 +499,7 @@ it in sync when behaviour or config changes.
 - `.env` / `.env.example`: `TWITCH_CLIENT_ID`, `TWITCH_CLIENT_SECRET`, `TOKYO_GIRL_MODE`, `TOKYO_GIRL_PER_DAY`, `LACY_MODE`,
   `LACY_MAX_UPLOADS_PER_DAY`, `LACY_AUTO_UPLOAD` (ignored), `DISCORD_BOT_TOKEN`,
   `DISCORD_REVIEW_CHANNEL_ID`, `DISCORD_TIKTOK_CHANNEL_ID`, `DISCORD_INSPIRATION_CHANNEL_ID`,
-  `DISCORD_GUILD_ID`, `DISCORD_APPROVER_IDS`, `REVIEW_ENABLED`, `YOUTUBE_CLIENT_ID/SECRET/REFRESH_TOKEN`,
+  `DISCORD_GUILD_ID`, `DISCORD_APPROVER_IDS`, `REVIEW_ENABLED`, `YOUTUBE_CLIENT_ID/SECRET/REFRESH_TOKEN`, `YOUTUBE_API_KEY`,
   `IG_USER_ID`, `IG_ACCESS_TOKEN` (read by `instagram.Token`, not `apply_env`),
   `IG_MAX_REELS_PER_DAY`, `INSTAGRAM_AUTO_POST`. `main.apply_env()`
   overlays them on the config (environment > `.env` next to config > `.env` in cwd >
