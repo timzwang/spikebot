@@ -1,4 +1,4 @@
-"""Tokyo Girl mode: silent 9:16 campaign edits from official GTA 6 media, for
+"""Tokyo Girl mode: silent 4:5 campaign edits from official GTA 6 media, for
 Tim to post by hand on TikTok / Instagram with the official "Tokyo Girl" sound.
 
 Sources are only Rockstar's own GTA VI trailers and screenshots
@@ -6,7 +6,7 @@ Sources are only Rockstar's own GTA VI trailers and screenshots
 clips, never voices or dialogue: every export has NO audio track at all.
 
 Each edit:
-  - 1080x1920, 30 fps, 15-30 s (whole bars, so it ends on the beat)
+  - 1080x1350 (4:5, Tim 20 Nov), 30 fps, 15-30 s (whole bars, so it ends on the beat)
   - cuts land on a 120 BPM grid (0.5 s per beat): mixes of 1/2/4-beat shots,
     a white flash on every new text card, slow pans so stills don't sit dead
   - Vice City views, cars, Jason & Lucia (tags from file names / tags.json)
@@ -54,7 +54,7 @@ from . import delivery, editor, shot_info, shot_labels
 log = logging.getLogger("tokyo_girl")
 UK = ZoneInfo("Europe/London")
 LAUNCH = date(2026, 11, 19)  # GTA 6 release day
-W, H, FPS = 1080, 1920, 30   # 30 fps = the trailers' own rate; 60 doubled every trailer frame and stuttered on TikTok (#39)
+W, H, FPS = 1080, 1350, 30   # 4:5 (Tim, 20 Nov: "edits in 4:5, not 9:16"). 30 fps = the trailers' own rate; 60 doubled every trailer frame and stuttered on TikTok (#39)
 
 DEFAULTS = {
     "enabled": True,
@@ -1344,30 +1344,32 @@ def card_markup(text: str, highlight: str = "&H00E5FF&") -> str:
     return re.sub(r"\*(.+?)\*", rf"{{\\c{highlight}}}\1{{\\c&HFFFFFF&}}", t).replace("*", "")
 
 
-TEXT_POS = {"high": (8, 520), "middle": (5, 0), "low": (2, 560)}  # ASS alignment, MarginV
+TEXT_POS = {"high": (8, 150), "middle": (5, 0), "low": (2, 170)}  # ASS alignment, MarginV (4:5 frame)
+BAND_FRAMINGS = ("box11", "stack", "fit")   # framings with a black band above the picture for the text
 LABEL_PX = 58   # corner labels on comparison pictures
 
 
 def build_text_ass(cards: list[tuple[float, float, str]], font: str, size: int,
                    style: dict | None = None, labels: list[dict] | None = None) -> str:
-    """Big centred text, upper middle (clear of TikTok/IG buttons), pops in on the
-    beat. The last card (the question) sits in a dark box so it stands out.
-    `style` (style.resolve output) changes font, size, position and colours."""
+    """Big centred text, upper middle, in TikTok's own text style (Tim, 20 Nov): TikTok Sans, white
+    with a thin black outline; the last card (the question) is black text on a white box. A card
+    appears on its beat and just disappears: no pop, no movement, no fade. It stays
+    editor.CAPTION_HOLD_S longer when the next card isn't due yet, so it can be read.
+    `style` (style.resolve output) changes size, position and colours."""
     from .style import ass_colour
     r = style or {}
-    if r.get("font"):
-        font = r["font"]
+    font = editor.CAPTION_FONT
     size = int(r.get("text_px") or size * float(r.get("scale") or 1.0))
     q = int(size * 1.05)
     align, margin = TEXT_POS.get(r.get("position") or "high", TEXT_POS["high"])
     if r.get("text_y") is not None:
-        align, margin = 2, int(max(400, min(H - 300, H * (1 - float(r["text_y"])) - size)))
-    elif (r.get("position") or "high") == "high" and r.get("framing") in (*BOXES, "stack"):
+        align, margin = 2, int(max(150, min(H - 150, H * (1 - float(r["text_y"])) - size)))
+    elif (r.get("position") or "high") == "high" and r.get("framing") in BAND_FRAMINGS:
         margin = BAND_MARGIN   # in the band above the picture, not over it
     main = ass_colour(r.get("text_colour") or "#FFFFFF")
     hi = "&H" + ass_colour(r.get("highlight") or "#FFE500")[4:] + "&"
-    outline = int(r["outline"]) if r.get("outline") is not None else 9
-    shadow = int(r["shadow"]) if r.get("shadow") is not None else 4
+    outline = int(r["outline"]) if r.get("outline") is not None else 5
+    shadow = int(r["shadow"]) if r.get("shadow") is not None else 1
     head = f"""[Script Info]
 ScriptType: v4.00+
 PlayResX: {W}
@@ -1378,22 +1380,27 @@ ScaledBorderAndShadow: yes
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
 Style: Card,{font},{size},{main},{main},&H00000000,&H96000000,-1,0,0,0,100,100,0,0,1,{outline},{shadow},{align},90,90,{margin},1
-Style: Ask,{font},{q},&H00FFFFFF,&H00FFFFFF,&H40000000,&H40000000,-1,0,0,0,100,100,0,0,3,22,0,{align},90,90,{margin},1
+Style: Ask,{font},{q},&H00000000,&H00000000,&H00FFFFFF,&H00FFFFFF,-1,0,0,0,100,100,0,0,3,22,0,{align},90,90,{margin},1
 Style: Label,{font},{LABEL_PX},&H00FFFFFF,&H00FFFFFF,&H50000000,&H50000000,-1,0,0,0,100,100,0,0,3,14,0,7,0,0,0,1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 """
-    pop = r"{\fad(60,0)\fscx72\fscy72\t(0,140,\fscx100\fscy100)}"
     lines = []
+    end_all = max((e for _s, e, _t in cards), default=0.0)
     for i, (s, e, text) in enumerate(cards):
-        style_name = "Ask" if i == len(cards) - 1 and plain(text).rstrip().endswith("?") else "Card"
-        lines.append(f"Dialogue: 0,{editor.ass_time(s)},{editor.ass_time(e)},{style_name},,0,0,0,,"
-                     f"{pop}{card_markup(text, hi)}")
+        ask = i == len(cards) - 1 and plain(text).rstrip().endswith("?")
+        style_name = "Ask" if ask else "Card"
+        nxt = cards[i + 1][0] if i + 1 < len(cards) else end_all
+        e = max(e, min(e + editor.CAPTION_HOLD_S, nxt))   # longer to read, never over the next card
+        markup = card_markup(text, "&H000000&" if ask else hi)
+        if ask:
+            markup = markup.replace("{\\c&HFFFFFF&}", "{\\c&H000000&}")
+        lines.append(f"Dialogue: 0,{editor.ass_time(s)},{editor.ass_time(e)},{style_name},,0,0,0,,{markup}")
     for lb in labels or []:   # corner labels ("GTA 5 · 2013") on a comparison's pictures
         colour = "&H" + ass_colour(lb.get("colour") or "#FFFFFF")[4:] + "&"
         lines.append(f"Dialogue: 1,{editor.ass_time(lb['start'])},{editor.ass_time(lb['end'])},Label,,0,0,0,,"
-                     f"{{\\pos({lb['x']},{lb['y']})\\c{colour}\\fad(80,0)}}{editor.ass_escape(lb['text'])}")
+                     f"{{\\pos({lb['x']},{lb['y']})\\c{colour}}}{editor.ass_escape(lb['text'])}")
     return head + "\n".join(lines) + "\n"
 
 
@@ -1404,18 +1411,16 @@ MOTION_AMOUNT = {"none": 0.0, "subtle": 0.5, "full": 1.0}
 
 
 def fit_filter(pre: list[str], flash: bool) -> str:
-    """The whole frame, nothing cropped, centred over a blurred, darker copy of itself."""
+    """The whole frame, nothing cropped (no text or subject cut off), centred on black."""
     head = ",".join(pre) + "," if pre else ""
     tail = ",fade=t=in:st=0:d=0.12:color=white" if flash else ""
-    return (f"{head}split[a][b];"
-            f"[a]scale=270:480:force_original_aspect_ratio=increase,crop=270:480,boxblur=18:2,"
-            f"eq=brightness=-0.12:saturation=0.85,scale={W}:{H}[bg];"
-            f"[b]scale={W}:{H}:force_original_aspect_ratio=decrease:flags=bicubic,setsar=1[fg];"
-            f"[bg][fg]overlay=(W-w)/2:(H-h)/2,fps={FPS},setsar=1,format=yuv420p{tail}")
+    return (f"{head}scale={W}:{H}:force_original_aspect_ratio=decrease:flags=bicubic,setsar=1,"
+            f"pad={W}:{H}:(ow-iw)/2:(oh-ih)/2:color=black,fps={FPS},setsar=1,format=yuv420p{tail}")
 
 
-BOXES = {"box45": (1080, 1350), "box11": (1080, 1080)}   # the picture's size in the 9:16 frame
-BLACK_BARS = ("box45",)    # boxes drawn on black (the others sit over a blurred copy)
+# The picture's size in the 4:5 frame: box45 fills it, box11 is a square on black bars.
+BOXES = {"box45": (W, H), "box11": (1080, 1080)}
+BLACK_BARS = ("box45", "box11")    # boxes drawn on plain black (no blurred copy: Tim, 19 Nov)
 BAND_MARGIN = 70          # "high" text with a boxed / stacked picture: in the band above it
 STACK_H, STACK_GAP = 608, 16                               # two 16:9 clips, one above the other
 
@@ -1430,19 +1435,33 @@ def stack_tops() -> tuple[int, int]:
     return top, top + STACK_H + STACK_GAP
 
 
+TEXT_TAGS = {"title_card", "text_overlay", "rockstar_presents"}   # vision labels: words on screen
+
+
+def cuts_off(shot: Shot) -> bool:
+    """A 4:5 crop would cut something off: words on screen (title cards, captions in the clip) or a
+    subject wider than the crop (shot_info / vision labels)."""
+    return not shot.crop_ok or bool(shot.vtags & TEXT_TAGS)
+
+
 def slot_layout(slot: Slot, framing: str, smart: bool = True) -> str:
-    """The framing one clip is drawn with: smart fill puts a close-up of one person full
-    screen; a stacked slot without its second clip falls back to 4:5."""
-    if smart and slot.shot.single and framing in ("box45", "box11", "fit"):
-        return "fill"
+    """The framing one clip is drawn with. A cropping framing (fill / box45 / box11) shows the whole
+    frame instead ("fit") when the crop would cut off text or the subject (Tim, 20 Nov: never cut
+    off text or things shown in a clip); smart fill puts a close-up of one person full frame; a
+    stacked slot without its second clip falls back to 4:5."""
+    chosen = framing
     if framing == "stack" and slot.shot2 is None:
-        return "box45"
+        framing = "box45"
+    if framing in CROPPED and cuts_off(slot.shot):
+        return "fit"
+    if smart and slot.shot.single and chosen in ("box45", "box11", "fit"):
+        return "fill"
     return framing
 
 
 def blur_bg(head: str = "") -> str:
-    return (f"{head}scale=270:480:force_original_aspect_ratio=increase,crop=270:480,boxblur=18:2,"
-            f"eq=brightness=-0.12:saturation=0.85,scale={W}:{H}")
+    """The background under stacked pictures: plain black now (no blur, Tim 19 Nov)."""
+    return f"{head}scale={W}:{H},drawbox=x=0:y=0:w={W}:h={H}:color=black:t=fill"
 
 
 def cover_chain(shot: Shot, pan: int, dur: float, zoom: float, motion: str, tw: int, th: int,
@@ -1477,9 +1496,9 @@ def _pre(shot: Shot) -> list[str]:
 def slot_filter(slot: Slot, zoom: float, motion: str = "full", framing: str = "fill",
                 extra: float = 0.0, smart: bool = True, fps: int | None = None) -> str:
     """The -filter_complex graph ([0:v], and [1:v] for a stacked slot -> [v]) for one clip:
-    "fill" cover-crops to 1080x1920 with a slow pan; "box45" a cover-cropped 4:5 picture with
-    black bars above and below; "box11" a 1:1 picture over a blurred copy; "stack" two 16:9 clips one above the other; "fit" the whole
-    frame over a blurred copy. See slot_layout for smart fill."""
+    "fill" / "box45" cover-crop to the 1080x1350 frame with a slow pan; "box11" a 1:1 picture on
+    black bars; "stack" two 16:9 clips one above the other on black; "fit" the whole frame on black.
+    See slot_layout for when a crop becomes "fit" and for smart fill."""
     fps = fps or FPS
     sh = slot.shot
     tail = f"fps={fps},setsar=1,format=yuv420p" + (",fade=t=in:st=0:d=0.12:color=white" if slot.flash else "")
@@ -1875,7 +1894,7 @@ def render_plan(plan: Plan, lcfg: dict, out: Path, grade: str = "", text_style: 
         if cards or labels:
             (tmpd / "text.ass").write_text(build_text_ass(cards or [], lcfg["font"], lcfg["font_size"], text_style,
                                                           labels), encoding="utf-8")
-            graph += f";[v0]ass=text.ass{tail_fx},format=yuv420p[v]"
+            graph += f";[v0]{editor.ass_filter('text.ass')}{tail_fx},format=yuv420p[v]"
         else:
             graph += f";[v0]null{tail_fx},format=yuv420p[v]"
         part = tmpd / "edit.mp4"

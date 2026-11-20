@@ -97,7 +97,7 @@ def test_crop_window_finds_the_subject_and_flags_cut_off_shots():
     st2 = shot_info.shot_stats(centred, 0.0, 4.0, 16 / 9)
     assert st2["focus"] == 0.5 and shot_info.crop_ok(st2)
     assert shot_info.crop_ok(None) and not shot_info.crop_ok(None, subject_w=0.9)
-    assert shot_info.subject_focus(0.5, 0.2, 16 / 9) == 0.5 and shot_info.subject_focus(0.1, 0.1, 16 / 9) < 0.2
+    assert shot_info.subject_focus(0.5, 0.2, 16 / 9) == 0.5 and shot_info.subject_focus(0.1, 0.1, 16 / 9) <= shot_info.crop_share(16 / 9) / 2 + 1e-9   # hard left (4:5 crop)
 
 
 def test_palette_and_duplicate_footage():

@@ -1,5 +1,5 @@
-"""Framing of 16:9 trailer clips in the 9:16 edit (Tim, 18 Nov): 4:5 over blur by default,
-1:1 and stacked for A/B/C to try, smart fill on close-ups of one person, crops centred on the
+"""Framing of 16:9 trailer clips in the edit (4:5 since 20 Nov: box45 fills the frame), 1:1 and
+stacked on black for A/B/C to try, smart fill on close-ups of one person, crops centred on the
 subject; real 60 fps only when the footage has it; clips spread over long videos."""
 from __future__ import annotations
 
@@ -76,20 +76,20 @@ def test_ffmpeg_graphs_for_each_framing():
     wide = shot()
     box = TG.slot_filter(slot(wide), 1.0, "none", "box45")
     # 4:5 sits on plain black bars, never a blurred copy (Tim, 19 Nov)
-    assert "crop=1080:1350:" in box and f"pad=1080:1920:0:{TG.box_top('box45')}:color=black" in box
+    assert "crop=1080:1350:" in box and f"pad=1080:{TG.H}:0:{TG.box_top('box45')}:color=black" in box
     assert "boxblur" not in box and "split" not in box
     assert box.startswith("[0:v]") and box.endswith("[v]")
     sq = TG.slot_filter(slot(wide), 1.0, "none", "box11")
-    assert "crop=1080:1080:" in sq and "overlay=0:420" in sq
+    assert "crop=1080:1080:" in sq and "pad=1080:1350:0:135:color=black" in sq and "boxblur" not in sq
     st = TG.slot_filter(slot(wide, shot2=shot("b.mp4")), 1.0, "none", "stack")
     y1, y2 = TG.stack_tops()
     assert "[1:v]" in st and f"overlay=0:{y1}" in st and f"overlay=0:{y2}" in st and st.count("crop=1080:608:") == 2
     # the crop follows the subject: a face at 80% across moves the window right of centre
     centred = TG.slot_filter(slot(shot()), 1.0, "none", "fill", smart=False)
     right = TG.slot_filter(slot(shot(focus=(0.8, 0.5))), 1.0, "none", "fill", smart=False)
-    assert "crop=1080:1920:'1167.0':'0.0'" in centred
-    x = float(right.split("crop=1080:1920:'")[1].split("'")[0])
-    assert x > 1167.0
+    assert "crop=1080:1350:'660.0':'0.0'" in centred
+    x = float(right.split("crop=1080:1350:'")[1].split("'")[0])
+    assert x > 660.0
     fps60 = TG.slot_filter(slot(wide), 1.0, "none", "box45", fps=60)
     assert "fps=60" in fps60
 
@@ -97,10 +97,10 @@ def test_ffmpeg_graphs_for_each_framing():
 def test_text_sits_in_the_band_above_a_boxed_picture():
     r = S.resolve(S.default_style("tokyo_girl") | {"position": "high"})
     assert r["framing"] == "box45" and r["smart_fill"] is True
-    ass = TG.build_text_ass([(0, 2, "hi")], "DejaVu Sans", 100, r)
+    ass = TG.build_text_ass([(0, 2, "hi")], "DejaVu Sans", 100, dict(r, framing="box11"))
     assert f",8,90,90,{TG.BAND_MARGIN}," in ass
-    full = TG.build_text_ass([(0, 2, "hi")], "DejaVu Sans", 100, dict(r, framing="fill"))
-    assert ",8,90,90,520," in full
+    full = TG.build_text_ass([(0, 2, "hi")], "DejaVu Sans", 100, r)   # 4:5 box45 fills the frame: no band
+    assert ",8,90,90,150," in full
 
 
 # ---- 60 fps ----------------------------------------------------------------------
@@ -169,7 +169,8 @@ def test_remotion_props_carry_layout_box_focus_and_second_clip(tmp_path):
     props, files = RM.props_for(plan, {"font": "DejaVu Sans"}, r, [], None, 0.0, tmp_path)
     a, b = props["shots"]
     assert props["fps"] == 60 and a["layout"] == "box45" and a["focus"] == [0.7, 0.4]   # stack, no 2nd clip
-    assert b["layout"] == "stack" and b["second"]["box"][1] == TG.stack_tops()[1] and len(files) == 3
+    assert b["layout"] == "stack" and b["second"]["box"][1] == TG.stack_tops()[1] and len(files) == 4
+    assert "TikTokSans-Bold.ttf" in files and props["height"] == 1350
     assert props["text"]["y"] < 0.1                                   # hook in the band above
 
 
@@ -191,6 +192,6 @@ def test_ffmpeg_renders_boxed_and_stacked_edits(tmp_path, framing):
     TG.render_plan(plan, {"media_dir": str(media), "font": "DejaVu Sans", "font_size": 80}, out, text_style=r)
     info = json.loads(subprocess.run(["ffprobe", "-v", "error", "-show_entries", "stream=width,height,r_frame_rate",
                                       "-of", "json", str(out)], capture_output=True, text=True).stdout)["streams"][0]
-    assert (info["width"], info["height"], info["r_frame_rate"]) == (1080, 1920, "60/1")
+    assert (info["width"], info["height"], info["r_frame_rate"]) == (1080, 1350, "60/1")
 
 

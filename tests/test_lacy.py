@@ -117,8 +117,9 @@ def test_captions_have_lacy_hook_highlight_and_no_watermark():
     ass = editor.build_ass(words, "Lacy can't believe this happened in GTA", 10.0, 600)
     assert "Hook,,0,0,0,,Lacy can't believe this happened in GTA" in ass
     assert "MarginV" in ass and ",636,1" in ass  # hook sits just under the 600px facecam
-    assert "{\\c&H00FFFF&}HE{\\c&HFFFFFF&} STOLE THE CAR." in ass
-    assert "UNBELIEVABLE" in ass and ass.count("Cap,,") == 4
+    # TikTok style (20 Nov): the whole line at once, sentence case, no word highlight
+    assert "Cap,,0,0,0,,{\\an2\\pos(540,1500)\\q2}He stole the car." in ass
+    assert "Unbelievable" in ass and ass.count("Cap,,") == 2 and "\\c&H" not in ass.split("[Events]")[1]
     assert "Mark,," not in ass  # no watermark/logo line
     assert "Mark,,0,0,0,,GTA 6 Clipped" in editor.build_ass(words, "Lacy x", 10, 600,
                                                             watermark="GTA 6 Clipped")
@@ -157,7 +158,7 @@ def test_captions_that_add_nothing_are_cut():
     mixed = [Word(0.0, 0.3, "bro"), Word(0.4, 0.6, "haha"), Word(0.7, 0.9, "yeah"),
              Word(2.0, 2.3, "the"), Word(2.4, 2.7, "cops"), Word(2.8, 3.1, "followed"), Word(3.2, 3.5, "me")]
     ass = editor.build_ass(mixed, "Lacy x", 10.0, 600)
-    assert "BRO" not in ass and "COPS" in ass   # the filler-only caption is dropped
+    assert "Bro" not in ass and "cops" in ass   # the filler-only caption is dropped
 
 
 def test_dhash_and_thumbnail_times():

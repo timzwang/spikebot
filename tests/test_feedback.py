@@ -206,7 +206,7 @@ def test_lacy_text_levels():
     d_full = dialogue(editor.build_ass(WORDS, "Lacy hook", 20, 600, style=full))
     d_mini = dialogue(editor.build_ass(WORDS, "Lacy hook", 20, 600, style=mini, focus=editor.caption_focus(12.0)))
     assert dialogue(editor.build_ass(WORDS, "Lacy hook", 20, 600, style=none)) == []
-    assert ",0:00:20.00,Hook," in d_full[0] and ",0:00:02.50,Hook," in d_mini[0]
+    assert ",0:00:20.00,Hook," in d_full[0] and ",0:00:04.00,Hook," in d_mini[0]   # 2.5 s + 1.5 s to read
     caps = [d for d in d_mini if ",Cap," in d]
     assert caps and all(7.0 <= float(d.split(",")[1].split(":")[2]) <= 14.5 for d in caps)
     assert len(caps) < len([d for d in d_full if ",Cap," in d])
@@ -263,10 +263,10 @@ def test_logo_intro_and_no_text_render(tmp_path):
                               "-vf", f"crop=2:2:{x}:{y}", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"],
                              capture_output=True, check=True).stdout
         return tuple(raw[:3])
-    r0, g0, b0 = pixel(1.0, 540, 960)       # logo (pink) in the middle during the intro
+    r0, g0, b0 = pixel(1.0, 540, 675)       # logo (pink) in the middle of the 4:5 frame during the intro
     assert r0 > 150 and g0 < 120 and b0 > 80
     assert pixel(1.0, 540, 20) == pytest.approx((0, 0, 0), abs=12)   # cinema bar
-    r1, g1, b1 = pixel(5.0, 540, 960)       # gone afterwards
+    r1, g1, b1 = pixel(5.0, 540, 675)       # gone afterwards
     assert not (r1 > 150 and g1 < 120 and b1 > 80 and abs(r1 - 255) < 30)
 
 

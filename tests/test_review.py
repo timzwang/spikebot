@@ -424,8 +424,9 @@ class FakeUser:
 
 
 class FakeInteraction:
-    def __init__(self, uid=42):
+    def __init__(self, uid=42, values=None):
         self.user, self.response = FakeUser(uid), FakeResponse()
+        self.data = {"values": values} if values is not None else {}
 
         class F:
             sent = []
@@ -435,10 +436,11 @@ class FakeInteraction:
         self.followup = F()
 
 
-def bot_for(tmp_path, store):
+def bot_for(tmp_path, store, board: bool = False):
+    """board=False: the one-message-per-round cards (tests below); the board has its own tests."""
     cfg = {"data_dir": str(store.data_dir), "discord_bot_token": "t", "discord_channel_id": "100",
            "discord_tiktok_channel_id": "200", "discord_approver_ids": "42",
-           "lacy": {"submissions_csv": str(tmp_path / "subs.csv")}}
+           "lacy": {"submissions_csv": str(tmp_path / "subs.csv")}, "review": {"board": board}}
     (tmp_path / "config.json").write_text("{}")
     b = DB.ReviewBot(cfg, tmp_path / "config.json")
     reg: dict = {}
@@ -976,3 +978,27 @@ def test_trend_command_shows_one_bar_from_the_start(tmp_path, monkeypatch):
     asyncio.run(b.run_trend(None, "auto", 1))
     states = sorted(d["state"] for _, d in progress.load_all(b.data_dir))
     assert states == ["done", "skipped"]
+
+
+def test_board_is_one_message_that_expands_and_updates(tmp_path):
+    store, item = new_item(tmp_path)
+    b, reg = bot_for(tmp_path, store, board=True)
+    asyncio.run(b.scan(T))
+    assert len(reg[100].sent) == 1
+    board = reg[100].sent[0]
+    assert "Ready to review: 1" in board.content and item["id"] in board.content
+    assert len(board.kw["files"]) == 3                       # the only video is opened, previews attached
+    r = store.load(item["id"])["rounds"][0]
+    assert r["status"] == "posted" and r["board"] and r["message_id"] == board.id
+    asyncio.run(b.scan(T + 15))
+    assert len(reg[100].sent) == 1 and board.edits == []     # nothing changed: not even an edit
+    # Collapse, then expand again through the drop-down
+    asyncio.run(b.on_button(FakeInteraction(), DB.parse_cid(DB.cid("bclose", item["id"]))))
+    assert board.edits[-1]["attachments"] == [] and "Approve A" not in str(board.edits[-1]["view"].children)
+    asyncio.run(b.on_button(FakeInteraction(values=[item["id"]]), DB.parse_cid(DB.cid("board", "-"))))
+    assert len(board.edits[-1]["attachments"]) == 3
+    # Approve from the board: the item leaves the list, still one message in the channel
+    asyncio.run(b.on_button(FakeInteraction(), DB.parse_cid(DB.cid("approve", item["id"], 1, "B"))))
+    assert store.load(item["id"])["status"] == "approved"
+    assert "Ready to review: 0" in board.content
+    assert [m for m in reg[100].sent] == [board]

@@ -85,7 +85,7 @@ def test_real_remotion_render(tmp_path, monkeypatch):
                                    "-show_entries", "format=duration", "-of", "json", str(out)],
                                   capture_output=True, text=True, check=True).stdout)
     assert [s["codec_type"] for s in j["streams"]] == ["video"]                  # silent
-    assert (j["streams"][0]["width"], j["streams"][0]["height"]) == (1080, 1920)
+    assert (j["streams"][0]["width"], j["streams"][0]["height"]) == (1080, 1350)   # 4:5
     assert float(j["format"]["duration"]) == pytest.approx(4.0, abs=0.1)
 
 

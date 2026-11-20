@@ -146,6 +146,9 @@ class Bot:
         self.cfg = cfg
         self.det_cfg = DetectorConfig(**cfg.get("detector", {}))
         self.store = Store(Path(cfg.get("data_dir", "data")))
+        # every campaign Tim joined is watched (spikebot/campaigns.py), on top of config.json
+        from . import campaigns as camp_
+        camp_.merge_channels(cfg)
         self.channels = cfg["channels"]
         self.detectors: dict[tuple[str, str], SpikeDetector] = {}
         self.meta: dict[tuple[str, str], dict] = {}
@@ -185,6 +188,7 @@ class Bot:
         profs = lacy_.profiles(cfg)
         if profs:
             self.lacy = lacy_.LacyMode(cfg, self.data_dir, config_path)
+            self.lacy.is_live = lambda key: (self.state.get(key) or {}).get("live")
             log.info("stream clips for: %s", ", ".join(f"{p['name']} ({k[0]}/{k[1]})" for k, p in profs.items()))
             if not self.helix and any(k[0] == "twitch" for k in profs):
                 log.warning("Twitch keys are missing: no Twitch stream clips"
@@ -566,6 +570,29 @@ class Bot:
         return made
 
     # ---- Lacy mode ---------------------------------------------------------
+    async def campaign_loop(self, interval_s: float | None = None) -> None:
+        """Every 30 min: read each campaign page; one that ran out of budget or ended gets no more
+        clips (its queued jobs are cancelled, its open review items closed) and #status says so.
+        Never raises."""
+        from . import campaigns as camp_
+        interval_s = interval_s or camp_.CHECK_EVERY_S
+        while True:
+            try:
+                ended = await asyncio.to_thread(camp_.update, self.cfg)
+                for e in ended:
+                    n = self.stop_campaign(e["channel"], e["why"])
+                    await self.notifier.send(f"campaign:{e['channel']}",
+                                             f"💸 {e['name']} campaign is over ({e['why']}): no more"
+                                             f" {e['name']} clips. {n}. `/campaigns` to see or resume.",
+                                             kind="lacy")
+            except Exception as e:  # noqa: BLE001
+                log.warning("campaign check failed: %s", e)
+            await asyncio.sleep(interval_s)
+
+    def stop_campaign(self, channel: str, why: str) -> str:
+        """Cancel this streamer's queued / waiting clips and close their open review items."""
+        return stop_campaign(self.cfg, self.data_dir, channel, why)
+
     async def lacy_failed(self, job: dict) -> None:
         await self.notifier.send("lacy_failed", f"🎬 {lacy_.who(job)[0]} clip `{job['id']}` failed:"
                                  f" {msg_.escape(job.get('reason') or 'unknown error')}",
@@ -786,6 +813,8 @@ class Bot:
             extra.append(self.review_bot.run_forever())
         if self.ig:
             extra.append(self.instagram_loop())
+        if self.lacy:
+            extra.append(self.campaign_loop())
         if self.lacy and hl_.settings(self.cfg)["enabled"]:
             extra.append(self.highlights_loop())
         if self.disc["enabled"]:
@@ -943,6 +972,31 @@ def load_dotenv(path: Path) -> dict[str, str]:
             val = val[1:-1]
         out[key.strip()] = val
     return out
+
+
+def stop_campaign(cfg: dict, data_dir: Path, channel: str, why: str, now: float | None = None) -> str:
+    """A campaign ended: its jobs that haven't been rendered are cancelled and its open review
+    items closed (rejected, "campaign over"). Returns a short summary. Approved clips still post."""
+    from . import review as rv
+    channel = channel.lower()
+    jobs = lacy_.Jobs(data_dir)
+    n_jobs = 0
+    for j in jobs.all():
+        if str(j.get("channel", "")).lower() == channel and j.get("status") in ("queued", "standby", "waiting_vod"):
+            j.update(status="cancelled", reason=f"campaign over: {why}")
+            jobs.save(j)
+            n_jobs += 1
+    n_items = 0
+    store = rv.Store(data_dir)
+    for it in store.all():
+        src = it.get("source") or {}
+        if it.get("mode") == "lacy" and str(src.get("channel", "")).lower() == channel \
+                and it.get("status") in ("rendering", "open"):
+            with store.edit(it["id"]) as x:
+                if x.get("status") in ("rendering", "open"):
+                    rv.close(x, "rejected", now, why=f"campaign over: {why}")
+                    n_items += 1
+    return f"{n_jobs} waiting clip(s) cancelled, {n_items} open review item(s) closed"
 
 
 def apply_env(cfg: dict, env_files: list[Path], environ: dict[str, str]) -> dict:

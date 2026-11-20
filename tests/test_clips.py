@@ -225,7 +225,8 @@ def test_adin_ross_job_becomes_three_captioned_variants(tmp_path, monkeypatch):
         assert "#AdinRoss" in v["description"] and "Adin Ross" in v["captions"]["instagram"]
         assert v["style"]["text_level"] in ("full", "minimal")
         info = editor.probe(store.dir(item["id"]) / v["file"])
-        assert (info["width"], info["height"]) == (1080, 1920)
+        # no webcam found in the synthetic stream: no fake facecam panel, the whole frame in 4:5
+        assert (info["width"], info["height"]) == (1080, 1350) and v["frame"] == "4:5"
     from spikebot.discord_bot import mode_label
     assert mode_label(item)[0] == "Adin Ross"
     # re-renders from the review queue find the streamer's profile on their own

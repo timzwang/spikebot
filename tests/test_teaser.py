@@ -72,7 +72,7 @@ def test_captions_move_after_the_teaser_and_it_shows_the_voice_line():
     first = lambda ass: next(x for x in ass.splitlines() if ",Cap," in x).split(",")[1]  # noqa: E731
     assert first(plain) == "0:00:00.30" and first(led) == "0:00:03.30"
     m = editor.build_ass(words(6), "Lacy hook", 10.0, 600, style=S.resolve({"text_level": "minimal"}), lead=3.0)
-    assert f"0:00:03.00,0:00:0{3 + editor.MINIMAL_HOOK_S:.2f},Hook" in m
+    assert f"0:00:03.00,0:00:0{3 + editor.MINIMAL_HOOK_S + editor.CAPTION_HOLD_S:.2f},Hook" in m
 
 
 def test_voice_line_rules_and_spoken_text():
@@ -117,7 +117,8 @@ def test_version_c_renders_the_teaser_with_the_voice(tmp_path, monkeypatch):
     monkeypatch.delenv("SPIKEBOT_VOICE")
     src = tmp_path / "stream.mp4"
     make_stream(src, seconds=12)
-    jobs, lcfg = L.Jobs(tmp_path), L.settings({})
+    # the teaser is AI content: only for a campaign that allows it (none of Tim's do, 20 Nov)
+    jobs, lcfg = L.Jobs(tmp_path), L.settings({}) | {"ai_allowed": True}
     store = R.Store(tmp_path)
     job = L.render_job(job_for(tmp_path, jobs, 1), lcfg, jobs, set(), fetch=fake_fetch(src),
                        transcribe=lambda p, m: (words(14), "en", 0.97), now=T, review_store=store,
@@ -142,3 +143,17 @@ def test_version_c_renders_the_teaser_with_the_voice(tmp_path, monkeypatch):
                           adapter=L.ReviewAdapter({"data_dir": str(tmp_path)}, tmp_path, lcfg, jobs, set()))
     c2 = item["rounds"][1]["variants"][0]
     assert c2["label"] == "C2" and c2["teaser"]["line"] == c["teaser"]["line"]
+
+
+def test_no_teaser_where_the_campaign_bans_ai(tmp_path, monkeypatch):
+    monkeypatch.setattr(V, "ENGINES", {"edge": tone})
+    monkeypatch.delenv("SPIKEBOT_VOICE")
+    src = tmp_path / "stream.mp4"
+    make_stream(src, seconds=12)
+    jobs, lcfg = L.Jobs(tmp_path), L.settings({})          # ai_allowed not set = banned
+    store = R.Store(tmp_path)
+    job = L.render_job(job_for(tmp_path, jobs, 1), lcfg, jobs, set(), fetch=fake_fetch(src),
+                       transcribe=lambda p, m: (words(14), "en", 0.97), now=T, review_store=store,
+                       cfg={"data_dir": str(tmp_path)}, base=tmp_path)
+    vs = store.load(job["review_item"])["rounds"][0]["variants"]
+    assert all(v["teaser"] is None for v in vs) and all(v["style"].get("opening") != "teaser" for v in vs)

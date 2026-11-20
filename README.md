@@ -153,16 +153,13 @@ Rewards). Off by default. It only ever touches `twitch.tv/lacy`.
    real moment (chat only spiked because he asked chat something, thanked subs or read an ad, or
    Claude rates it under 4/10: see `impact` above). All before any editing.
 4. Renders 1080x1920: **his facecam full-width in the top third for the whole clip**
-   (trimmed to shape, never squashed), **gameplay in the bottom two thirds**, the title as
-   on-screen text and captions. Captions only appear when they add something: lines that
+   (trimmed to shape, never squashed), **gameplay in the bottom two thirds**, a short hook as
+   on-screen text and captions (no facecam on screen: a 4:5 video of the whole frame instead). Captions only appear when they add something: lines that
    are just reactions ("bro", "no way", laughing) are cut, and if nothing meaningful is
    said there are no captions at all. No end card unless you ask for one. **No watermark,
    logo or "6" overlay** in Lacy mode.
-   **Sound effects**: a whoosh into visible cuts, a riser into the payoff and a hit on it,
-   quietly under his voice. Put royalty-free files (e.g. Pixabay sound effects) in
-   `/opt/spikebot/data/sfx/whoosh/`, `.../hit/` and `.../riser/`; no files = no effects.
-   Volume via `/feedback` ("quieter sound effects", or `sfx` 0-1; 0 turns them off).
-   **Voiceover teaser** (version C, setting `opening`): the hook line is written by Claude
+   **No sound effects** (removed 20 Nov: only the stream's own sound).
+   **Voiceover teaser** (off for every current campaign: they ban AI content) (version C, setting `opening`): the hook line is written by Claude
    from the transcript (5-14 words, the streamer's name, no banned words; else the clip
    title) and read by a free neural voice (`edge-tts`, Microsoft Edge voices, no key), or
    Google Cloud Text-to-Speech through the VM's service account if Edge fails (needs the
@@ -227,12 +224,58 @@ Clips live in `data/lacy/jobs/<id>/`; the cut segment is kept while the clip is 
 (Redo/Feedback re-render from it) and deleted once it is posted, rejected or expired.
 The Whisper model (~150 MB) downloads on the first render.
 
-## Stream clips for the other channels (Adin Ross, Seal, Kai Cenat...)
+## Clipping campaigns (who gets clipped, and each campaign's rules)
 
-The same pipeline as Lacy mode, for **every channel in `config.json` `channels` that has a
-`programme`**, plus channels you cleared yourself in `clips.allow` (default `["kaicenat"]`).
+Every campaign you've joined is listed in `spikebot/campaigns.py` (`CAMPAIGNS`), with the rules from
+its page. The bot adds them to the channels it watches itself, so **the live `config.json` doesn't need
+editing** when a campaign is added. `/campaigns` in Discord shows them all.
+
+| Streamer | Where | Campaign | Pays | Posts to | Must have |
+|---|---|---|---|---|---|
+| Kai Cenat | twitch.tv/kaicenat | Content Rewards (Clipped & Shipped) | $10K pool by views (750K total views min) | YT, TikTok, IG | #KaiCenat; his GTA 6 marathon only; Kai the main focus |
+| YourRAGE | twitch.tv/yourragegaming | Reach | $5K pool (500K min) | YT, TikTok, IG | #yourrage; Rage's name in the caption; Rage the main focus; no logos / AI |
+| Clix | twitch.tv/clix | Reach | $5K pool (400K min) | YT, TikTok, IG | #Clix; his name in the caption; no logos / AI |
+| Dasgasd3m | kick.com/dasgasd3m | Content Rewards (Ruckus) | $2 / 1K views | YT, TikTok only | GTA 6 account; 1 hidden requirement: check it on the campaign page |
+| Bobby Vanriper | twitch.tv/bobby_vanriper | Content Rewards (Clipping Nation) | $1.50 / 1K | YT, TikTok, IG | #bobbyvanriper + twitch.tv/bobby_vanriper in the caption; no AI; likes visible; Submit Demographics ticket at 1,500 views |
+| KreekCraft | twitch.tv/kreekcraft | Content Rewards (ClipLaunch) | $1 / 1K | YT, TikTok, IG | his stream overlay in every clip (the whole frame is kept); CTA to his stream |
+| BrettLiftsXP | twitch.tv/brettliftsxp | Content Rewards (Funnel Clips) | $2 / 1K TikTok, $0.50 IG/YT | YT, TikTok, IG | recent streams only; 1 hidden requirement + doc |
+| Lauren Hamden | twitch.tv/laurenhamdenn | Reach | $1.50 / 1K (10K min) | TikTok, IG | **off**: pays only accounts dedicated to her, with her link in the bio |
+| Lacy, Adin Ross, Seal | | | | YT, TikTok, IG | as before |
+
+What the bot does with the rules:
+- **Captions**: every campaign's required hashtags/mentions and a "watch X live on Twitch: link"
+  line are added to the YouTube description and the TikTok/Instagram captions. **Calls to action are
+  never put in the video** (no "follow" end card). Edit caption refuses a caption without the tags.
+- **Platforms**: a clip only goes to the platforms its campaign pays on (Dasgasd3m: YouTube + TikTok).
+- **No AI content**: every Reach and Clipping Nation campaign bans AI-generated content (Reach removes
+  you from *all* its campaigns for it), so the AI voiceover teaser is off for every campaign
+  (`ai_allowed: false`).
+- **KreekCraft** (`layout: "full"`): the whole stream frame is kept in a 4:5 video so his overlay stays in.
+- **Budget**: every 30 min the bot reads each campaign page (`curl_cffi`). When a Content Rewards
+  campaign isn't `active` any more, its budget is spent, or a Reach page stops saying *Live*, that
+  streamer gets **no more clips**: queued and waiting clips are cancelled, open review items closed
+  (approved ones still post) and #status says so. `/campaigns end:<name>` / `resume:<name>` does it by
+  hand. State: `data/campaigns/state.json`.
+- Switch one off in `config.json`: `"campaigns": {"clix": {"enabled": false}}` (any field can be
+  overridden there, or a new campaign added the same way).
+
+Things only you can do: join each campaign on Content Rewards/Reach, submit every post link within
+30 minutes, check the hidden requirements on the Dasgasd3m and BrettLiftsXP pages, and for Bobby open
+the Submit Demographics ticket at 1,500 views. **Check the `kreekcraft` and `brettliftsxp` channel logins**
+(they weren't on the campaign pages).
+
+## Stream clips for the campaign channels
+
+The same pipeline as Lacy mode, for **every campaign above** and every channel in `config.json`
+`channels` that has a `programme`, plus channels you cleared yourself in `clips.allow`.
 On by default; `CLIPS_MODE=false` in `.env` switches it off. Any other `"programme": null`
 channel (and auto-watch channels) never gets clips.
+
+- **Only the day's best**: each streamer gets at most **10 clips a UK day** (`max_renders_per_day`),
+  and they are the best-rated moments of the day, not the first ten (`spikebot/picker.py`). A moment
+  that clears the streamer's usual top-10 score (from the last 7 days) is made straight away; weaker
+  ones wait (`standby`) and fill the slots left when the stream ends or after 23:00 UK, best first.
+  Without history yet, a moment waits 20 min for better ones first.
 
 - Chat spike -> the category is checked **right then** (Kick channel info / Helix): only GTA V
   or VI (Kick's "GTA V"/"GTA VI" names too). Gambling and anything else: no clip.
@@ -244,8 +287,11 @@ channel (and auto-watch channels) never gets clips.
   `sample_s`); the editor picks the Short from inside it and **never starts or ends mid-word or
   mid-sentence**. Kick often publishes the VOD only when the stream ends, so a job without one
   waits (`waiting_vod`, checked every 10 min for up to 14 h) instead of failing.
+- **Layout**: with a facecam it sits on the top third, gameplay below (1080x1920). **No facecam = no
+  facecam panel**: the whole stream frame, nothing cropped off, in a **4:5 (1080x1350)** video with the
+  hook in the band above the picture and the captions in the band below.
 - **The facecam is found automatically** in each clip (the face that stays put), unless you set a
-  box for that streamer. To check, with no file needed (grabs a few seconds of the live stream):
+  box for that streamer. If the box shows no face, the clip is made 4:5 without one. To check, with no file needed (grabs a few seconds of the live stream):
 
 ```bash
 cd /opt/spikebot && sudo -u spikebot venv/bin/python -m spikebot.lacy layout --streamer adinross --out /tmp/check.jpg
@@ -254,8 +300,12 @@ cd /opt/spikebot && sudo -u spikebot venv/bin/python -m spikebot.lacy layout --s
   It writes the Short's layout plus `/tmp/check_frame.jpg` (whole frame, box + grid). To fix a box:
   `"clips": {"streamers": {"adinross": {"facecam": {"x": 0.75, "y": 0.0, "w": 0.25, "h": 0.3}}}}`.
 - Same review as Lacy: 3 variants in #ready-to-post (labelled with the streamer's name).
-  **Captions are always on** for stream clips. Titles and post captions are written by Claude
-  from what was actually said in the clip (with `ANTHROPIC_API_KEY`), templates otherwise.
+  **Captions are always on** for stream clips, in **TikTok's own text style**: TikTok Sans (bundled,
+  `spikebot/fonts`), white with a thin black outline, the hook as black text on a white box. Nothing
+  moves, pops or fades; each line stays 1.5 s after it's said (the hook too) so it can be read.
+  **No sound effects** on any clip or edit. Titles, post captions and a short on-screen hook (the
+  setup, never the payoff) are written by Claude from what was actually said (with
+  `ANTHROPIC_API_KEY`), templates otherwise.
 - Each streamer has its own daily cap (`max_uploads_per_day`, default 3) and its own
   submissions CSV: `logs/<channel>_submissions.csv`. Job ids are `<channel>-YYYYMMDD-HHMMSS`.
 
@@ -378,7 +428,7 @@ no captions, story cards or hook box), whatever a rule or preset says.
 
 **What each edit is**
 
-- 1080x1920, 15-30 s, **no audio track at all**. Add the official "Tokyo Girl" sound in
+- **1080x1350 (4:5)**, 15-30 s, **no audio track at all**. Add the official "Tokyo Girl" sound in
   TikTok/IG. **Cuts follow the real song**: in #inspiration paste the TikTok sound link
   (on the sound's page: Share > Copy link; `name: tokyo-girl` optional), or write `sound:`
   before a link to any TikTok/Reel/Short that uses it (only its audio is pulled, the video is
@@ -492,8 +542,9 @@ Girl sound in the app, paste the matching caption line from the `.txt`.
 Every clip from every mode (Lacy, Tokyo Girl, and the stream-clip editor later) waits for
 your approval. **Nothing is posted anywhere until you press Approve.**
 
-**What you see in #ready-to-post**: one compact message per clip with **3 preview videos
-A/B/C**: one header line (streamer · category · VOD time · id), then a single box with
+**What you see in #ready-to-post**: **one board message** listing every video waiting for review
+(soonest to expire first). Pick one in its drop-down and it **expands in that same message**: its
+**3 preview videos A/B/C**, one header line (streamer · category · VOD time · id), then a single box with
 🟢 A | 🔵 B | 🟠 C side by side as columns (length, the sound and where to start it, or the
 clip title; 🎙️ marks the voiceover teaser), then the buttons. Captions and hashtags are in
 #tiktok-queue after approval, not on the card.
@@ -502,9 +553,10 @@ presets of that kind (rotating), C is **🧪 experimental** (settings it has tri
 keep seeing new ideas. On stream clips C also **opens with a voiceover teaser**: the clip's
 big moment (the loudest reaction just before chat peaked) plays first for 2.5-4.5 s while an
 AI voice reads a hook ("Lacy thought this heist was easy..."), shown on screen too, then a
-white flash into the clip itself. Pin it for every version with `/style opening teaser`, or
-turn it off with `/style opening normal`. A thread opens under each clip for everything that
-follows.
+white flash into the clip itself (only for campaigns that allow AI content: none of the current
+ones do). Buttons work in place and the board is edited as clips arrive, re-render and close:
+no new message per clip (Collapse closes it; `"review": {"board": false}` brings back the old
+one-message-per-clip cards).
 
 | Button | What happens |
 |---|---|
@@ -667,10 +719,14 @@ to fade the sound out over the same seconds in the app (the files stay silent).
 **Movement, framing and footage** (all settings, so `/feedback` and `/rules` control them):
 `motion` `none` (every shot completely still: no pans, push-ins, punch-in zooms or animated
 stills; a zoom transition becomes a cut) / `subtle` / `full`, for every mode. Tokyo Girl only:
-`framing` **`box45`** (the default since 18 Nov: a big 4:5 picture on black bars (no blur, 19 Nov), the hook
-in the bar above it), `box11` (a 1:1 picture over a blurred copy: more of each wide shot), `stack` (two clips at
-once, one above the other, each whole), `fit` (the whole 16:9 trailer frame over a blurred copy)
-or `fill` (cropped to fill the screen). Version A uses 4:5; B and C try 1:1 and stacked, so your
+`framing` **`box45`** (the default: since 20 Nov every edit IS 4:5, 1080x1350, so the picture fills
+the frame), `box11` (a 1:1 picture on black bars: more of each wide shot), `stack` (two clips at
+once, one above the other, each whole, on black), `fit` (the whole 16:9 trailer frame on black)
+or `fill` (same as box45 now). **Nothing is cut off**: a shot whose 4:5 crop would cut off on-screen
+text (title cards, text overlays: the vision labels) or a subject wider than the crop is shown whole
+(`fit`) instead. Text cards use TikTok's own style (TikTok Sans, white with a thin outline, the
+question as black on a white box), never pop or fade, and stay 1.5 s longer when the next card
+isn't due yet. Version A uses 4:5; B and C try 1:1 and stacked, so your
 approvals show which works (older `fill`/`fit` rules were switched off once; turn them back on in
 `/rules`). **Smart fill** (`smart_fill`, on unless set to 0): a close-up of one person goes full
 screen, and every crop is centred on the subject instead of the middle of the frame (faces come
@@ -813,7 +869,11 @@ Claude decides from the frames when `ANTHROPIC_API_KEY` is set, otherwise the me
 the style (including its **framing**: full screen, a 4:5 or 1:1 picture over blur or bars, a 16:9
 frame in the middle, or two clips stacked, read from where the sharp picture sits) and replies with
 a breakdown and a thumbnail strip, and saves the preset to
-`data/presets/<name>.json`. If a link can't be downloaded (Instagram often needs a login) it
+`data/presets/<name>.json`. **On-screen captions are noted too** (with the Claude key): where they
+sit, size, case, words per line, lines at once, the look (e.g. white with a black outline like
+TikTok's), colours, font feel, how they appear, roughly how long each stays up, and how the hook text
+is styled: the reply's **On-screen captions** / **Hook text** lines, saved in the preset (`captions`)
+and turned into its text settings (position, size, words per caption, outline). Never their words. If a link can't be downloaded (Instagram often needs a login) it
 asks you to upload the file in the thread instead.
 
 Threads tidy themselves away: after 12 hours with no new message the bot archives them, so

@@ -257,7 +257,7 @@ def test_render_is_silent_vertical_and_on_length(tmp_path):
                        capture_output=True, text=True, check=True)
     j = json.loads(p.stdout)
     assert [st["codec_type"] for st in j["streams"]] == ["video"]     # no audio track at all
-    assert (j["streams"][0]["width"], j["streams"][0]["height"]) == (1080, 1920)
+    assert (j["streams"][0]["width"], j["streams"][0]["height"]) == (1080, 1350)   # 4:5
     assert float(j["format"]["duration"]) == pytest.approx(16.0, abs=0.05)
     assert out.with_suffix(".txt").read_text().startswith("IG: ") and "Tokyo Girl" in out.with_suffix(".txt").read_text()
 

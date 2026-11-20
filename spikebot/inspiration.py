@@ -751,6 +751,10 @@ def make_preset(name: str, copy: list[str], analysis: dict, source: dict, art: d
         sets.pop("framing", None)
     allowed = KIND_PARTS.get(kind, presets_.PARTS)
     copy = [c for c in copy if c in allowed] or list(allowed)
+    if art and (art.get("captions") or {}).get("present"):
+        # OCR is optional (and often off): the AI's caption read fills in what OCR didn't measure
+        cap = caption_settings(art["captions"])
+        sets["text"] = cap | (sets.get("text") or {})
     if art:
         look = {}
         ok, _bad = st.apply_settings(art.get("settings") or [], "all")
@@ -764,7 +768,51 @@ def make_preset(name: str, copy: list[str], analysis: dict, source: dict, art: d
            "modes": KIND_MODES.get(kind, [])}
     if art:
         out["art"] = art
+        if art.get("captions"):
+            out["captions"] = art["captions"]   # how the reference's on-screen captions look
     return out
+
+
+CAPTION_POS = {"top": "high", "upper": "high", "band_above_picture": "high", "middle": "middle",
+               "lower": "low", "bottom": "low", "band_below_picture": "low"}
+CAPTION_SIZE = {"small": "s", "medium": "m", "large": "l", "huge": "xl"}
+
+
+def caption_settings(c: dict) -> dict:
+    """The AI's read of a reference's on-screen captions -> our text settings (position, size, words
+    per caption, outline). Look only: never their words."""
+    out: dict = {}
+    if CAPTION_POS.get(c.get("position") or ""):
+        out["position"] = CAPTION_POS[c["position"]]
+    if CAPTION_SIZE.get(c.get("size") or ""):
+        out["size"] = CAPTION_SIZE[c["size"]]
+    w = c.get("words_per_line")
+    if isinstance(w, (int, float)) and w > 0:
+        out["words"] = int(min(6, max(1, round(w))))
+    if c.get("look") == "white_outline":
+        out.update(outline=4, shadow=1, text_colour="#FFFFFF")
+    elif c.get("look") == "white_shadow":
+        out.update(outline=0, shadow=4, text_colour="#FFFFFF")
+    return out
+
+
+def caption_line(c: dict | None) -> str | None:
+    """"**On-screen captions:** ..." for the #inspiration reply."""
+    if not c:
+        return None
+    if not c.get("present"):
+        return "**On-screen captions:** none (the footage carries it)"
+    bits = [c.get("kind", "").replace("_", " "), f"{c.get('position', '').replace('_', ' ')}",
+            f"{c.get('size')} {c.get('case')} case", f"~{c.get('words_per_line')} words/line",
+            f"{c.get('lines')} line(s)", c.get("look", "").replace("_", " "), c.get("colours") or "",
+            c.get("font_feel") or "", f"animation {c.get('animation')}",
+            f"~{c.get('seconds_on_screen')}s on screen" if c.get("seconds_on_screen") else ""]
+    line = "**On-screen captions:** " + " · ".join(b for b in bits if b and b.strip())
+    if c.get("hook_text") and c["hook_text"].lower() != "none":
+        line += f"\n**Hook text:** {c['hook_text']}"
+    if c.get("notes"):
+        line += f" ({c['notes']})"
+    return line
 
 
 def sample_frames(path: Path, duration: float, cuts: list[float], n: int = 8,
@@ -820,6 +868,9 @@ def art_text(preset: dict) -> str | None:
         L.append(f"**Opening:** {art['opening']}")
     if art.get("text_use"):
         L.append(f"**Text:** {art['text_use']}")
+    cap = caption_line(art.get("captions"))
+    if cap:
+        L.append(cap[:600])
     tech = art.get("techniques") or []
     if tech:
         L.append("**Techniques:** " + " · ".join(

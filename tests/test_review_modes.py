@@ -50,10 +50,11 @@ def test_caption_style_and_end_card():
     r = S.resolve({"font": "montserrat", "size": "xl", "position": "middle", "colour": "lime",
                    "ending": "cta", "pace": "fast", "custom": {"hook_s": 3}})
     ass = editor.build_ass(words(6), "Lacy hook", 10.0, 600, watermark=None, style=r)
-    assert "Style: Cap,Montserrat,109," in ass and "Mark,," not in ass.split("[Events]")[1]
-    assert "0:00:03.00,Hook" in ass.replace("Dialogue: 1,0:00:00.00,", "")  # hook only 3 s
-    assert "Follow for daily Lacy GTA clips" in ass
-    assert "\\c&H3AFF7C&" in ass   # lime highlight (BGR)
+    # TikTok's caption style whatever the font setting (Tim, 20 Nov); size still follows the setting
+    assert "Style: Cap,TikTok Sans,98," in ass and "Mark,," not in ass.split("[Events]")[1]
+    assert "0:00:04.50,Hook" in ass.replace("Dialogue: 1,0:00:00.00,", "")  # hook 3 s + 1.5 s to read it
+    assert "Follow" not in ass and ",End," not in ass   # calls to action go in the caption, never on screen
+    assert "\\c&H" not in ass.split("[Events]")[1]     # no word highlight colour
     assert editor.caption_margin("low", 600, 84) == 420
     assert editor.caption_margin("high", 600, 84) > editor.caption_margin("middle", 600, 84) > 420
 

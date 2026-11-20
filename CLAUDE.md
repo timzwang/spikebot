@@ -8,8 +8,12 @@ revenue on a budget of about £20/month. Give all times in UK time.
 ## Hard rules
 
 - Main income is clipping programmes: Adin Ross, Seal (via Content Rewards) and Lacy
-  (via Reach). Channels with `programme: null` need Tim to check permission before
-  anything is posted. Tim cleared Kai Cenat himself on 18 Nov 2026 (`clips.allow`).
+  (via Reach), plus the campaigns joined on 20 Nov 2026 in `spikebot/campaigns.py` (Kai Cenat,
+  YourRAGE, Clix, Dasgasd3m, Bobby Vanriper, KreekCraft, BrettLiftsXP; Lauren Hamden off: needs a
+  dedicated account). Each campaign's rules live in its `CAMPAIGNS` entry. Channels with
+  `programme: null` need Tim to check permission before anything is posted.
+- Reach and Clipping Nation ban AI-generated content: `ai_allowed` stays false unless a campaign
+  page says AI is fine. Calls to action go in captions, never on screen.
 - Never write code that downloads video from streamers who haven't allowed clipping (or that
   Tim hasn't cleared in `clips.allow`).
 - **Nudity is never posted**: every rendered video goes through `spikebot/safety.py` before review
@@ -36,7 +40,7 @@ per phase).
 
 ## Still to build
 
-- **Editor:** vertical 1080x1920, word-level captions, programme watermark/hashtags (Lacy mode
+- **Editor:** stream clips 1080x1920 with a facecam / 1080x1350 (4:5) without; edits 4:5; word-level captions, programme watermark/hashtags (Lacy mode
   already has a Lacy-only version in `editor.py`/`lacy.py`; captions follow `text_level`:
   `minimal` = 2.5 s hook + captions only around the payoff, `none` = no text).
 - (Done: AI voiceover teaser on stream clips' version C, review queue + Discord approval bot, uploader with windows/caps, #inspiration presets,
@@ -136,6 +140,21 @@ it in sync when behaviour or config changes.
   against all candidates in the last hour (`rank`, `rank_of`, `alerted` stored on the record, rank
   shown on the #moments card) and caps no-programme alerts at `max_alerts_per_hour`; programme
   channels always alert. Tested in `tests/test_watchlist.py`.
+- `spikebot/campaigns.py`: **campaign registry** `CAMPAIGNS` (channel -> platform, name, programme, urls,
+  pay, `platforms`, `hashtags`, `cta`, `ai_allowed`, `layout` auto|full, `rules`, `enabled`/`off_reason`),
+  `registry(cfg)` (+ `cfg["campaigns"]` overrides; `SPIKEBOT_CAMPAIGNS=off` in tests/conftest.py = config
+  only), `merge_channels` (Bot init + `lacy.profiles`: every campaign is watched/clipped without touching
+  config.json), `finish_caption` / `finish_copy` (required tags + CTA line in captions/description, never in
+  the video), `copy_problems` (Edit caption check), budget watch `parse_contentrewards` (status / budgetCents /
+  budgetSpentCents / budgetProgressBps in the page's data) / `parse_reach` (hero-status-badge) -> `verdict` ->
+  `update` (data/campaigns/state.json; Tim's end/resume wins) <- `Bot.campaign_loop` every 30 min ->
+  `main.stop_campaign` (waiting jobs cancelled, open items closed). `ended(cfg, ch)` is checked by
+  `profiles`, `LacyMode.enqueue/_process` and `render_job`. `/campaigns [end] [resume]`. Tested in
+  `tests/test_campaigns.py`.
+- `spikebot/picker.py` (pure): **best-of-day** selection: `decide(job, jobs, cap, now, live)` -> go / wait
+  (status `standby`, re-checked every `RECHECK_S`) / drop; `bar` = the streamer's usual top-`cap` score from
+  the last 7 days; no history = `HOLD_S` wait; stream over / after 23:00 UK = fill best-first. Called in
+  `LacyMode._process` (job `selected`); cap `max_renders_per_day` 10. `Bot` sets `LacyMode.is_live`.
 - `spikebot/lacy.py`: **Lacy mode** (off unless `LACY_MODE=true` / `lacy.enabled`). For
   `twitch/lacy` only, `Bot.handle()` re-checks the category with Helix Get Streams at the
   spike (`fresh_state`) and, for exactly Grand Theft Auto V/VI, `LacyMode.enqueue()` writes
@@ -188,7 +207,8 @@ it in sync when behaviour or config changes.
   `STORY_TAGS`); `Library.add_extra` / `needs_extra` / `presents_shots`; `Library.label_ask` = test hook.
   Lacy: `editor.keep_segments(lead_in=)`, `lacy.facecam_required(review_store)`, `safety.real_facecam`
   (conftest stubs it to None), `streamer_only` -> `ReviewAdapter.streamer_words` (`phrase_lines` +
-  `ai.game_lines`, cache `speakers.json`; captions, clip copy and the teaser line use it). Tokyo Girl
+  `ai.game_lines`, cache `speakers.json`; captions, clip copy and the teaser line use it). On-screen hook =
+  `ai.write_clip_copy` `hook` (3-8 words, the setup) when `screen_hook_ok`, else the title (variant `screen_hook`). Tokyo Girl
   `variety` (0.7): `recent_load` from `state["recent_edits"]` -> `Prefs.recent` / `src_load` in `_choose_pref`.
   Tested in `tests/test_rule_requests.py`.
 - `spikebot/highlights.py` + `Bot.highlights_loop`: clip streamers' VOD **audio only**, a 30 min
@@ -205,7 +225,7 @@ it in sync when behaviour or config changes.
 - Review cards (`round_payload`) are minimal: one header line (streamer/category/VOD time/id), then ONE
   embed whose inline fields are A | B | C side by side (`variant_cell`: length, song + start or clip title,
   🎙️/🎞️ teaser; `VARIANT_DOT`). No style details.
-- **Voiceover teaser** (stream clips, style dim `opening` normal|teaser, lacy only; `pick_variants` gives
+- **Voiceover teaser** (only when the profile's `ai_allowed`: no current campaign allows it; stream clips, style dim `opening` normal|teaser, lacy only; `pick_variants` gives
   "teaser" to the experimental C unless pinned/preset): `ReviewAdapter.voice_line` (Claude
   `ai.write_voice_hook`, cached in the job's voice.json, `voice_line_ok`, else the title) -> `teaser()`
   (`voice.speak` -> mp3, `editor.teaser_length`, `teaser_window` on `loudness` = loudest moment in the 6 s
@@ -238,7 +258,11 @@ it in sync when behaviour or config changes.
   `caption_margin` keeps clear of the hook box and the bottom 320 px), `keep_segments` /
   `remap_words` (window around the peak at the payoff point + jump cuts, peak always kept),
   `render_variant` (trim/concat, zoom punch or white flash per cut, grade, captions, SFX mix),
-  layout = facecam exactly the top third (`CAM_SHARE`), gameplay two thirds; output `out_fps` = source rate capped at 60 (#39, unknown = 30), final encodes `CRF` 18 (also Tokyo Girl/Remotion); captions only when
+  layout = facecam exactly the top third (`CAM_SHARE`), gameplay two thirds; `layout(..., None)` = `full_layout`
+  (no facecam found / box shows no face / campaign `layout: full`: whole frame in 1080x1350 `FULL_H`, `Layout.cam`
+  None, `picture` = band limits, job `no_facecam`, `lacy.clip_facecam`); captions TikTok style (`CAPTION_FONT`
+  TikTok Sans bundled in `spikebot/fonts` via `ass_filter` fontsdir, static, `caption_times` hold
+  `CAPTION_HOLD_S` 1.5 s, hook +1.5 s, `sentence_case`, no `cta` end card); no SFX (`sfx_cues=None`); output `out_fps` = source rate capped at 60 (#39, unknown = 30), final encodes `CRF` 18 (also Tokyo Girl/Remotion); captions only when
   `worth_captioning` (>= 3 meaningful words, `FILLER`), filler-only caption groups cut,
   `preview` (size-budgeted), `render`, `review_copy`, `pick_thumbnail` (dHash vs.
   `data/lacy/thumbnails.json`), `transcribe` (faster-whisper, lazy import).
@@ -250,7 +274,7 @@ it in sync when behaviour or config changes.
 - `spikebot/tokyo_girl.py`: **Tokyo Girl mode** (on by default; `TOKYO_GIRL_MODE`,
   `TOKYO_GIRL_PER_DAY`, `tokyo_girl` config block). Standalone CLI, not part of `Bot`: run daily
   by `spikebot-tokyo-girl.timer` (06:47 UK, `daily` tops up to `per_day`). Makes silent
-  (`-an`, no audio stream) 1080x1920 30 fps 15-30 s edits from official Rockstar GTA VI trailers and
+  (`-an`, no audio stream) 1080x1350 (4:5, `W, H`) 30 fps 15-30 s edits from official Rockstar GTA VI trailers and
   screenshots only (`fetch`: `ALLOWED_HOSTS`, yt-dlp limited to uploader Rockstar; plus a drop
   folder `data/rockstar_media/`). `Library` caches per-file analysis (scene cuts, YAVG,
   letterbox crop) in `library.json`; `build_shots` trims trailer head/tail, dark shots and
@@ -276,9 +300,10 @@ it in sync when behaviour or config changes.
   beats before the drop, `music.window(build_beats=)`) and bursts at the drop (`intro_filter`,
   `LOGO_GROW`, `logo_width`); `slot_filter(motion, framing, smart, fps)` = a -filter_complex graph
   ([0:v], [1:v] for stack -> [v]): `slot_layout` (smart fill: `Shot.single` close-up -> full screen; stack
-  without `shot2` -> box45), `cover_chain` (crop centred on `Shot.focus`), `BOXES` box45 1080x1350 on black bars
-  (`BLACK_BARS`, `pad`, no blur; Remotion skips its blur layer too) / box11 1080x1080 over `blur_bg`, stack = two 1080x608 (`stack_tops`), `fit_filter` = whole frame over a blurred
-  copy; "high" text with a boxed/stacked picture sits in the band (`BAND_MARGIN`; Remotion text.y 0.035).
+  without `shot2` -> box45), `cover_chain` (crop centred on `Shot.focus`), `BOXES` box45 = the whole 4:5 frame /
+  box11 1080x1080, all on black (`BLACK_BARS`, `blur_bg` is plain black, Remotion has no blur layer), stack = two 1080x608
+  (`stack_tops`), `fit_filter` = whole frame on black; `slot_layout` turns a cropping framing into `fit` when `cuts_off`
+  (vision `TEXT_TAGS` or not `crop_ok`; `shot_info.CROP_ASPECT` 4:5); text cards TikTok style, static, held 1.5 s; "high" text with a boxed/stacked picture sits in the band (`BAND_MARGIN`; Remotion text.y 0.035).
   Faces: `nudity_scan` stores `entry["faces"]` (`safety.flag_times(faces=)` / `frame_faces`, same NudeNet
   pass, once more for old entries), `subject_of` -> `Shot.focus`/`single`. `edit_fps`: 60 only when every
   video clip's source is >= 50 fps (`entry["fps"]`, probed once), else `FPS` 30 (no doubled frames, #39);
@@ -310,8 +335,8 @@ it in sync when behaviour or config changes.
   links (`/music/`, vm.tiktok short links resolved by `resolve_short`) or `sound:` + a video link
   -> `add --url` (`song_links`, `fetch`: sound page `playUrl` via curl_cffi, else yt-dlp `-x` audio only). Tokyo Girl
   `plan_clip(beats=)` cuts on it; edits stay silent.
-- `spikebot/sfx.py`: whoosh/riser/hit from `data/sfx/<kind>/` for Lacy (`cues`, `mix_graph`,
-  amix normalize=0 under the voice); custom `sfx` volume (0 = off). Tokyo Girl never gets SFX.
+- `spikebot/sfx.py`: whoosh/riser/hit helpers, **unused since 20 Nov** (Tim: no sound effects on any edit
+  or clip; the `sfx` setting does nothing). Don't wire it back in.
 - `spikebot/remotion.py` + `remotion/` (React, remotion 4.0.529 pinned): Tokyo Girl renderer
   (`TrailerEdit`: eased Ken Burns, spring punch + blur, flashes, kinetic word text, logo reveal,
   grain/vignette/letterbox). `props_for` builds the props; media hard-linked into a temp public dir
@@ -430,7 +455,12 @@ it in sync when behaviour or config changes.
   `refit(skip=1)` when a logo intro is new; extra slots get new clips, never repeats.
   `deploy_requests.json` also takes `feedback` {item, round, label, notes} = a Feedback re-render.
 - `spikebot/discord_bot.py`: `ReviewBot` (started by `Bot.run` when the token is set; reconnects,
-  never crashes the bot). Pure layouts `round_payload` / `buttons` / `manual_payload` /
+  never crashes the bot). **#ready-to-post board** (`review.board`, default on): ONE message
+  (`board_payload` / `board_items` / `board_line`, state data/review/board.json) lists every open item;
+  the drop-down `rv|board|-|0|` expands one in place (previews attached only when the expanded item
+  changes, `refresh_board`), `rv|bclose|...` collapses; `scan` -> `board_post` marks ready rounds
+  `posted` + `board: True` instead of sending; `say()` without a thread = `board_note` on the line;
+  `close_round_messages` / `refresh_round` refresh the board for board rounds. Pure layouts `round_payload` / `buttons` / `manual_payload` /
   `style_overview`; custom ids `rv|action|item|round|label` handled in `on_interaction` (survive
   restarts). Loops: `scan` (post ready rounds + thread, queue requests, report failures, expire,
   #tiktok-queue, finish), `render_worker` (one subprocess at a time), `publish_loop` (60 s, under
@@ -502,9 +532,12 @@ it in sync when behaviour or config changes.
   OpenCV zoom/shake, flash/fade at cuts, structure, **framing** (`framing`: 8 frames, `sharp_rows` edge share
   per row, `bands` (median rows; a gap is closed unless no frame ever had an edge there = a stacked divider),
   `framing_from` -> fill / box45 / box11 / fit / stack; preset part `framing` in `presets.PART_KEYS`, Tokyo
-  Girl/trend only). Download failure -> bot asks for an upload.
+  Girl/trend only). On-screen captions: `ai.CAPTION_SCHEMA` (ART_SCHEMA `captions`: position, size, case,
+  words/line, look, animation, seconds on screen, hook text style) -> preset `captions` + `caption_settings`
+  into the text part; `caption_line` in the reply. Download failure -> bot asks for an upload.
 - `tests/test_style.py`, `tests/test_review.py` (store, publisher with fakes, bot flows with fake
-  Discord objects, #inspiration flow), `tests/test_review_modes.py` (real ffmpeg: Lacy and Tokyo Girl
+  Discord objects, #inspiration flow), `tests/test_layout_captions.py` (4:5 layouts, static captions, the
+  board), `tests/test_review_modes.py` (real ffmpeg: Lacy and Tokyo Girl
   variants, feedback re-render, Lacy rules), `tests/test_inspiration.py`.
 - `spikebot/messages.py`: pure Discord layouts (embeds) for #moments (`moment`), #status
   (`status`, colour by alert kind) and #daily-summary (`summary`). Times use Discord

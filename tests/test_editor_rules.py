@@ -117,9 +117,9 @@ def test_ffmpeg_filters_obey_motion_and_framing():
     sl = TG.Slot(shots()[1], 1.0, 2, 0.0, 1.0, 0, False, 1)
     moving = TG.slot_filter(sl, 1.0, "full")
     still = TG.slot_filter(sl, 1.0, "none")
-    assert "+160.0*(t/" in moving and "t/" not in still and "crop=1080:1920:'1167.0':'0.0'" in still
-    fit = TG.slot_filter(sl, 1.0, "none", "fit")
-    assert "force_original_aspect_ratio=decrease" in fit and "boxblur" in fit and "overlay" in fit
+    assert "+160.0*(t/" in moving and "t/" not in still and "crop=1080:1350:'660.0':'0.0'" in still
+    fit = TG.slot_filter(sl, 1.0, "none", "fit")   # the whole frame on black, never a blurred copy
+    assert "force_original_aspect_ratio=decrease" in fit and "boxblur" not in fit and "pad=1080:1350" in fit
     lg = TG.intro_filter(TG.logo_width(0.6), 4.0)
     assert f"scale=w='{int(1080 * 0.6 / 1.35)}*(1+0.35*clip((t-4.000)/0.400,0,1))'" in lg
     assert "fade=t=out:st=4.000:d=0.400" in lg and "fade=t=in:st=0:d=3.400" in lg
@@ -183,7 +183,7 @@ def test_ffmpeg_render_follows_every_rule(tmp_path):
                                        str(store.dir(item["id"]) / v["file"])],
                                       capture_output=True, text=True, check=True).stdout)
         assert [x["codec_type"] for x in j["streams"]] == ["video"]
-        assert (j["streams"][0]["width"], j["streams"][0]["height"]) == (1080, 1920)
+        assert (j["streams"][0]["width"], j["streams"][0]["height"]) == (1080, 1350)   # 4:5
         assert float(j["format"]["duration"]) <= 12.05                 # max_s, logo intro included
 
 

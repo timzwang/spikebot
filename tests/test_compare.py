@@ -115,7 +115,7 @@ def test_comparison_item_renders_three_versions(tmp_path, monkeypatch):
         info = json.loads(subprocess.run(["ffprobe", "-v", "error", "-show_entries", "stream=codec_type,width,height",
                                           "-of", "json", str(store.dir(item["id"]) / v["file"])],
                                          capture_output=True, text=True).stdout)["streams"]
-        assert [x["codec_type"] for x in info] == ["video"] and (info[0]["width"], info[0]["height"]) == (1080, 1920)
+        assert [x["codec_type"] for x in info] == ["video"] and (info[0]["width"], info[0]["height"]) == (1080, 1350)
     from spikebot import discord_bot as DB
     assert DB.mode_label(item)[0] == "GTA 5 vs GTA 6"
 

@@ -21,7 +21,20 @@ from pathlib import Path
 log = logging.getLogger("editor")
 
 OUT_W, OUT_H = 1080, 1920
+FULL_H = 1350        # no facecam: a 4:5 video with the whole stream frame (nothing cropped off, Tim 20 Nov)
 FONT = "DejaVu Sans"  # fonts-dejavu-core on Ubuntu (install.sh)
+# On-screen text looks like TikTok's own (Tim, 20 Nov): TikTok Sans (SIL OFL, bundled in
+# spikebot/fonts and handed to libass with fontsdir=, so no install is needed).
+FONTS_DIR = Path(__file__).resolve().parent / "fonts"
+CAPTION_FONT = "TikTok Sans"
+CAPTION_HOLD_S = 1.5   # captions and the hook stay this much longer, so there's time to read them
+
+
+def ass_filter(ass_name: str) -> str:
+    """The ffmpeg `ass` filter for a captions file in the working folder, with the bundled fonts."""
+    if FONTS_DIR.is_dir() and ":" not in str(FONTS_DIR) and "'" not in str(FONTS_DIR):
+        return f"ass=filename={ass_name}:fontsdir={FONTS_DIR}"
+    return f"ass={ass_name}"
 
 
 class EditError(RuntimeError):
@@ -116,15 +129,25 @@ def fps_arg(fps: float) -> str:
 # --------------------------------------------------------------------------
 @dataclass
 class Layout:
-    cam: tuple[int, int, int, int]    # crop w, h, x, y in the source
-    cam_h: int                        # facecam height in the output
+    cam: tuple[int, int, int, int] | None   # facecam crop w, h, x, y in the source; None = no facecam
+    cam_h: int                        # facecam height in the output (0 without one)
     game: tuple[int, int, int, int]   # gameplay crop w, h, x, y in the source
     game_h: int                       # gameplay height in the output
     fps: float = DEFAULT_FPS          # output frame rate (out_fps of the source)
+    out_h: int = OUT_H                # 1920 with a facecam, FULL_H (4:5) without
+    top: int = 0                      # no facecam: where the picture starts (black band above it)
+
+    @property
+    def picture(self) -> tuple[int, int] | None:
+        """No facecam: (top, bottom) of the stream picture inside the 4:5 frame."""
+        return None if self.cam else (self.top, self.top + self.game_h)
 
     def filter(self, src: str = "[0:v]") -> str:
-        cw, ch, cx, cy = self.cam
         gw, gh, gx, gy = self.game
+        if self.cam is None:   # the whole frame, scaled to the width, black bands above and below
+            return (f"{src}crop={gw}:{gh}:{gx}:{gy},scale={OUT_W}:{self.game_h},setsar=1,"
+                    f"pad={OUT_W}:{self.out_h}:0:{self.top}:black,fps={fps_arg(self.fps)}")
+        cw, ch, cx, cy = self.cam
         return (f"{src}split=2[a][b];"
                 f"[a]crop={cw}:{ch}:{cx}:{cy},scale={OUT_W}:{self.cam_h},setsar=1[cam];"
                 f"[b]crop={gw}:{gh}:{gx}:{gy},scale={OUT_W}:{self.game_h},setsar=1[game];"
@@ -134,12 +157,30 @@ class Layout:
 CAM_SHARE = 1 / 3   # facecam = top third, gameplay = bottom two thirds (Tim's rule)
 
 
-def layout(src_w: int, src_h: int, facecam: dict, cam_share: float = CAM_SHARE,
+def full_layout(src_w: int, src_h: int, src_fps: float | None = None) -> Layout:
+    """No facecam (none found, or the campaign needs the whole frame such as KreekCraft's overlay):
+    the whole stream frame, nothing cropped, in a 1080x1350 (4:5) video. The picture sits in the
+    middle; the hook goes in the band above it and the captions in the band below, so no text
+    covers the game or anything shown in it."""
+    pic_h = even(OUT_W * src_h / src_w)
+    game = (even(src_w), even(src_h), 0, 0)
+    if pic_h > FULL_H - 2 * 160:            # a taller-than-16:9 source: trim top/bottom evenly
+        pic_h = FULL_H - 2 * 160
+        gh = even(src_w * pic_h / OUT_W)
+        game = (even(src_w), gh, 0, even_pos((src_h - gh) / 2))
+    top = even_pos((FULL_H - pic_h) / 2)
+    return Layout(cam=None, cam_h=0, game=game, game_h=pic_h, fps=out_fps(src_fps), out_h=FULL_H, top=top)
+
+
+def layout(src_w: int, src_h: int, facecam: dict | None, cam_share: float = CAM_SHARE,
            src_fps: float | None = None) -> Layout:
     """Facecam box (fractions of the source frame: x, y, w, h) on top, filling exactly
     `cam_share` of the height (default 1/3); gameplay centre-cropped to fill the rest
     (2/3). The facecam box is trimmed around its centre to the right shape, so the
-    face is never squashed. The facecam is on screen for the whole clip."""
+    face is never squashed. The facecam is on screen for the whole clip.
+    `facecam` None = there is no facecam: full_layout (4:5, whole frame), never a fake panel."""
+    if not facecam:
+        return full_layout(src_w, src_h, src_fps)
     cx, cy = facecam["x"] * src_w, facecam["y"] * src_h
     cw, ch = facecam["w"] * src_w, facecam["h"] * src_h
     if cw < 16 or ch < 16:
@@ -195,7 +236,12 @@ def black_seconds(stderr: str) -> float:
 def away_reason(path: Path, lay: Layout, duration: float, max_share: float = 0.35) -> str | None:
     """Why this clip shows a BRB/away screen, or None if he's on cam.
     A BRB screen is a still image, so the facecam area (and usually the whole
-    frame) stops changing; a switched-off camera goes black."""
+    frame) stops changing; a switched-off camera goes black.
+    Without a facecam only the whole screen is checked."""
+    if lay.cam is None:
+        checks = [("whole screen frozen (BRB screen)", "fps=5,freezedetect=n=-60dB:d=2", frozen_seconds),
+                  ("screen black", "fps=5,blackdetect=d=1:pix_th=0.08", lambda err, _t: black_seconds(err))]
+        return _away(path, checks, duration, max_share)
     cw, ch, cx, cy = lay.cam
     checks = [
         ("facecam frozen", f"fps=5,crop={cw}:{ch}:{cx}:{cy},freezedetect=n=-50dB:d=2", frozen_seconds),
@@ -203,6 +249,10 @@ def away_reason(path: Path, lay: Layout, duration: float, max_share: float = 0.3
         ("facecam black (camera off)", f"fps=5,crop={cw}:{ch}:{cx}:{cy},blackdetect=d=1:pix_th=0.08",
          lambda err, _t: black_seconds(err)),
     ]
+    return _away(path, checks, duration, max_share)
+
+
+def _away(path: Path, checks: list, duration: float, max_share: float) -> str | None:
     for label, vf, measure in checks:
         p = subprocess.run(["ffmpeg", "-hide_banner", "-nostats", "-i", str(path), "-vf", vf,
                             "-an", "-f", "null", "-"], capture_output=True, text=True, timeout=300)
@@ -253,26 +303,29 @@ def group_words(words: list[Word], max_words: int = 3, max_gap: float = 0.6,
     return groups
 
 
-def caption_margin(position: str, cam_h: int, size: int, text_y: float | None = None) -> int:
+def caption_margin(position: str, cam_h: int, size: int, text_y: float | None = None,
+                   frame_h: int = OUT_H) -> int:
     """MarginV (bottom-aligned) for the word captions. Kept out of the bottom 320 px
     (TikTok/Reels/Shorts buttons) and clear of the facecam + two-line hook box
     (room for a two-line caption below it)."""
-    top_limit = OUT_H - cam_h - 300 - 2 * size     # caption block starts >= 300 px under the cam
+    top_limit = frame_h - cam_h - 300 - 2 * size     # caption block starts >= 300 px under the cam
     if text_y is not None:
-        m = OUT_H * (1 - float(text_y)) - size
+        m = frame_h * (1 - float(text_y)) - size
     elif position == "high":
         m = top_limit
     elif position == "middle":
-        m = OUT_H - (cam_h + OUT_H) / 2 - size
+        m = frame_h - (cam_h + frame_h) / 2 - size
     else:
         m = 420
     return int(max(320, min(m, top_limit)))
 
 
-END_TEXT = {"question": "Would you have done the same?", "cta": "Follow for daily Lacy GTA clips"}
+# End cards. No "follow ..." card: calls to action go in the post caption, not the video (Tim, 20 Nov),
+# so an old "cta" ending renders as no end card.
+END_TEXT = {"question": "Would you have done the same?"}
 
 
-MINIMAL_HOOK_S = 2.5          # "minimal" text: the hook is a short opener, not a banner
+MINIMAL_HOOK_S = 2.5          # "minimal" text: the hook is a short opener (+ CAPTION_HOLD_S to read it)
 FOCUS_BEFORE, FOCUS_AFTER = 5.0, 2.5   # "minimal": captions only this close to the payoff
 
 
@@ -306,48 +359,78 @@ def caption_focus(peak: float | None) -> tuple[float, float] | None:
     return None if peak is None else (max(0.0, peak - FOCUS_BEFORE), peak + FOCUS_AFTER)
 
 
+def caption_times(groups: list[list[Word]], end_at: float, hold: float = CAPTION_HOLD_S,
+                  min_s: float = 1.0) -> list[tuple[float, float]]:
+    """(start, end) of each caption line: on as its first word is said, off `hold` seconds after
+    its last word (time to read it before the reaction), never past the next line's start, so
+    two lines are never on screen at once."""
+    out = []
+    for k, g in enumerate(groups):
+        a = g[0].start
+        b = max(g[-1].end + hold, a + min_s)
+        if k + 1 < len(groups):
+            b = min(b, groups[k + 1][0].start)
+        out.append((a, min(b, end_at)))
+    return out
+
+
 def build_ass(words: list[Word], hook: str, duration: float, cam_h: int,
               watermark: str | None = None, style: dict | None = None,
-              focus: tuple[float, float] | None = None, lead: float = 0.0, lead_text: str = "") -> str:
-    """Captions file: the hook/title line under the facecam, and word-by-word
-    captions (current word highlighted) over the gameplay.
-    `style` is style.resolve() output (font, size, position, colours, words per
-    caption, hook length, end card, text_level); None = the original look.
-    text_level "none": nothing at all. "minimal": the hook for 2.5 s and captions
-    only for words inside `focus` (the lines around the payoff); no focus = no
-    captions. "full": the hook all the way through and every word.
+              focus: tuple[float, float] | None = None, lead: float = 0.0, lead_text: str = "",
+              frame_h: int = OUT_H, picture: tuple[int, int] | None = None) -> str:
+    """Captions file: the hook/title line under the facecam, and the spoken words as captions
+    over the gameplay.
+    Look (Tim, 20 Nov): TikTok's own text style. TikTok Sans; the hook is black text on a white
+    box (TikTok's "background" text), captions are white with a thin black outline, in sentence
+    case. Nothing moves, bounces or fades: a line appears, stays CAPTION_HOLD_S after its last
+    word so it can be read, then just disappears.
+    `style` is style.resolve() output (size, position, words per caption, hook length, end card,
+    text_level); None = the defaults.
+    text_level "none": nothing at all. "minimal": the hook for 2.5 s (+ the hold) and captions
+    only for words inside `focus` (the lines around the payoff); no focus = no captions.
+    "full": the hook all the way through and every word.
     `watermark` is an optional corner text; Lacy mode always passes None.
     `lead` seconds of teaser play before the clip (`duration` is the clip's own length): the
     teaser shows `lead_text` (the voiceover line) in the hook box, then everything else runs
-    as usual, `lead` seconds later."""
+    as usual, `lead` seconds later.
+    `frame_h` / `picture`: the 4:5 no-facecam layout (Layout.out_h / Layout.picture): the hook sits
+    in the black band above the picture and the captions in the band below it."""
     r = style or {}
     if lead > 0:
         words = [Word(w.start + lead, w.end + lead, w.text) for w in words]
         focus = (focus[0] + lead, focus[1] + lead) if focus else None
         duration += lead
     level = r.get("text_level") or "full"
-    font = r.get("font") or FONT
+    font = CAPTION_FONT
     scale = float(r.get("scale") or 1.0)
-    cap = int(r.get("text_px") or 84 * scale)
-    hook_px = int(58 * scale)
-    outline = int(r["outline"]) if r.get("outline") is not None else 7
-    shadow = int(r["shadow"]) if r.get("shadow") is not None else 2
+    cap = int(r.get("text_px") or 76 * scale)
+    hook_px = int(56 * scale)
+    outline = int(r["outline"]) if r.get("outline") is not None else 4
+    shadow = int(r["shadow"]) if r.get("shadow") is not None else 1
     from .style import ass_colour
     main = ass_colour(r.get("text_colour") or "#FFFFFF")
-    hi = ass_colour(r.get("highlight") or "#FFFF00")[4:]  # BBGGRR for inline \\c&H..&
-    margin = caption_margin(r.get("position") or "low", cam_h, cap, r.get("text_y"))
+    if picture:
+        p_top, p_bottom = picture
+        hook_style = f"Style: Hook,{font},{hook_px},&H00000000,&H00000000,&H00FFFFFF,&H00FFFFFF,-1,0,0,0,100,100,0,0,3,16,0,2,60,60,{frame_h - p_top + 34},1"
+        cap_y = min(frame_h - 40, p_bottom + 48)
+        pos = f"{{\\an8\\pos({OUT_W // 2},{cap_y})\\q2}}"
+        cap_margin = 0
+    else:
+        hook_style = f"Style: Hook,{font},{hook_px},&H00000000,&H00000000,&H00FFFFFF,&H00FFFFFF,-1,0,0,0,100,100,0,0,3,16,0,8,60,60,{cam_h + 36},1"
+        cap_margin = caption_margin(r.get("position") or "low", cam_h, cap, r.get("text_y"), frame_h)
+        pos = f"{{\\an2\\pos({OUT_W // 2},{frame_h - cap_margin})\\q2}}"
     head = f"""[Script Info]
 ScriptType: v4.00+
 PlayResX: {OUT_W}
-PlayResY: {OUT_H}
+PlayResY: {frame_h}
 WrapStyle: 0
 ScaledBorderAndShadow: yes
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Hook,{font},{hook_px},&H00FFFFFF,&H00FFFFFF,&H00000000,&H64000000,-1,0,0,0,100,100,0,0,3,14,0,8,60,60,{cam_h + 36},1
-Style: Cap,{font},{cap},{main},{main},&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,{outline},{shadow},2,70,70,{margin},1
-Style: End,{font},{int(72 * scale)},&H00FFFFFF,&H00FFFFFF,&H30000000,&H30000000,-1,0,0,0,100,100,0,0,3,20,0,5,80,80,0,1
+{hook_style}
+Style: Cap,{font},{cap},{main},{main},&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,{outline},{shadow},2,70,70,{cap_margin},1
+Style: End,{font},{int(68 * scale)},&H00000000,&H00000000,&H00FFFFFF,&H00FFFFFF,-1,0,0,0,100,100,0,0,3,20,0,5,80,80,0,1
 Style: Mark,{FONT},36,&H80FFFFFF,&H80FFFFFF,&H80000000,&H00000000,-1,0,0,0,100,100,0,0,1,2,0,3,30,30,30,1
 
 [Events]
@@ -357,9 +440,9 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
     if level == "none":
         return head
     if r.get("hook_s"):
-        hook_end = ass_time(min(duration, lead + float(r["hook_s"])))
+        hook_end = ass_time(min(duration, lead + float(r["hook_s"]) + CAPTION_HOLD_S))
     elif level == "minimal":
-        hook_end = ass_time(min(duration, lead + MINIMAL_HOOK_S))
+        hook_end = ass_time(min(duration, lead + MINIMAL_HOOK_S + CAPTION_HOLD_S))
     else:
         hook_end = end
     lines = [f"Dialogue: 1,{ass_time(lead)},{hook_end},Hook,,0,0,0,,{ass_escape(hook)}"] if hook.strip() else []
@@ -378,30 +461,27 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
     groups = group_words(words, max_words=int((r.get("pace") or {}).get("words") or 3))
     if not worth_captioning(words):
         groups = []
-    groups = [g for g in groups if any(meaningful(w.text) for w in g)]
+    groups = [g for g in groups if any(meaningful(w.text) for w in g) and g[0].start < end_at]
     # Every caption sits at exactly the same spot: a fixed \\pos (libass never shifts positioned
     # lines), one line only (groups are short and wrapping is off), and no two captions on screen
-    # at once (each ends when the next starts). Overlapping lines used to stack, so captions
-    # jumped up and down.
-    pos = f"{{\\an2\\pos({OUT_W // 2},{OUT_H - margin})\\q2}}"
-    caps: list[list] = []
-    for g in groups:
-        texts = [ass_escape(w.text.strip().upper()) for w in g]
-        for i, w in enumerate(g):
-            if w.start >= end_at:
-                break
-            stop = g[i + 1].start if i + 1 < len(g) else max(w.end, w.start + 0.3)
-            shown = " ".join(f"{{\\c&H{hi}&}}{t}{{\\c&H{main[4:]}&}}" if j == i else t
-                             for j, t in enumerate(texts))
-            caps.append([w.start, min(stop, end_at), shown])
-    caps.sort(key=lambda c: c[0])
-    for k, (a, b, shown) in enumerate(caps):
-        if k + 1 < len(caps):
-            b = min(b, caps[k + 1][0])
+    # at once (each ends when the next starts).
+    for g, (a, b) in zip(groups, caption_times(groups, end_at)):
         if b - a < 0.02:
             continue
-        lines.append(f"Dialogue: 0,{ass_time(a)},{ass_time(b)},Cap,,0,0,0,,{pos}{shown}")
+        text = sentence_case(" ".join(ass_escape(w.text.strip()) for w in g))
+        lines.append(f"Dialogue: 0,{ass_time(a)},{ass_time(b)},Cap,,0,0,0,,{pos}{text}")
     return head + "\n".join(lines) + "\n"
+
+
+def sentence_case(text: str) -> str:
+    """TikTok-style caption case: as said, first letter capitalised, shouting kept only for
+    short words already in capitals ("NO WAY" stays loud)."""
+    t = text.strip()
+    if not t:
+        return t
+    if t.isupper() and len(t) > 12:
+        t = t.lower()
+    return t[0].upper() + t[1:]
 
 
 # --------------------------------------------------------------------------
@@ -495,7 +575,7 @@ def cut_length(segments: list[tuple[float, float]]) -> float:
 def render(src: Path, out: Path, lay: Layout, ass_file: Path | None) -> Path:
     vf = lay.filter()
     if ass_file is not None:
-        vf += f",ass={ass_file.name}"  # relative: ffmpeg runs in the job folder
+        vf += "," + ass_filter(ass_file.name)  # relative: ffmpeg runs in the job folder
     vf += "[v]"
     run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-i", str(src.resolve()),
          "-filter_complex", vf, "-map", "[v]", "-map", "0:a?",
@@ -548,7 +628,7 @@ def render_variant(src: Path, out: Path, lay: Layout, ass_file: Path | None, src
     if grade:
         vf += "," + grade
     if ass_file is not None:
-        vf += f",ass={ass_file.name}"
+        vf += "," + ass_filter(ass_file.name)
     graph = ";".join(parts) + ";" + vf + "[v]"
     extra_inputs: list[str] = ["-i", str(Path(voice).resolve())] if voice is not None else []
     amap = "[ca]"

@@ -26,7 +26,7 @@ export type Look = {
   saturation: number; contrast: number; brightness: number; warmth: number;
   grain: number; vignette: boolean; letterbox: boolean;
 };
-export type TextStyle = {font: string; sizePx: number; colour: string; highlight: string; y: number};
+export type TextStyle = {font: string; sizePx: number; colour: string; highlight: string; y: number; fontFile?: string};
 // motion: camera movement the editor adds ('none' = every shot completely still).
 // framing: the edit's framing (each shot's own `layout` wins: smart fill, stack fallback).
 // fade: crossfade length in seconds (0 = hard cuts).
@@ -40,7 +40,7 @@ export type EditProps = {
 };
 
 export const defaultProps: EditProps = {
-  fps: 30, width: 1080, height: 1920, duration: 2, shots: [], cards: [], logo: null,
+  fps: 30, width: 1080, height: 1350, duration: 2, shots: [], cards: [], logo: null,
   motion: 'full', framing: 'fill', fade: 0,
   look: {saturation: 1, contrast: 1, brightness: 0, warmth: 0, grain: 0, vignette: false, letterbox: false},
   text: {font: 'Montserrat', sizePx: 96, colour: '#FFFFFF', highlight: '#FFE500', y: 0.3},
@@ -63,8 +63,7 @@ const Media: React.FC<{shot: Source; style: React.CSSProperties}> = ({shot, styl
   return <Freeze frame={last} active={frame > last}>{video}</Freeze>;
 };
 
-// One shot, drawn by its layout (see Layout). 'fit': the whole frame, still, over a
-// blurred copy. `fadeIn` frames: crossfade in over the previous shot.
+// One shot, drawn by its layout (see Layout). 'fit': the whole frame, still, on black. `fadeIn` frames: crossfade in over the previous shot.
 const ShotView: React.FC<{shot: Shot; motion: Motion; framing: Layout; fadeIn: number}> = (
   {shot, motion, framing, fadeIn},
 ) => {
@@ -75,16 +74,12 @@ const ShotView: React.FC<{shot: Shot; motion: Motion; framing: Layout; fadeIn: n
   const layout: Layout = shot.layout ?? (framing === 'fit' ? 'fit' : framing === 'fill' ? 'fill' : framing);
   if (layout === 'fit') {
     const fit = Math.min(W / cw, H / ch);
-    const cover = Math.max(W / cw, H / ch);
     const place = (k: number): React.CSSProperties => ({
       position: 'absolute', width: shot.srcW * k, height: shot.srcH * k,
       left: W / 2 - (cx + cw / 2) * k, top: H / 2 - (cy + ch / 2) * k,
     });
     return (
       <AbsoluteFill style={{overflow: 'hidden', backgroundColor: 'black', opacity}}>
-        <AbsoluteFill style={{filter: 'blur(36px) brightness(0.82) saturate(0.85)', transform: 'scale(1.08)'}}>
-          <Media shot={shot} style={place(cover)} />
-        </AbsoluteFill>
         <Media shot={shot} style={place(fit)} />
         {shot.flash ? <Flash /> : null}
       </AbsoluteFill>
@@ -98,18 +93,12 @@ const ShotView: React.FC<{shot: Shot; motion: Motion; framing: Layout; fadeIn: n
       </AbsoluteFill>
     );
   }
-  // a boxed picture (or two stacked) over a blurred, darker copy of the clip; 4:5 on plain black bars
-  const cover = Math.max(W / cw, H / ch);
+  // a boxed picture (or two stacked) on plain black
   const boxes: [Source, Rect, number][] = [[shot, shot.box ?? [0, 0, W, H], shot.pan]];
   if (layout === 'stack' && shot.second) boxes.push([shot.second, shot.second.box, -shot.pan]);
   return (
     <AbsoluteFill style={{overflow: 'hidden', backgroundColor: 'black', opacity}}>
-      {layout === 'box45' ? null : (
-        <AbsoluteFill style={{filter: 'blur(36px) brightness(0.82) saturate(0.85)', transform: 'scale(1.08)'}}>
-          <Media shot={shot} style={{position: 'absolute', width: shot.srcW * cover, height: shot.srcH * cover,
-            left: W / 2 - (cx + cw / 2) * cover, top: H / 2 - (cy + ch / 2) * cover}} />
-        </AbsoluteFill>
-      )}
+      {/* plain black behind every boxed / stacked picture (no blurred copy: Tim, 19 Nov) */}
       {boxes.map(([m, [bx, by, bw, bh], pan], i) => (
         <div key={i} style={{position: 'absolute', left: bx, top: by, width: bw, height: bh, overflow: 'hidden'}}>
           <Cover m={m} tw={bw} th={bh} pan={pan} punch={shot.punch} motion={motion} />
@@ -163,25 +152,27 @@ const Flash: React.FC = () => {
   return <AbsoluteFill style={{backgroundColor: 'white', opacity: o}} />;
 };
 
-// Text card: words pop in one after another on a spring, *starred* words in the highlight colour.
+// Text card in TikTok's own text style (Tim, 20 Nov): TikTok Sans, white with a thin black
+// outline; the question is black on a white box. It appears on its beat and just disappears:
+// no springs, no movement, no fade. *Starred* words in the highlight colour.
 const CardView: React.FC<{card: Card; text: TextStyle}> = ({card, text}) => {
-  const frame = useCurrentFrame();
-  const {fps, height: H, durationInFrames} = useVideoConfig();
+  const {height: H} = useVideoConfig();
   const words = card.text.split(/\s+/).filter(Boolean);
   let hot = false;
-  const out = interpolate(frame, [durationInFrames - 5, durationInFrames], [1, 0], {
-    extrapolateLeft: 'clamp', extrapolateRight: 'clamp',
-  });
   const size = card.ask ? text.sizePx * 1.05 : text.sizePx;
   return (
-    <AbsoluteFill style={{alignItems: 'center', opacity: out}}>
+    <AbsoluteFill style={{alignItems: 'center'}}>
+      {text.fontFile ? (
+        <style>{`@font-face { font-family: '${text.font}'; src: url('${staticFile(text.fontFile)}'); font-weight: 700; }`}</style>
+      ) : null}
       <div style={{
         position: 'absolute', top: H * text.y, width: '84%', textAlign: 'center',
-        fontFamily: `${text.font}, 'DejaVu Sans', sans-serif`, fontWeight: 800, fontSize: size,
-        lineHeight: 1.12, color: text.colour, letterSpacing: -1,
-        textShadow: '0 4px 18px rgba(0,0,0,0.65), 0 0 3px rgba(0,0,0,0.9)',
-        background: card.ask ? 'rgba(0,0,0,0.55)' : undefined, borderRadius: 18,
-        padding: card.ask ? '18px 26px' : undefined,
+        fontFamily: `'${text.font}', 'DejaVu Sans', sans-serif`, fontWeight: 700, fontSize: size,
+        lineHeight: 1.12, color: card.ask ? 'black' : text.colour,
+        WebkitTextStroke: card.ask ? undefined : '3px black', paintOrder: 'stroke fill',
+        textShadow: card.ask ? undefined : '0 2px 4px rgba(0,0,0,0.5)',
+        background: card.ask ? 'white' : undefined, borderRadius: 14,
+        padding: card.ask ? '16px 24px' : undefined,
       }}>
         {words.map((w, i) => {
           const starts = w.startsWith('*');
@@ -189,13 +180,9 @@ const CardView: React.FC<{card: Card; text: TextStyle}> = ({card, text}) => {
           if (starts) hot = true;
           const isHot = hot;
           if (ends) hot = false;
-          const s = spring({frame: frame - i * 2, fps, config: {damping: 14, stiffness: 220, mass: 0.5}});
           return (
-            <span key={i} style={{
-              display: 'inline-block', marginRight: '0.28em', color: isHot ? text.highlight : undefined,
-              transform: `translateY(${interpolate(s, [0, 1], [28, 0])}px) scale(${interpolate(s, [0, 1], [0.7, 1])})`,
-              opacity: s,
-            }}>{w.replace(/\*/g, '')}</span>
+            <span key={i} style={{display: 'inline-block', marginRight: '0.28em',
+              color: isHot && !card.ask ? text.highlight : undefined}}>{w.replace(/\*/g, '')}</span>
           );
         })}
       </div>

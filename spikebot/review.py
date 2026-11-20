@@ -283,8 +283,11 @@ def approve(item: dict, n: int, label: str, rcfg: dict, available: set[str],
     v = variant_of(item, n, label)
     item["status"] = "approved"
     item["approved"] = {"round": n, "label": label, "ts": now}
-    auto = [p for p in auto_platforms(rcfg, item["mode"]) if p in available]
-    manual = [p for p in PLATFORMS if p not in auto]
+    # a campaign that pays only on some platforms (e.g. Dasgasd3m: TikTok + YouTube) never
+    # gets the others, automatic or by hand
+    allowed = (item.get("source") or {}).get("platforms") or list(PLATFORMS)
+    auto = [p for p in auto_platforms(rcfg, item["mode"]) if p in available and p in allowed]
+    manual = [p for p in PLATFORMS if p not in auto and p in allowed]
     item["publish"] = {p: {"status": "queued", "attempts": 0} for p in auto}
     item["publish"]["manual"] = {"status": "queued", "platforms": manual}
     for r in item["rounds"]:

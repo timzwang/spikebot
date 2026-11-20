@@ -86,7 +86,9 @@ TG_TEXT_LEVELS = TEXT_LEVELS + ("plain",)
 # plain "N days until GTA 6" countdown line, or the trailer's own "Rockstar Games Presents"
 # shot (the one over the ocean and skyscrapers where the text fades in) up to the drop.
 INTROS = ("none", "logo", "countdown", "rockstar_presents")
-ENDINGS = ("none", "question", "cta")
+# No "cta" end card any more: calls to action ("follow X on Twitch") go in the post caption, never
+# on screen (Tim, 20 Nov). An old "cta" setting resolves to no end card.
+ENDINGS = ("none", "question")
 # Stream clips: how the clip opens. "teaser" = its biggest moment plays first under an AI
 # voiceover hook, then the clip itself (Tim, 19 Nov: the experimental version C unless pinned).
 OPENINGS = ("normal", "teaser")
@@ -115,7 +117,7 @@ CUSTOM_KEYS = {
     "shot_s": (0.2, 6.0), "words": (1, 6),
     # film look: grain strength, vignette on/off, cinema bars on/off (Tokyo Girl only)
     "grain": (0, 30), "vignette": (0, 1), "letterbox": (0, 1),
-    "sfx": (0, 1),   # sound-effect volume on Lacy clips (0 = off, default 0.35)
+    "sfx": (0, 1),   # no effect: sound effects were removed from every edit and clip (Tim, 20 Nov)
     # Tokyo Girl timing: longest edit (seconds, logo intro included), fewest beats a shot is
     # held (2+ keeps a clip's action intact), logo build-up before the drop (s), the logo's
     # largest width as a share of the screen, crossfade length (s)
@@ -157,7 +159,19 @@ CUSTOM_DEFAULTS = {"logo_fade_s": 0.4, "end_fade_s": 3.0, "intro_mix": 0.0, "uni
 # saved notes against this and the settings menu). Add a line when new code makes a behaviour
 # automatic: the change re-checks every saved note.
 BUILT_IN = (
-    "Lacy: vertical 1080x1920, facecam exactly the top third, gameplay the bottom two thirds, for the whole clip",
+    "Stream clips: with a facecam, vertical 1080x1920, facecam exactly the top third, gameplay the bottom two"
+    " thirds, for the whole clip; with no facecam (none found, or the box shows no face) never a fake panel: the"
+    " whole stream frame, nothing cropped off, in a 1080x1350 (4:5) video with the hook above and captions below",
+    "Every edit (Tokyo Girl / trend / GTA 5 vs 6) is 1080x1350 (4:5), never 9:16; a shot whose crop would cut"
+    " off on-screen text or the subject is shown whole on black instead",
+    "On-screen text looks like TikTok's own: TikTok Sans, white captions with a thin black outline in sentence"
+    " case, the hook / question as black text on a white box; nothing moves, pops or fades, a line just"
+    " disappears, and each stays 1.5 s longer (the hook too) so it can be read",
+    "No sound effects on any edit or clip (whooshes / risers / hits removed); the sfx setting does nothing",
+    "Calls to action (follow X / watch X live on Twitch) go in the post caption and description, never on"
+    " screen; every campaign's required hashtags and mentions are added to every caption",
+    "Stream clips: no AI voiceover / AI-generated content for campaigns that ban it (every Reach and Clipping"
+    " Nation campaign); the teaser only runs where the campaign allows AI",
     "Lacy: the clip is a window around the chat peak with the payoff at the `payoff` point; the peak is never cut",
     "Lacy: jump cuts remove silences longer than the pace allows; filler-only caption groups are cut",
     "Lacy: captions only when there are at least 3 meaningful words; captions keep clear of the hook box and"
@@ -358,7 +372,7 @@ def grade_filter(g: dict) -> str:
     return ",".join(parts)
 
 
-def look_filter(look: dict, mode: str, width: int = 1080, height: int = 1920) -> str:
+def look_filter(look: dict, mode: str, width: int = 1080, height: int = 1350) -> str:
     """Film-look ffmpeg filters (grain, vignette, cinema bars) for a resolved style.
     Cinema bars only in Tokyo Girl: the Lacy layout needs the full frame."""
     parts = []
@@ -472,7 +486,7 @@ SETTING_INFO = {
     "opening": ("Opening", "stream clips: start normally, or tease the big moment first under an AI voiceover hook"),
     "logo_s": ("Logo build-up", "beats the GTA VI logo builds before it bursts on the drop"),
     "logo_size": ("Logo size", "logo width as a share of the screen"),
-    "sfx": ("Sound effects", "volume of whooshes and hits on Lacy clips (0 = off)"),
+    "sfx": ("Sound effects", "removed: no edit or clip gets sound effects any more (Tim, 20 Nov)"),
     "sharpen": ("Sharpening", "extra definition / clarity, the TikTok \"4K\" look (0 = off, 1 = strong)"),
     "logo_fade_s": ("Logo fade-out", "seconds the GTA VI logo takes to burst away on the drop (lower = faster)"),
     "end_fade_s": ("End fade", "seconds the last clip fades out to black (0 = no fade)"),

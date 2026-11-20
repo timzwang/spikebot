@@ -43,7 +43,7 @@ DEFAULTS = {
     "channel": "lacy",                       # twitch.tv/lacy
     "allowed_categories": ["Grand Theft Auto V", "Grand Theft Auto VI"],
     "max_uploads_per_day": 3,                # UK calendar day
-    "max_renders_per_day": 12,               # CPU guard: clips made, approved or not
+    "max_renders_per_day": 10,               # clips made per streamer a day (the best-scored ones, Tim 20 Nov)
     "auto_upload": False,                    # ignored: Tim approves every clip in Discord
     "min_score": None,                       # None = use min_score_to_alert
     "vod_delay_s": 300,                      # wait for the VOD to contain the moment
@@ -102,6 +102,7 @@ CLIP_DEFAULTS = {
 }
 # Display names used in titles and captions when config gives no `display`.
 KNOWN_NAMES = {"adinross": "Adin Ross", "sealstats": "Seal", "lacy": "Lacy", "kaicenat": "Kai Cenat"}
+# (every campaign's name is in spikebot/campaigns.py)
 # Kick names its categories a little differently from Twitch.
 KICK_GTA = ["GTA V", "GTA VI", "GTA 5", "GTA 6", "Grand Theft Auto 5", "Grand Theft Auto 6"]
 PLATFORM_URL = {"twitch": "https://www.twitch.tv/{}", "kick": "https://kick.com/{}"}
@@ -124,13 +125,19 @@ def hashtag(name: str) -> str:
 def profiles(cfg: dict, enabled_only: bool = True) -> dict[tuple[str, str], dict]:
     """(platform, channel) -> settings for every streamer whose clips get made.
     Each profile is a full Lacy-style settings dict plus name / platform / hashtag / programme."""
+    from . import campaigns
     out: dict[tuple[str, str], dict] = {}
-    chans = {(c.get("platform"), str(c.get("name", "")).lower()): c for c in cfg.get("channels") or []}
+    # every campaign Tim joined is watched and clipped (spikebot/campaigns.py), on top of config
+    merged = campaigns.merge_channels({"channels": [dict(c) for c in cfg.get("channels") or []],
+                                       "campaigns": cfg.get("campaigns") or {}})
+    chans = {(c.get("platform"), str(c.get("name", "")).lower()): c for c in merged["channels"]}
+    reg = campaigns.registry(cfg)
     lacy = settings(cfg)
     lkey = ("twitch", lacy["channel"])
-    if lacy["enabled"] or not enabled_only:
+    if (lacy["enabled"] or not enabled_only) and not (enabled_only and campaigns.ended(cfg, lkey[1])):
         prog = (chans.get(lkey) or {}).get("programme") or "Lacy (Reach pool)"
-        out[lkey] = lacy | {"name": "Lacy", "platform": "twitch", "hashtag": "Lacy", "programme": prog}
+        out[lkey] = with_campaign(lacy | {"name": "Lacy", "platform": "twitch", "hashtag": "Lacy",
+                                          "programme": prog}, reg.get(lkey[1]))
     cs = clip_settings(cfg)
     if not cs["enabled"] and enabled_only:
         return out
@@ -139,6 +146,8 @@ def profiles(cfg: dict, enabled_only: bool = True) -> dict[tuple[str, str], dict
     for key, c in chans.items():
         cleared = key[1] in allow
         if key in out or key == lkey or not (c.get("programme") or cleared) or key[0] not in PLATFORM_URL:
+            continue
+        if enabled_only and campaigns.ended(cfg, key[1]):   # budget gone / campaign over: no more clips
             continue
         p = json.loads(json.dumps(DEFAULTS))
         if key[0] == "kick":
@@ -153,14 +162,33 @@ def profiles(cfg: dict, enabled_only: bool = True) -> dict[tuple[str, str], dict
             and "facecam" not in common
         if p["min_score"] is None:
             p["min_score"] = float(cfg.get("min_score_to_alert", 0))
-        name = p.get("name") or c.get("display") or KNOWN_NAMES.get(key[1]) or key[1]
+        camp = reg.get(key[1])
+        name = (p.get("name") or c.get("display") or (camp or {}).get("name") or KNOWN_NAMES.get(key[1])
+                or key[1])
         p.update(channel=key[1], platform=key[0], name=name, hashtag=hashtag(name),
                  programme=c.get("programme") or "cleared by Tim (no programme)")
+        p = with_campaign(p, camp)
         p.setdefault("submissions_csv", f"logs/{key[1]}_submissions.csv")
         if p["submissions_csv"] == DEFAULTS["submissions_csv"]:   # never mix with Lacy's CSV
             p["submissions_csv"] = f"logs/{key[1]}_submissions.csv"
         out[key] = p
     return out
+
+
+def with_campaign(p: dict, camp: dict | None) -> dict:
+    """A streamer profile plus its campaign's rules: where it pays (`platforms`), whether AI content
+    is allowed (the voiceover teaser), the layout ("full" keeps the whole stream frame) and the
+    caption rules (`campaign`, read by campaigns.finish_copy)."""
+    p = dict(p)
+    p["campaign"] = camp
+    if camp:
+        p.setdefault("platforms", camp.get("platforms"))
+        p.setdefault("ai_allowed", bool(camp.get("ai_allowed")))
+        p.setdefault("layout", camp.get("layout") or "auto")
+    else:
+        p.setdefault("ai_allowed", False)
+        p.setdefault("layout", "auto")
+    return p
 
 
 def job_key(job: dict) -> tuple[str, str]:
@@ -230,6 +258,15 @@ def voice_line_ok(line: str, name: str = "Lacy") -> bool:
     n = len((line or "").split())
     return (name.lower() in (line or "").lower() and 5 <= n <= 14 and not BANNED.search(line)
             and bool(ENGLISH.match(line)))
+
+
+def screen_hook_ok(hook: str, name: str = "Lacy") -> bool:
+    """The on-screen hook: the streamer's name, 3-8 words, <= 42 characters, plain English, no banned
+    words, no calls to follow (those go in the caption)."""
+    h = (hook or "").strip()
+    n = len(h.split())
+    return (name.lower() in h.lower() and 3 <= n <= 8 and len(h) <= 42 and not BANNED.search(h)
+            and bool(ENGLISH.match(h)) and not re.search(r"\b(follow|subscribe|twitch\.tv|kick\.com)\b", h, re.I))
 
 
 def title_ok(title: str, name: str = "Lacy") -> bool:
@@ -515,6 +552,10 @@ def render_job(job: dict, lcfg: dict, jobs: Jobs, used_titles: set[str],
     if not job.get("vod_url") or not job.get("vod_started_at"):
         return finish("failed", f"no {PLATFORM_NAME.get(platform, platform)} VOD for this stream"
                                 " (VODs off or not published)")
+    from . import campaigns
+    over = campaigns.ended(cfg or {}, job_key(job)[1], base) if cfg is not None else None
+    if over:
+        return finish("cancelled", f"campaign over: {over}")
     day = uk_day(now)
     if jobs.renders_on(day, job_key(job)) >= lcfg["max_renders_per_day"]:
         return finish("skipped", f"render limit {lcfg['max_renders_per_day']}/day reached")
@@ -550,7 +591,9 @@ def _render_job_body(job, lcfg, jobs, used_titles, fetch, transcribe, now, revie
         info = editor.probe(seg)
         duration = info["duration"] or duration
         facecam = lcfg["facecam"]
-        if lcfg.get("facecam_auto"):
+        if lcfg.get("layout") == "full":   # the campaign needs the whole frame (e.g. a stream overlay)
+            facecam = None
+        elif lcfg.get("facecam_auto"):
             track.update(0.15, "Finding the facecam")
             try:
                 from . import safety
@@ -562,12 +605,15 @@ def _render_job_body(job, lcfg, jobs, used_titles, fetch, transcribe, now, revie
                 facecam = found
                 job["facecam"] = found
                 log.info("clip job %s: facecam found at %s", job["id"], found)
-        if facecam_required(review_store):   # require_facecam: the top panel must be a real face
+            else:   # no webcam on screen: no facecam panel at all, the clip is 4:5 (Tim, 20 Nov)
+                facecam = None
+        if facecam is not None and facecam_required(review_store):   # the top panel must be a real face
             track.update(0.18, "Checking the facecam shows a face")
             from . import safety
             if safety.real_facecam(seg, facecam) is False:
-                return finish("skipped", "no real face in the facecam panel (it shows another part of the"
-                                         " screen): require_facecam")
+                log.info("clip job %s: the facecam box shows no face: whole frame in 4:5 instead", job["id"])
+                facecam = None
+        job["no_facecam"] = facecam is None
         lay = editor.layout(info["width"], info["height"], facecam, src_fps=info.get("fps"))
         away = editor.away_reason(seg, lay, duration)
         if away:
@@ -601,7 +647,9 @@ def _render_job_body(job, lcfg, jobs, used_titles, fetch, transcribe, now, revie
         name, platform = who(job)
         item = review_store.create("lacy", {"job_id": job["id"], "vod_link": job.get("vod_link"),
                                             "channel": job["channel"], "platform": platform, "streamer": name,
-                                            "category": job["category"]},
+                                            "category": job["category"], "score": job.get("score"),
+                                            # where this campaign pays: the others are never planned
+                                            "platforms": lcfg.get("platforms")},
                                    now, title=f"{name} {job['id']} ({job['category']})")
         job["review_item"] = item["id"]
         jobs.save(job)
@@ -632,6 +680,13 @@ def phrase_lines(words: list, gap: float = 0.6, max_words: int = 14) -> list[lis
     return out
 
 
+def clip_facecam(job: dict, lcfg: dict) -> dict | None:
+    """The facecam box for a job's layout, or None = no facecam (4:5, the whole frame)."""
+    if job.get("no_facecam") or lcfg.get("layout") == "full":
+        return None
+    return job.get("facecam") or lcfg["facecam"]
+
+
 def facecam_required(review_store) -> bool:
     """The require_facecam rule for stream clips (default on)."""
     if review_store is None:
@@ -653,7 +708,8 @@ def _render_single(job, lcfg, jobs, used_titles, seg, lay, words, lang, duration
     job["tags"] = tags(job["category"], name, platform)
     ass = d / "captions.ass"
     # Lacy mode: never a watermark, channel logo or "6" overlay.
-    ass.write_text(editor.build_ass(words, title, duration, lay.cam_h, watermark=None), encoding="utf-8")
+    ass.write_text(editor.build_ass(words, title, duration, lay.cam_h, watermark=None, frame_h=lay.out_h,
+                                    picture=lay.picture), encoding="utf-8")
     short = editor.render(seg, d / "short.mp4", lay, ass)
     editor.review_copy(short, d / "preview.mp4")
     peak = (job["peak_time"] - job["clip_start"]) if job.get("peak_time") else None
@@ -795,7 +851,7 @@ class ReviewAdapter:
         words = [editor.Word(a, b, t) for a, b, t in json.loads((d / "words.json").read_text(encoding="utf-8"))]
         w, h = int(job["src_w"]), int(job["src_h"])
         fps = job.get("src_fps") or editor.probe(seg).get("fps")   # jobs from before #39 lack it
-        lay = editor.layout(w, h, job.get("facecam") or self.lcfg["facecam"], src_fps=fps)
+        lay = editor.layout(w, h, clip_facecam(job, self.lcfg), src_fps=fps)
         duration = float(job["duration"])
         peak = (job["peak_time"] - job["clip_start"]) if job.get("peak_time") else None
         used = self._used() | {v["title"] for r in item["rounds"] for v in r["variants"]}
@@ -804,15 +860,17 @@ class ReviewAdapter:
             st.resolve(sp["style"]).get("streamer_only", True) for sp in specs) else words
         written = self.clip_copy(job, d, voice) if not any(sp.get("from") for sp in specs) else []
         hooks_used = instagram.PostLog(instagram.settings(self.cfg, self.base)["posts_csv"]).recent_hooks()
-        from . import sfx
-        dd = Path(self.cfg.get("data_dir", "data"))
-        sfx_lib = sfx.library((dd if dd.is_absolute() else self.base / dd) / "sfx")
+        from . import campaigns
+        camp = self.lcfg.get("campaign") or campaigns.for_channel(self.cfg, job.get("channel") or "lacy")
         out = []
         from . import progress
         track = progress.current()
         for vi, spec in enumerate(specs):
           with track.span(vi / len(specs), (vi + 1) / len(specs)):
             track.update(0.0, f"Version {spec['label']} ({vi + 1}/{len(specs)}): rendering")
+            if spec["style"].get("opening") == "teaser" and not self.lcfg.get("ai_allowed"):
+                # the AI voiceover is AI content: this campaign bans it, so a normal opening
+                spec = dict(spec, style=dict(spec["style"], opening="normal"))
             r = st.resolve(spec["style"])
             base_v = spec.get("from")
             texts = spec.get("texts") or {}
@@ -832,6 +890,14 @@ class ReviewAdapter:
                                    tone=None if tone == "matched" else tone, hook_style=r.get("hook_style"),
                                    name=name)
             used.add(title)
+            # the on-screen hook: Claude's short setup line when it passes, else the title
+            screen = title
+            if texts.get("hook"):
+                screen = title
+            elif base_v and base_v.get("screen_hook"):
+                screen = base_v["screen_hook"]
+            elif vi < len(written) and screen_hook_ok(written[vi].get("hook", ""), name):
+                screen = written[vi]["hook"].strip()
             ai_cap = written[vi]["caption"].strip() if vi < len(written) else ""
             if base_v and not texts.get("hook"):
                 caps = dict(base_v["captions"])
@@ -849,7 +915,8 @@ class ReviewAdapter:
             stem = f"r{n}_{spec['label']}"
             # experimental opening: the big moment first under an AI voiceover hook, then the clip
             tz = None
-            if r.get("opening") == "teaser" and job.get("audio", True):
+            # AI content: only where the campaign allows it (Reach and Clipping Nation ban it)
+            if r.get("opening") == "teaser" and job.get("audio", True) and self.lcfg.get("ai_allowed"):
                 track.update(0.05, f"Version {spec['label']} ({vi + 1}/{len(specs)}): voiceover")
                 line = (base_v.get("teaser") or {}).get("line") if base_v and not texts.get("hook") else None
                 tz = self.teaser(seg, peak, duration, line or self.voice_line(job, d, voice, title),
@@ -875,21 +942,18 @@ class ReviewAdapter:
             if r["text_level"] != "none" or r["ending"] != "none":
                 ass = folder / f"{stem}.ass"
                 # Lacy mode: never a watermark, channel logo or "6" overlay.
-                ass.write_text(editor.build_ass(cut_words, title, length, lay.cam_h, watermark=None, style=r,
+                ass.write_text(editor.build_ass(cut_words, screen, length, lay.cam_h, watermark=None, style=r,
                                                 focus=editor.caption_focus(peak_cut), lead=lead,
-                                                lead_text=tz["line"] if tz else ""),
+                                                lead_text=tz["line"] if tz else "", frame_h=lay.out_h,
+                                                picture=lay.picture),
                                encoding="utf-8")
             mp4 = folder / f"{stem}.mp4"
             look = st.grade_filter(r["grade"])
             fx = st.look_filter(r["look"], "lacy")
-            vol = float((spec["style"].get("custom") or {}).get("sfx", sfx.DEFAULT_VOLUME))
-            cue_list = sfx.cues(segs, peak_cut, r["transition"], sfx_lib,
-                                random.Random(f"{item['id']}{n}{spec['label']}sfx"), vol)
-            if tz:   # the clip starts after the teaser: every effect moves with it
-                cue_list = [sfx.Cue(c.file, c.at + lead, c.volume) for c in cue_list]
+            # no sound effects on any edit or clip (Tim, 20 Nov): the clip's own sound only
             try:
                 editor.render_variant(seg, mp4, lay, ass, w, h, segs, ",".join(x for x in (look, fx) if x),
-                                      r["transition"], audio=bool(job.get("audio", True)), sfx_cues=cue_list,
+                                      r["transition"], audio=bool(job.get("audio", True)), sfx_cues=None,
                                       teaser=tz["window"] if tz else None, voice=tz["voice"] if tz else None)
             finally:
                 if tz and tz["voice"]:
@@ -901,9 +965,11 @@ class ReviewAdapter:
                 peak_cut = None if peak_cut is None else peak_cut + lead
             track.update(0.85, f"Version {spec['label']} ({vi + 1}/{len(specs)}): preview")
             prev = editor.preview(mp4, folder / f"{stem}_preview.mp4", preview_bytes, length)
+            desc = description(title, job["category"], job["channel"], name, platform)
+            caps, desc = campaigns.finish_copy(caps, desc, camp)   # required hashtags + "watch live" line
             out.append({"label": spec["label"], "style": spec["style"], "preset": spec.get("preset"),
                         "experimental": spec.get("experimental", False), "title": title,
-                        "description": description(title, job["category"], job["channel"], name, platform),
+                        "description": desc, "frame": "4:5" if lay.cam is None else "9:16", "screen_hook": screen,
                         "tags": tags(job["category"], name, platform), "hook": social, "captions": caps,
                         "file": mp4.name, "preview": prev.name, "duration": round(length, 1),
                         "cuts": len(segs) - 1, "peak": peak_cut,
@@ -921,7 +987,13 @@ class ReviewAdapter:
                 raise ValueError(f"the {k} caption has a word the clip rules ban: {BANNED.search(text).group(0)!r}")
             if name.lower() not in text.lower():
                 raise ValueError(f"the {k} caption must mention {name}")
-        v["description"] = description(v["title"], job["category"], job["channel"], name, platform)
+        from . import campaigns
+        camp = campaigns.for_channel(self.cfg, job.get("channel") or "lacy")
+        bad = campaigns.copy_problems(v["captions"], camp)
+        if bad:
+            raise ValueError("; ".join(bad))
+        v["description"] = campaigns.finish_caption(description(v["title"], job["category"], job["channel"],
+                                                                name, platform), camp, limit=4900)
 
     def finish(self, item: dict, status: str) -> None:
         job_id = item["source"].get("job_id")
@@ -1078,6 +1150,9 @@ class LacyMode:
         self.data_dir = Path(data_dir)
         self.config_path = config_path
         self.queue: asyncio.Queue | None = None
+        self.full_cfg = cfg
+        # (platform, channel) -> live? Set by Bot (its last stream-state poll); None = unknown
+        self.is_live = lambda key: None
 
     def profile(self, key: tuple[str, str]) -> dict | None:
         return self.profiles.get((key[0], key[1].lower()))
@@ -1092,6 +1167,11 @@ class LacyMode:
     def enqueue(self, rec: dict, state: dict, key: tuple[str, str] | None = None) -> dict | None:
         p = self.profile(key or (rec.get("platform") or "twitch", rec.get("channel") or self.cfg["channel"]))
         if p is None or not (rec.get("programme") or p.get("programme")):
+            return None
+        from . import campaigns
+        over = campaigns.ended(self.full_cfg, p["channel"])
+        if over:   # budget gone / campaign over (checked live, not just at start-up)
+            log.info("no clip for %s: %s", p["name"], over)
             return None
         if rec.get("score", 0) < p["min_score"]:
             return None
@@ -1124,7 +1204,7 @@ class LacyMode:
         take the chat bot down. Finished variants wait in the review queue."""
         self.queue = asyncio.Queue()
         for j in self.jobs.all():  # jobs left waiting by a restart
-            if j.get("status") in ("queued", "rendering", "waiting_vod") or retry_after_fix(j):
+            if j.get("status") in ("queued", "standby", "rendering", "waiting_vod") or retry_after_fix(j):
                 self.queue.put_nowait(j["id"])
         while True:
             job_id = await self.queue.get()
@@ -1155,6 +1235,33 @@ class LacyMode:
         wait = job["ready_at"] - time.time()
         if wait > 0:
             await asyncio.sleep(wait)
+            job = self.jobs.load(job_id)
+        if job.get("status") in ("cancelled", "skipped", "review", "uploaded"):
+            return
+        if not job.get("selected"):   # only the day's best-rated moments become clips (spikebot/picker.py)
+            from . import campaigns, picker
+            over = campaigns.ended(self.full_cfg, job_key(job)[1])
+            if over:
+                job.update(status="cancelled", reason=f"campaign over: {over}")
+                self.jobs.save(job)
+                return
+            prof = self.profile(job_key(job)) or self.cfg
+            verdict, why = picker.decide(job, self.jobs.all(), int(prof.get("max_renders_per_day", 10)),
+                                         time.time(), self.is_live(job_key(job)))
+            if verdict == "wait":
+                if job.get("status") != "standby" or job.get("reason") != why:
+                    job.update(status="standby", reason=why)
+                    self.jobs.save(job)
+                asyncio.create_task(self._later(job_id, picker.RECHECK_S))
+                return
+            if verdict == "drop":
+                job.update(status="skipped", reason=why)
+                self.jobs.save(job)
+                log.info("clip job %s: %s", job_id, why)
+                return
+            job.update(selected=time.time(), selected_why=why, status="queued", reason=None)
+            self.jobs.save(job)
+            log.info("clip job %s selected: %s", job_id, why)
         if not job.get("vod_url"):
             try:
                 vod = await self.find_vod(job, helix)

@@ -68,6 +68,18 @@ COMMANDS: list[dict] = [
      "how": "`/preset combine new_name:<new> pacing:<preset> colour:<preset>` (also text, transitions, hook,"
             " structure, music_sync)",
      "tags": "merge mix parts pacing colour"},
+    {"name": "Expand a video (drop-down)", "cat": "review",
+     "what": "#ready-to-post is ONE message listing every video waiting for review. Pick one in the drop-down"
+             " and it expands right there: its versions A/B/C (previews attached) and all the buttons below."
+             " New clips and re-renders update that same message; nothing new is posted.",
+     "how": "The drop-down on the review board in #ready-to-post · Collapse button to close it",
+     "tags": "list board dropdown expand open menu queue"},
+    {"name": "/campaigns", "cat": "make",
+     "what": "Every clipping campaign joined: status, pay, budget spent, where it posts, required hashtags and"
+             " its rules. Campaigns that run out of budget or end stop getting clips automatically (checked"
+             " every 30 min); end or resume one by hand.",
+     "how": "`/campaigns` · `/campaigns end:Kai Cenat` · `/campaigns resume:Clix`",
+     "tags": "budget programme rules hashtags streamer kai clix bobby kreekcraft stop pause"},
     {"name": "Approve A/B/C", "cat": "review",
      "what": "Approves that version and posts it (YouTube/Instagram automatically, inside the daily caps and"
              " posting windows; TikTok and the rest go to #tiktok-queue). Nothing posts without this.",

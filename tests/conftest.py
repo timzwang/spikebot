@@ -10,6 +10,14 @@ def _no_real_ai(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_campaign_registry(request, monkeypatch):
+    """Tests see only the channels/campaigns in their own config, not spikebot/campaigns.py's list
+    (tests/test_campaigns.py tests the registry itself)."""
+    if not request.module.__name__.endswith("test_campaigns"):
+        monkeypatch.setenv("SPIKEBOT_CAMPAIGNS", "off")
+
+
+@pytest.fixture(autouse=True)
 def _ffmpeg_renderer_unless_marked(request, monkeypatch):
     """Tokyo Girl renders use the fast ffmpeg path in tests; tests marked `remotion` use Remotion."""
     if request.node.get_closest_marker("remotion") is None:

@@ -283,6 +283,32 @@ def interpret_feedback(text: str, mode: str, base: Path | None = None, current: 
 # --------------------------------------------------------------------------
 # #inspiration: the artistic side of a reference Short
 # --------------------------------------------------------------------------
+# The on-screen captions of a reference (Tim, 20 Nov: "in inspiration take note of the caption on
+# screen as well"): how they look and behave, never what they say.
+CAPTION_SCHEMA = {
+    "type": "object", "additionalProperties": False,
+    "properties": {
+        "present": {"type": "boolean"},
+        "kind": {"type": "string", "enum": ["speech_subtitles", "hook_only", "story_text", "none"]},
+        "position": {"type": "string", "enum": ["top", "upper", "middle", "lower", "bottom", "band_above_picture",
+                                                "band_below_picture", "varies"]},
+        "size": {"type": "string", "enum": ["small", "medium", "large", "huge"]},
+        "case": {"type": "string", "enum": ["sentence", "upper", "lower", "title", "mixed"]},
+        "words_per_line": {"type": "integer"},
+        "lines": {"type": "integer"},
+        "look": {"type": "string", "enum": ["white_outline", "white_shadow", "box_background", "coloured",
+                                            "highlighted_word", "plain"]},
+        "colours": {"type": "string"},
+        "font_feel": {"type": "string"},
+        "animation": {"type": "string", "enum": ["none", "pop", "word_by_word", "fade", "slide", "bounce"]},
+        "seconds_on_screen": {"type": "number"},
+        "hook_text": {"type": "string"},
+        "notes": {"type": "string"},
+    },
+    "required": ["present", "kind", "position", "size", "case", "words_per_line", "lines", "look", "colours",
+                 "font_feel", "animation", "seconds_on_screen", "hook_text", "notes"],
+}
+
 ART_SCHEMA = {
     "type": "object",
     "properties": {
@@ -299,9 +325,10 @@ ART_SCHEMA = {
         "avoid": {"type": "array", "items": {"type": "string"}},
         "kind": {"type": "string", "enum": ["edit", "stream_clip", "other"]},
         "kind_why": {"type": "string"},
+        "captions": CAPTION_SCHEMA,
     },
     "required": ["summary", "what_makes_it_good", "techniques", "text_use", "opening", "settings", "avoid",
-                 "kind", "kind_why"],
+                 "kind", "kind_why", "captions"],
     "additionalProperties": False,
 }
 
@@ -317,6 +344,17 @@ footage carries it") rather than generic praise.
 
 Never transcribe or quote on-screen words, speech, usernames or captions, and never suggest reusing
 their footage, audio or wording: describe the *type* of choice only.
+
+captions: look closely at the on-screen text in every frame: spoken-word subtitles, the hook / title text
+and any story text. Record how it LOOKS and BEHAVES, never what it says: where it sits (band_above_picture /
+band_below_picture when the picture is letterboxed and the text is on the black), size relative to the
+frame (small < 4% of the height, medium 4-6%, large 6-9%, huge above), letter case, words per line, lines
+on screen at once, the look (white_outline = white letters with a black outline like TikTok's own captions;
+box_background = text on a solid box; highlighted_word = the spoken word in another colour), colours, the
+font's feel (e.g. "rounded bold sans like TikTok Sans"), how it appears (none = just appears and disappears),
+about how many seconds each caption stays on screen, and hook_text = how the opening hook text is styled and
+where (or "none"). notes: anything else that makes the captions easy to read (e.g. "never covers the face").
+present = false and kind "none" when there is no on-screen text at all.
 
 kind: what sort of video it is, which decides what our editor learns from it:
 - "edit": a montage cut together from game/trailer/film footage, usually to music (many cuts, often
@@ -364,6 +402,12 @@ what was said in the clip. Write like a real clipper account that people actuall
   no hashtags, no emojis, no ALL CAPS words except GTA, no quotes around the whole thing.
 - caption: 15-80 characters, casual and lowercase is fine, must contain the streamer's name, at most one emoji,
   no hashtags (they are added later), must not repeat the title word for word.
+- hook: the text on screen for the first seconds, the single most important line: 3-8 words, at most 42
+  characters, must contain the streamer's name, sentence case, no emojis, no hashtags. It is the SETUP that
+  makes someone stay to see the moment: a specific situation or stakes from the transcript ("Kai tries to
+  rob the jewellery store", "Lacy's first police chase in GTA 6"), a promise ("Adin finds the secret
+  room"), or tension ("Clix trusts the wrong NPC"). Never give away the outcome or punchline, never
+  generic ("funny moment", "best clip", "you have to see this"), never a call to follow anyone.
 - Never: insults, mocking, drama, negativity about the streamer, "you won't believe", "insane", "crazy",
   "wait for it", "watch till the end", "POV", "theory", questions to farm comments, story spoilers.
 Give exactly the number of options asked for, each clearly different in angle."""
@@ -372,8 +416,8 @@ CLIP_COPY_SCHEMA = {
     "type": "object", "additionalProperties": False,
     "properties": {"options": {"type": "array", "items": {
         "type": "object", "additionalProperties": False,
-        "properties": {"title": {"type": "string"}, "caption": {"type": "string"}},
-        "required": ["title", "caption"]}}},
+        "properties": {"title": {"type": "string"}, "caption": {"type": "string"}, "hook": {"type": "string"}},
+        "required": ["title", "caption", "hook"]}}},
     "required": ["options"],
 }
 

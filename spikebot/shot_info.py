@@ -73,9 +73,12 @@ def _rows(entry: dict, s: float, e: float) -> list:
     return inner
 
 
+CROP_ASPECT = 4 / 5   # the edits' frame (Tokyo Girl / trend / compare are 4:5 since 20 Nov)
+
+
 def crop_share(aspect: float) -> float:
-    """Share of the (cropped) source width a 9:16 fill crop shows."""
-    return min(1.0, (9 / 16) / max(aspect, 1e-3))
+    """Share of the (cropped) source width a 4:5 fill crop shows."""
+    return min(1.0, CROP_ASPECT / max(aspect, 1e-3))
 
 
 def frame_window(strips: list[float], share: float) -> tuple[float, float, float]:
@@ -153,7 +156,7 @@ CUT_OFF_PEAK = 2.2
 
 
 def crop_ok(stats: dict | None, subject_w: float | None = None, aspect: float = 16 / 9) -> bool:
-    """True when the shot crops cleanly to 9:16 (unknown = True). `subject_w`: the main subject's
+    """True when the shot crops cleanly to 4:5 (unknown = True). `subject_w`: the main subject's
     width as a share of the frame, from the vision labels (the crop is centred on the subject)."""
     if subject_w is not None:
         return subject_w <= crop_share(aspect) + 0.06

@@ -169,6 +169,91 @@ def buttons(item: dict, rnd: dict, disabled: bool = False) -> list[list[dict]]:
     return [row1, row2]
 
 
+# ---- #ready-to-post as ONE message (Tim, 20 Nov) ------------------------------------
+# Every video waiting for review is a line in one board message with a drop-down. Picking one
+# expands it in the same message (its previews attached, A | B | C, the usual buttons); nothing
+# new is posted when a clip is ready or a re-render lands, the board is edited instead.
+BOARD_MAX = 25   # Discord: options in one drop-down
+KEEP = object()  # refresh_board: leave the expanded video as it is
+
+
+def board_rounds(item: dict) -> dict | None:
+    """The round of an item the board shows: its newest round with videos."""
+    return next((r for r in reversed(item.get("rounds") or []) if r.get("variants")
+                 and r.get("status") in ("ready", "posted")), None)
+
+
+def board_items(items: list[dict]) -> list[dict]:
+    """Items waiting for review (open, with a rendered round), the ones expiring soonest first;
+    re-renders in progress are listed too (marked)."""
+    out = [it for it in items if it.get("status") == "open" and board_rounds(it)]
+    return sorted(out, key=lambda it: (it.get("expires") or 0, it["id"]))
+
+
+def board_line(item: dict, now: float, opened: bool = False) -> str:
+    label, _ = mode_label(item)
+    rnd = board_rounds(item) or {}
+    src = item.get("source") or {}
+    bits = [("▶ " if opened else "• ") + f"**{label}**"]
+    if src.get("category"):
+        bits.append(src["category"].replace("Grand Theft Auto ", "GTA "))
+    bits.append(f"{len(rnd.get('variants') or [])} versions" + (f" (round {rnd['n']})" if rnd.get("n", 1) > 1 else ""))
+    if (item.get("request") or {}).get("status") in ("queued", "running"):
+        bits.append("🔄 re-rendering")
+    if item.get("expires"):
+        bits.append(f"expires {ts(item['expires'], 'R')}")
+    line = " · ".join(bits) + f" · `{item['id']}`"
+    if item.get("board_note"):
+        line += "\n   " + item["board_note"][:160]
+    return line
+
+
+def board_option(item: dict) -> dict:
+    label, _ = mode_label(item)
+    rnd = board_rounds(item) or {}
+    title = next((v.get("title") for v in rnd.get("variants") or [] if v.get("title")), "") or item.get("title") or ""
+    return {"label": f"{label} · {item['id']}"[:100], "value": item["id"],
+            "description": (title or f"{len(rnd.get('variants') or [])} versions")[:100]}
+
+
+def board_payload(items: list[dict], opened: str | None, now: float, entry_on: dict | None = None) -> dict:
+    """The board: the list (one line per video), a drop-down to expand one, and the expanded
+    video's card (A | B | C + Approve / Redo / Reject / Feedback / Edit caption + Collapse)."""
+    shown = board_items(items)
+    ids = {it["id"] for it in shown}
+    if opened not in ids:
+        opened = None
+    head = [f"🎬 **Ready to review: {len(shown)}**" + (" · pick one below to expand it" if shown else
+                                                       " · nothing waiting right now")]
+    for it in shown[:BOARD_MAX]:
+        head.append(board_line(it, now, it["id"] == opened))
+    if len(shown) > BOARD_MAX:
+        head.append(f"… and {len(shown) - BOARD_MAX} more (approve or reject some to see them)")
+    rows: list[list[dict]] = []
+    if shown:
+        rows.append([{"type": "select", "custom_id": cid("board", "-"),
+                      "placeholder": "▶ Expand a video to review it",
+                      "options": [board_option(it) for it in shown[:BOARD_MAX]]}])
+    embeds: list[dict] = []
+    if opened:
+        item = next(it for it in shown if it["id"] == opened)
+        rnd = board_rounds(item)
+        card = round_payload(item, rnd, entry_on=entry_on)
+        head.append("")
+        head.append("▼ " + card["content"])
+        embeds = card["embeds"]
+        btn = card["rows"]
+        btn[-1] = btn[-1] + [{"label": "Collapse", "style": "secondary", "custom_id": cid("bclose", item["id"]),
+                              "disabled": False}]
+        rows += btn
+    content = "\n".join(head)
+    if len(content) > 1990:
+        content = content[:1985] + " …"
+    return {"content": content, "embeds": embeds, "rows": rows, "opened": opened,
+            "round": board_rounds(next(it for it in shown if it["id"] == opened))["n"] if opened else None,
+            "allowed_mentions": {"parse": []}}
+
+
 # ---- the rules list (/rules) ------------------------------------------------------
 def entry_button(n: int, on: bool, item_id: str = "-", rnd: int = 0) -> dict:
     return {"label": f"Turn off #{n}" if on else f"Turn on #{n}", "style": "secondary" if on else "success",
@@ -673,6 +758,11 @@ class ReviewBot:
         self.started_at = time.time()
         self._stats_warned = False
         self.social: dict = {}     # socialstats.refresh() -> views/likes/followers totals
+        # #ready-to-post is one board message with a drop-down (board_payload); review.board false =
+        # the old one-message-per-round cards
+        self.board_on = bool((cfg.get("review") or {}).get("board", self.rcfg.get("board", True)))
+        self.board_lock = asyncio.Lock()
+        self.board_path = self.data_dir / "review" / "board.json"
 
     # ---- helpers ------------------------------------------------------------
     @property
@@ -745,7 +835,16 @@ class ReviewBot:
         return seen
 
     async def say(self, item: dict, text: str, file=None) -> None:
-        """Message in the clip's thread (or #ready-to-post if it has none)."""
+        """Message in the clip's thread (or #ready-to-post if it has none). With the board, a clip
+        without a thread gets the note on its board line instead: no new message."""
+        if self.board_on and not item.get("thread_id") and file is None:
+            try:
+                with self.store.edit(item["id"]) as it:
+                    it["board_note"] = text.replace("\n", " ")[:200]
+                await self.refresh_board()
+            except Exception as e:  # noqa: BLE001
+                log.info("review %s: %s (board note failed: %s)", item["id"], text, e)
+            return
         ch = await self.channel(item.get("thread_id") or self.rcfg["channel_id"])
         if ch is None:
             log.info("review %s: %s", item["id"], text)
@@ -937,7 +1036,14 @@ class ReviewBot:
     async def scan(self, now: float) -> None:
         for item in self.store.all():
             st_ = item["status"]
-            if st_ in ("open", "approved"):
+            if st_ in ("open", "approved") and self.board_on:
+                if any(r["status"] == "ready" and not r.get("message_id") for r in item["rounds"]):
+                    try:
+                        await self.board_post(item["id"])
+                    except Exception as e:  # noqa: BLE001 - tell Tim, keep retrying
+                        log.warning("review %s: board update failed: %s", item["id"], e)
+                    item = self.store.load(item["id"])
+            elif st_ in ("open", "approved"):
                 for rnd in item["rounds"]:
                     if rnd["status"] == "ready" and not rnd.get("message_id"):
                         try:
@@ -976,6 +1082,11 @@ class ReviewBot:
                     await self.post_manual(item["id"])
                 if review.publish_finished(self.store.load(item["id"])):
                     await self.complete(item["id"])
+        if self.board_on:
+            try:
+                await self.refresh_board()   # list changes (approved / expired / new): edited, never re-sent
+            except Exception as e:  # noqa: BLE001
+                log.warning("review board refresh failed: %s", e)
 
     async def archive_inspiration(self, now: float, every: float = 600) -> None:
         """Archive the bot's #inspiration threads after `inspiration_archive_hours` without a
@@ -1126,6 +1237,112 @@ class ReviewBot:
             except Exception as e:  # noqa: BLE001 - the rules are saved either way
                 log.warning("review %s: could not post the saved rules: %s", item_id, e)
 
+    # ---- the board (one message in #ready-to-post) ------------------------------------
+    def board_state(self) -> dict:
+        try:
+            return json.loads(self.board_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+
+    def save_board_state(self, st: dict) -> None:
+        self.board_path.parent.mkdir(parents=True, exist_ok=True)
+        self.board_path.write_text(json.dumps(st), encoding="utf-8")
+
+    async def board_post(self, item_id: str) -> None:
+        """A round is ready: it goes on the board (opened there if nothing else is), no new message."""
+        st = self.board_state()
+        await self.refresh_board(opened=item_id if not st.get("open") else KEEP)
+        st = self.board_state()
+        item = self.store.load(item_id)
+        with self.store.edit(item_id) as it:
+            for r in it["rounds"]:
+                if r["status"] == "ready" and not r.get("message_id"):
+                    r.update(status="posted", board=True, message_id=st.get("message_id"),
+                             channel_id=st.get("channel_id"))
+                    if r.get("entries"):
+                        it["board_note"] = (f"📝 your feedback saved rule(s) {', '.join(f'#{x}' for x in r['entries'])}"
+                                            " (see /rules)")
+        if any(r.get("entries") for r in item["rounds"] if r["status"] == "ready"):
+            await self.refresh_board(force=True)
+
+    async def refresh_board(self, opened=KEEP, force: bool = False) -> None:
+        """Edit the board to match the queue. `opened`: the item id to expand ("" = collapse,
+        KEEP = as it is). Previews are attached only when the expanded video changes."""
+        import discord
+        async with self.board_lock:
+            st = self.board_state()
+            if opened is not KEEP:
+                st["open"] = opened or None
+            items = await asyncio.to_thread(self.store.all)
+            pay = board_payload(items, st.get("open"), time.time(), entry_on=self.entry_states())
+            st["open"] = pay["opened"]
+            want = f"{pay['opened']}:{pay['round']}" if pay["opened"] else ""
+            sig = json.dumps([pay["content"], pay["embeds"], pay["rows"], want], sort_keys=True, default=str)
+            if not force and st.get("sig") == sig and st.get("message_id"):
+                self.save_board_state(st)
+                return
+            ch = await self.channel(self.rcfg["channel_id"])
+            if ch is None:
+                return
+            msg = None
+            if st.get("message_id"):
+                try:
+                    msg = await ch.fetch_message(st["message_id"])
+                except Exception:  # noqa: BLE001 - deleted: post a new board
+                    msg = None
+            kw = dict(content=pay["content"], embeds=self.embeds(pay["embeds"]), view=self.view(pay["rows"]),
+                      allowed_mentions=discord.AllowedMentions.none())
+            new_files = want != st.get("files") or msg is None
+
+            def files():
+                if not pay["opened"]:
+                    return []
+                item = next(it for it in items if it["id"] == pay["opened"])
+                rnd = review.round_of(item, pay["round"])
+                d = self.store.dir(item["id"])
+                return [discord.File(d / v["preview"], filename=f"{v['label']}_{item['id']}.mp4")
+                        for v in rnd["variants"] if (d / v["preview"]).exists()]
+
+            async def write(**extra):
+                if msg is None:
+                    return await ch.send(**{k: v for k, v in (kw | extra).items() if k != "attachments"},
+                                         files=extra.get("attachments") or [])
+                await msg.edit(**(kw | extra))
+                return msg
+            try:
+                out = await write(attachments=files()) if new_files else await write()
+            except discord.HTTPException as e:
+                if e.status != 413 or not pay["opened"]:
+                    raise
+                item = next(it for it in items if it["id"] == pay["opened"])
+                links = await asyncio.to_thread(self.preview_links, item, review.round_of(item, pay["round"]))
+                note = ("\nPreviews (too big to attach): " + " · ".join(f"[{k}]({u})" for k, u in links.items())
+                        if links else "\nPreviews too big to attach and no bucket set.")
+                kw["content"] = (pay["content"] + note)[:1990]
+                out = await write(attachments=[])
+            st.update(message_id=out.id, channel_id=ch.id, files=want, sig=sig)
+            self.save_board_state(st)
+
+    def campaigns_text(self, end: str | None = None, resume: str | None = None) -> str:
+        """/campaigns: the overview, after ending / resuming one if asked."""
+        from . import campaigns
+        from .main import stop_campaign
+        head = ""
+        for name, action in ((end, "end"), (resume, "resume")):
+            if not name:
+                continue
+            ch = campaigns.find(self.cfg, name)
+            if ch is None:
+                head += f"⚠️ No campaign matches {name!r}.\n"
+            elif action == "end":
+                campaigns.end_by_hand(self.cfg, ch, self.base)
+                head += f"⛔ {campaigns.for_channel(self.cfg, ch)['name']}: ended, no more clips"
+                head += f" ({stop_campaign(self.cfg, self.data_dir, ch, 'ended by Tim')}).\n"
+            else:
+                campaigns.resume(self.cfg, ch, self.base)
+                head += f"✅ {campaigns.for_channel(self.cfg, ch)['name']}: clipping again.\n"
+        return head + campaigns.overview(self.cfg, self.base)
+
     async def repost_latest(self, item_id: str) -> None:
         """Send a copy of the item's newest rendered round (previews + the same buttons) to
         #ready-to-post itself. Nothing in the item changes."""
@@ -1153,9 +1370,11 @@ class ReviewBot:
                 for v in rnd["variants"]}
 
     async def close_round_messages(self, item: dict, note: str) -> None:
-        """Grey out the buttons on every posted round of the item."""
+        """Grey out the buttons on every posted round of the item (board rounds: the board drops it)."""
+        if any(r.get("board") for r in item["rounds"]):
+            await self.refresh_board()
         for rnd in item["rounds"]:
-            if not rnd.get("message_id"):
+            if not rnd.get("message_id") or rnd.get("board"):
                 continue
             ch = await self.channel(rnd.get("channel_id"))
             if ch is None:
@@ -1177,6 +1396,11 @@ class ReviewBot:
             return
         if data["action"] in ("rule", "rulep", "rulem", "rulesp", "rules_off", "rules_on"):
             await self.on_rules_click(interaction, data)
+            return
+        if data["action"] in ("board", "bclose"):   # the #ready-to-post drop-down / Collapse
+            vals = (interaction.data or {}).get("values") or []
+            await interaction.response.defer()
+            await self.refresh_board(opened=vals[0] if data["action"] == "board" and vals else "")
             return
         try:
             item = self.store.load(data["item"])
@@ -1244,7 +1468,8 @@ class ReviewBot:
         profile = self.store.profile()
         profile.decide("redo", review.style_mode(item), item["id"], review.round_of(item, n)["variants"])
         profile.save()
-        await interaction.response.send_message("🔄 Rendering 3 new variants; they'll appear in the thread.",
+        where = "on the board" if self.board_on and not item.get("thread_id") else "in the thread"
+        await interaction.response.send_message(f"🔄 Rendering 3 new variants; they'll appear {where}.",
                                                 ephemeral=True)
         await self.say(item, "🔄 Redo requested: rendering 3 new variants…")
         self.wake.set()
@@ -1301,6 +1526,9 @@ class ReviewBot:
     async def refresh_round(self, item_id: str, n: int) -> None:
         item = self.store.load(item_id)
         rnd = review.round_of(item, n)
+        if rnd.get("board"):
+            await self.refresh_board(force=True)
+            return
         ch = await self.channel(rnd.get("channel_id"))
         if ch is None or not rnd.get("message_id"):
             return
@@ -2382,6 +2610,19 @@ class ReviewBot:
                 " downloads Rockstar's GTA 5 trailers and matches the shots, so it can take a while; the bar below"
                 " shows where it is.")
             asyncio.create_task(bot.run_compare(inter, count))
+
+        @tree.command(name="campaigns", description="Clipping campaigns: status, budget, rules; end or resume one")
+        @app_commands.describe(end="Stop clipping this streamer (e.g. Kai Cenat)",
+                               resume="Start clipping this streamer again")
+        async def campaigns_cmd(inter: discord.Interaction, end: str | None = None, resume: str | None = None):
+            if not await guard(inter):
+                return
+            from .help import chunks
+            parts = chunks(await asyncio.to_thread(bot.campaigns_text, end, resume))
+            await inter.response.send_message(parts[0], ephemeral=True,
+                                              allowed_mentions=discord.AllowedMentions.none())
+            for more in parts[1:]:
+                await inter.followup.send(more, ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
 
         @tree.command(name="stats", description="Refresh the 📊 Stats channels now")
         async def stats_cmd(inter: discord.Interaction):

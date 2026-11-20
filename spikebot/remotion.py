@@ -30,7 +30,7 @@ log = logging.getLogger("remotion")
 ROOT = Path(__file__).resolve().parent.parent / "remotion"
 FPS = 30    # same as tokyo_girl.FPS (#39); an edit of real 60 fps clips renders at 60 (edit_fps)
 CRF = 18    # same as editor.CRF (#39)
-TEXT_Y = {"high": 0.27, "middle": 0.44, "low": 0.6}
+TEXT_Y = {"high": 0.11, "middle": 0.42, "low": 0.72}   # top of the text, share of the 4:5 frame
 
 
 class RemotionError(RuntimeError):
@@ -100,9 +100,15 @@ def props_for(plan, lcfg: dict, r: dict, cards: list[tuple[float, float, str]], 
             "sizePx": int(r.get("text_px") or lcfg.get("font_size", 104) * scale * 0.92),
             "colour": r.get("text_colour") or "#FFFFFF", "highlight": r.get("highlight") or "#FFE500",
             "y": float(y) if y is not None else TEXT_Y.get(r.get("position") or "high", 0.27)}
-    if y is None and (r.get("position") or "high") == "high" and r.get("framing") in ("box45", "box11", "stack"):
+    if y is None and (r.get("position") or "high") == "high" and r.get("framing") in TG.BAND_FRAMINGS:
         text["y"] = 0.035   # the band above the picture, not over it
-    props = {"fps": TG.edit_fps(plan), "width": 1080, "height": 1920, "duration": round(plan.duration, 4),
+    # TikTok's caption font (bundled, OFL) for the cards
+    from .editor import FONTS_DIR
+    font_file = FONTS_DIR / "TikTokSans-Bold.ttf"
+    if font_file.exists():
+        files["TikTokSans-Bold.ttf"] = font_file
+        text["font"], text["fontFile"] = "TikTok Sans", "TikTokSans-Bold.ttf"
+    props = {"fps": TG.edit_fps(plan), "width": TG.W, "height": TG.H, "duration": round(plan.duration, 4),
              "shots": shots,
              "cards": [{"from": a, "to": b, "text": t, "ask": i == len(cards) - 1 and t.replace("*", "").rstrip().endswith("?")}
                        for i, (a, b, t) in enumerate(cards)],
