@@ -114,6 +114,10 @@ COMMANDS: list[dict] = [
      "what": "Adds a song to the music library for trend edits (beats and drop are measured; edits stay silent).",
      "how": "Paste a TikTok sound link (Share sound > Copy link), upload the audio, or `sound:` + a video link",
      "tags": "song music trending audio tiktok"},
+    {"name": "#updates", "cat": "channels",
+     "what": "Every change to the bot, one short line each, grouped by day (all past updates were posted"
+             " there once). Read-only; the bot creates it if it's missing.",
+     "how": "Just read it", "tags": "changelog news changes new features"},
     {"name": "/stats", "cat": "server",
      "what": "Refreshes the 📊 Stats channels now (they also update every 10 min) and replies with what"
              " YouTube and Instagram read. ▶️ YouTube shows the channel's views, subscribers and Shorts"

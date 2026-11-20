@@ -28,6 +28,13 @@ revenue on a budget of about £20/month. Give all times in UK time.
 - #inspiration downloads other creators' Shorts **only to measure style**: delete the file
   right after analysis, never reuse their footage, audio or wording.
 
+## #updates changelog
+
+- Every change Tim would notice gets one entry at the end of `spikebot/updates.json`
+  (`id`, UK `date`, `title` <= 40 chars, `text` <= 160 chars, plain words). The bot posts new
+  entries to #updates after the deploy restart (`ReviewBot.post_updates`, ids in
+  data/updates_posted.json). `tests/test_updates.py` checks the format.
+
 ## Task tracker
 
 GitHub Issues on `timzwang/spikebot` is the task list (labels `pre-launch`,
@@ -497,6 +504,9 @@ it in sync when behaviour or config changes.
   data/social_stats.json). Tested in `tests/test_socialstats.py`.
   `archive_inspiration` (from `scan_loop`, every 10 min): the bot's #inspiration threads with no
   message for `review.inspiration_archive_hours` (12) are archived (`stale_threads`, snowflake times).
+- `spikebot/updates.py` (pure) + `spikebot/updates.json`: **#updates** changelog -> `messages` (date heading,
+  <= 10 embeds per message, one colour per day); `ReviewBot.updates_channel` (`review.updates_channel_id`, else
+  a channel named "updates", else created read-only) / `post_updates` / `updates_loop` (every 10 min).
 - `spikebot/help.py` (pure): **/help** [category] [search] (ephemeral): `COMMANDS` (name, `cat`, what, how, tags)
   under `CATEGORIES`, `help_text` / `select` / `chunks` (<= 2000 chars per message). Lists slash commands,
   review buttons and #inspiration actions. **Add a line for every new command**: `tests/test_help.py`

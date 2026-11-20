@@ -344,6 +344,13 @@ cd /opt/spikebot && sudo -u spikebot venv/bin/python -m spikebot.tiktok --env .e
 `TIKTOK_MAX_PER_DAY` (15) caps posts per UK day; `"tiktok": false` in `review.modes.<mode>`
 turns TikTok off for that kind.
 
+## #updates
+
+Every change to the bot, one short line each, grouped by day. The bot creates a read-only
+`#updates` channel if there isn't one (needs **Manage Channels**; or set
+`review.updates_channel_id`) and posted all past updates there once. New ones appear after each
+deploy. The list lives in `spikebot/updates.json`.
+
 ## #announcements
 
 New rules, what the rule compiler built, videos going live, blocked videos and what a deploy

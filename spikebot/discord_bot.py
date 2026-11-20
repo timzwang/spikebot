@@ -39,7 +39,7 @@ from . import ai
 from . import feedback as fb
 from . import help as help_
 from . import presets as presets_
-from . import progress, review
+from . import progress, review, updates
 from . import style as st
 
 log = logging.getLogger("discord_bot")
@@ -798,6 +798,67 @@ class ReviewBot:
                 return None
         return ch
 
+    # ---- #updates: every change to the bot (spikebot/updates.py) ------------------------
+    async def updates_channel(self):
+        """#updates: review.updates_channel_id, else a text channel named "updates", else one is made
+        (read-only for everyone but the bot). None if the server can't be reached or the bot lacks
+        Manage Channels."""
+        import discord
+        cid_ = (self.cfg.get("review") or {}).get("updates_channel_id")
+        if cid_:
+            return await self.channel(int(cid_))
+        guild = self.client.get_guild(self.rcfg["guild_id"]) if self.rcfg.get("guild_id") else None
+        if guild is None:
+            ch = await self.channel(self.rcfg["channel_id"])
+            guild = getattr(ch, "guild", None)
+        if guild is None:
+            return None
+        for ch in getattr(guild, "text_channels", []) or []:
+            if (ch.name or "").lower().lstrip("📢🆕-_ ").startswith(updates.CHANNEL_NAME):
+                return ch
+        try:
+            return await guild.create_text_channel(
+                updates.CHANNEL_NAME, topic="Every change to the bot, briefly.",
+                overwrites={guild.default_role: discord.PermissionOverwrite(send_messages=False, view_channel=True),
+                            guild.me: discord.PermissionOverwrite(send_messages=True, embed_links=True,
+                                                                  view_channel=True)},
+                reason="spikebot updates")
+        except discord.Forbidden:
+            log.warning("#updates: the bot needs Manage Channels to create it")
+            return None
+
+    async def post_updates(self) -> int:
+        """Post every changelog entry not posted yet (all past updates the first time). Returns how
+        many were posted. Never raises."""
+        import discord
+        try:
+            st = updates.Posted(self.data_dir)
+            done = st.load()
+            todo = updates.pending(updates.load(), set(done.get("ids") or []))
+            if not todo:
+                return 0
+            ch = await self.updates_channel()
+            if ch is None:
+                return 0
+            n = 0
+            for msg in updates.messages(todo):
+                await ch.send(content=msg["content"], embeds=self.embeds(msg["embeds"]),
+                              allowed_mentions=discord.AllowedMentions.none())
+                done.setdefault("ids", []).extend(msg["ids"])
+                done["channel_id"] = ch.id
+                st.save(done)   # after every message: a crash halfway never re-posts the first part
+                n += len(msg["ids"])
+            return n
+        except Exception as e:  # noqa: BLE001 - updates are news, never worth a crash
+            log.warning("#updates: %s", e)
+            return 0
+
+    async def updates_loop(self, every: float = 600) -> None:
+        await asyncio.sleep(15)
+        while True:
+            await self.post_updates()
+            await asyncio.sleep(every)
+
     async def announcements(self):
         """#announcements: the configured id, else the server's text channel with "announcement"
         in its name. None if there isn't one (callers fall back to #status)."""
@@ -998,7 +1059,8 @@ class ReviewBot:
                 bot.started = True
                 bot.render_q = asyncio.Queue()
                 for coro in (bot.scan_loop(), bot.render_worker(), bot.publish_loop(), bot.trend_loop(),
-                             bot.progress_loop(), bot.stats_loop(), bot.social_loop(), bot.rules_loop(), bot.run_deploy_requests()):
+                             bot.progress_loop(), bot.stats_loop(), bot.social_loop(), bot.rules_loop(), bot.run_deploy_requests(),
+                             bot.updates_loop()):
                     asyncio.create_task(coro)
 
         @tree.error
