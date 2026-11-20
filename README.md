@@ -722,8 +722,12 @@ shots) and moved off them, so no other scene flashes up between two clips.
 
 Post a TikTok / Instagram / YouTube link, or upload the video, in #inspiration. Optional notes
 in the same message: `copy: pacing, colour` (parts: pacing, colour, text, transitions, hook,
-structure, music-sync, look, framing; default all), `name: night-drive`, and anything about what you
-like in it ("love that there's no text until the drop"). The bot opens a thread, measures
+structure, music-sync, look, framing; default all), `name: night-drive`, `for: clips` (a stream clip:
+its style is only used on stream clips) or `for: edits` (a trailer/trend edit: only used on those),
+and anything about what you like in it ("love that there's no text until the drop"). Without `for:` the
+bot guesses: a streamer webcam that stays put = clips; no webcam and cut to the music (or fast
+cutting) = edits; otherwise every kind. The reply says which (**Used for**); change it with
+`/preset edit name:<preset> setting:for value:clips|edits|all`. Older presets count as every kind. The bot opens a thread, measures
 the style (including its **framing**: full screen, a 4:5 or 1:1 picture over blur or bars, a 16:9
 frame in the middle, or two clips stacked, read from where the sharp picture sits) and replies with
 a breakdown and a thumbnail strip, and saves the preset to
@@ -734,6 +738,11 @@ Threads tidy themselves away: after 12 hours with no new message the bot archive
 they leave the channel list and sit under the channel's **Threads** button (posting in one
 reopens it). Change it with `review.inspiration_archive_hours` in `config.json` (0 = off).
 The bot needs the **Manage Threads** permission if Discord refuses (it logs a warning).
+
+**Channel descriptions**: on every start the bot writes a one-line how-to under the name of #ready-to-post,
+#tiktok-queue, #inspiration, #moments, #status, #daily-summary and #announcements (the last four found by
+name), only when the text has changed. Needs **Manage Channels**; without it the log says so and nothing
+else changes. The texts are `CHANNEL_TOPICS` in `spikebot/discord_bot.py`.
 
 It measures **style only** and never reuses their footage, audio or words: the video is
 deleted straight after the analysis and the preset holds numbers (average shot length, cuts on
@@ -754,7 +763,8 @@ frames are never stored.
 - `/preset combine new_name pacing:A colour:B text:C ...`: parts from different presets
 - `/preset apply name [variant]` inside a clip's thread re-renders that clip with the preset
   and posts it for approval
-- Variant B of every new clip uses your most-approved presets in rotation; approvals and
+- Variant B of every new clip uses your most-approved presets **of that kind** in rotation (a stream-clip
+  preset never styles a trailer edit and the other way round; `/preset apply` still lets you, with a warning); approvals and
   rejections per preset are tracked in `style_profile.json` (`/style` shows the ranking).
 
 Text measurement uses OCR (easyocr), which needs PyTorch (~1 GB disk), so it is optional.

@@ -424,6 +424,8 @@ it in sync when behaviour or config changes.
   kept `STALE_S`; data/social_stats.json). Tested in `tests/test_socialstats.py`.
   `archive_inspiration` (from `scan_loop`, every 10 min): the bot's #inspiration threads with no
   message for `review.inspiration_archive_hours` (12) are archived (`stale_threads`, snowflake times).
+- Channel descriptions: `discord_bot.CHANNEL_TOPICS` / `topic_plan` (config ids, webhook channels by
+  name) -> `ReviewBot.ensure_topics` on ready, only when different (Manage Channels; failures logged).
 - `spikebot/help.py` (pure): **/help** [category] [search] (ephemeral): `COMMANDS` (name, `cat`, what, how, tags)
   under `CATEGORIES`, `help_text` / `select` / `chunks` (<= 2000 chars per message). Lists slash commands,
   review buttons and #inspiration actions. **Add a line for every new command**: `tests/test_help.py`
@@ -456,7 +458,11 @@ it in sync when behaviour or config changes.
   OpenCV zoom/shake, flash/fade at cuts, structure, **framing** (`framing`: 8 frames, `sharp_rows` edge share
   per row, `bands` (median rows; a gap is closed unless no frame ever had an edge there = a stacked divider),
   `framing_from` -> fill / box45 / box11 / fit / stack; preset part `framing` in `presets.PART_KEYS`, Tokyo
-  Girl/trend only). Download failure -> bot asks for an upload.
+  Girl/trend only). Download failure -> bot asks for an upload. **Preset kind** `preset["for"]` clips|edits|all
+  (`presets.KINDS`: clips = lacy, edits = tokyo_girl + trend; missing = all): Tim's `for:` (`parse_for`, CLI
+  `--for`, kept for a thread upload) else `guess_kind` (`inspiration.webcam` = `safety.find_facecam`, on-beat /
+  cuts per s); `pick_variants` only uses `presets.for_mode`; `/preset edit setting:for`, combine keeps a
+  shared kind; `/preset apply` warns on a mismatch. Tested in `tests/test_preset_kinds.py`.
 - `tests/test_style.py`, `tests/test_review.py` (store, publisher with fakes, bot flows with fake
   Discord objects, #inspiration flow), `tests/test_review_modes.py` (real ffmpeg: Lacy and Tokyo Girl
   variants, feedback re-render, Lacy rules), `tests/test_inspiration.py`.

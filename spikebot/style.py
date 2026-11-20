@@ -760,6 +760,7 @@ def pick_variants(profile: Profile, mode: str, rng: random.Random,
     pins = profile.pinned(mode)
     avoid = avoid or []
     out: list[dict] = []
+    presets = presets_.for_mode(presets, mode)   # a stream-clip preset never styles a trailer edit
     preset_name = profile.next_preset(list(presets or {})) if presets else None
     for i in range(n):
         label = "ABC"[i]

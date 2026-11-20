@@ -28,6 +28,17 @@ ALIASES = {"pace": "pacing", "pacing": "pacing", "cuts": "pacing", "color": "col
            "sync": "music-sync", "look": "look", "effects": "look", "fx": "look",
            "cinematic": "look", "vibe": "look", "framing": "framing", "frame": "framing",
            "aspect": "framing", "ratio": "framing", "layout": "framing", "crop": "framing", "all": "all"}
+# Which kind of video a preset was made from, and so which edits may use it. Tim's
+# `for: clips` / `for: edits` wins; otherwise #inspiration guesses (`guess_kind`).
+# "all" = any edit (old presets, or the guess couldn't tell).
+KINDS = {"clips": ("lacy",), "edits": ("tokyo_girl", "trend"), "all": ("lacy", "tokyo_girl", "trend")}
+KIND_LABEL = {"clips": "stream clips", "edits": "trailer and trend edits", "all": "every kind of video"}
+KIND_ALIASES = {"clips": "clips", "clip": "clips", "stream": "clips", "streams": "clips",
+                "stream clips": "clips", "stream clip": "clips", "streamer": "clips", "lacy": "clips",
+                "edits": "edits", "edit": "edits", "trailer": "edits", "trailers": "edits",
+                "trailer edits": "edits", "tokyo girl": "edits", "tokyo": "edits", "trend": "edits",
+                "trends": "edits", "trend edits": "edits", "all": "all", "both": "all", "any": "all",
+                "everything": "all"}
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,39}$")
 # which preset settings each part may write into a style
 PART_KEYS = {
@@ -64,6 +75,47 @@ def parse_copy(note: str) -> list[str]:
 def parse_name(note: str) -> str | None:
     m = re.search(r"(?i)\bname\s*:\s*([^\n,;]+?)(?=\s+copy\s*:|[\n,;]|$)", note or "")
     return clean_name(m.group(1)) if m else None
+
+
+def kind_name(value: str) -> str:
+    """'stream clips' -> 'clips'. Raises ValueError for anything else."""
+    k = KIND_ALIASES.get(re.sub(r"\s+", " ", (value or "").strip().lower()).strip(" .;"))
+    if not k:
+        raise ValueError("`for` is clips (stream clips), edits (trailer/trend edits) or all")
+    return k
+
+
+def parse_for(note: str) -> str | None:
+    """'for: stream clips' -> 'clips'; None if the note doesn't say (or says something unknown)."""
+    m = re.search(r"(?i)\bfor\s*:\s*([a-z ]+?)(?=\s+(?:copy|name)\s*:|[\n,;]|$)", note or "")
+    try:
+        return kind_name(m.group(1)) if m else None
+    except ValueError:
+        return None
+
+
+def guess_kind(facecam: bool | None, on_beat: float = 0.0, cuts_per_s: float = 0.0) -> tuple[str, str]:
+    """(kind, why) from what the analysis saw. A webcam that stays put = a stream clip; no
+    webcam and cuts on the beat / fast cutting = an edit; else 'all' (couldn't tell). Pure."""
+    if facecam:
+        return "clips", "streamer webcam found"
+    if facecam is False and (on_beat >= 0.5 or cuts_per_s >= 0.5):
+        return "edits", "no webcam, cut to the music" if on_beat >= 0.5 else "no webcam, fast cutting"
+    return "all", "couldn't tell" + (" (webcam check unavailable)" if facecam is None else "")
+
+
+def kind_of(preset: dict) -> str:
+    k = preset.get("for")
+    return k if k in KINDS else "all"
+
+
+def fits(preset: dict, mode: str) -> bool:
+    """May this preset style an edit of this style mode (lacy / tokyo_girl / trend)?"""
+    return mode in KINDS[kind_of(preset)]
+
+
+def for_mode(presets: dict[str, dict] | None, mode: str) -> dict[str, dict]:
+    return {n: p for n, p in (presets or {}).items() if fits(p, mode)}
 
 
 def clean_name(name: str) -> str:
@@ -139,9 +191,13 @@ class Presets:
         if setting == "copy":
             p["copy"] = parse_copy("copy: " + value)
             return self._saved(p)
+        if setting == "for":
+            p["for"] = kind_name(value)
+            p["for_why"] = "set by Tim"
+            return self._saved(p)
         part = next((pt for pt, keys in PART_KEYS.items() if setting in keys), None)
         if part is None:
-            raise ValueError(f"unknown setting {setting!r}; try one of: copy, "
+            raise ValueError(f"unknown setting {setting!r}; try one of: copy, for, "
                              + ", ".join(sorted(set().union(*PART_KEYS.values()))))
         if setting in ("ending",):
             if value not in ("none", "question", "cta", "loop"):
@@ -171,12 +227,16 @@ class Presets:
                "copy": [], "settings": {}, "analysis": {}}
         if self.path(out["name"]).exists():
             raise ValueError(f"preset {out['name']!r} already exists")
+        kinds = set()
         for part, name in parts.items():
             if part not in PARTS:
                 raise ValueError(f"unknown part {part!r}")
             src = self.load(name)
+            kinds.add(kind_of(src))
             out["settings"][part] = dict((src.get("settings") or {}).get(part) or {})
             out["copy"].append(part)
+        kinds.discard("all")
+        out["for"] = kinds.pop() if len(kinds) == 1 else "all"   # mixed sources = any edit
         self.save(out)
         return out
 
@@ -211,7 +271,8 @@ def to_style(preset: dict, mode: str) -> dict:
 def summary(preset: dict, profile_row: dict | None = None) -> str:
     """Readable lines for /preset show and /preset list."""
     sets = preset.get("settings") or {}
-    lines = [f"**{preset['name']}** · copies: {', '.join(preset.get('copy') or PARTS)}"]
+    lines = [f"**{preset['name']}** · for {KIND_LABEL[kind_of(preset)]} · copies:"
+             f" {', '.join(preset.get('copy') or PARTS)}"]
     src = preset.get("source") or {}
     if src.get("url"):
         lines.append(f"from <{src['url']}>")

@@ -601,6 +601,29 @@ def test_inspiration_link_fails_then_upload_is_analysed(tmp_path, monkeypatch):
     assert len(calls) == 2
 
 
+def test_inspiration_for_tag_reaches_the_analysis_and_survives_an_upload(tmp_path, monkeypatch):
+    store = R.Store(tmp_path / "data")
+    b, reg = bot_for(tmp_path, store)
+    b.rcfg["inspiration_channel_id"] = 300
+    insp = FakeChannel(300, reg)
+    kinds = []
+
+    async def analyse(name, copy, url=None, file=None, note="", **kw):
+        kinds.append((kw.get("kind"), note))
+        if url:
+            return {"ok": False, "error": "login required", "ask_upload": True}
+        return {"ok": True, "name": name, "text": "saved", "strip": None}
+    monkeypatch.setattr(b, "analyse", analyse)
+
+    async def go():
+        await b.on_message(FakeMessage(insp, "https://www.instagram.com/reel/abc/ for: stream clips\nlove the zooms"))
+        await b.on_message(FakeMessage(reg[555], "here", [FakeAttachment("clip.mp4")]))
+        await b.on_message(FakeMessage(insp, "https://www.tiktok.com/@a/video/1"))
+    asyncio.run(go())
+    assert [k for k, _ in kinds] == ["clips", "clips", None]
+    assert "for:" not in kinds[0][1] and "love the zooms" in kinds[0][1]
+
+
 def test_inspiration_sound_links_become_songs(tmp_path, monkeypatch):
     from spikebot import music as M
     store = R.Store(tmp_path / "data")

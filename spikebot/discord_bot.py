@@ -448,6 +448,46 @@ def manual_payload(item: dict, v: dict, platforms: list[str], link: str | None =
     return out
 
 
+# The line under each channel's name (Discord's channel topic): how to use it and what lands
+# there. Set by `ReviewBot.ensure_topics` on start, only when it differs. Keys are found by
+# config id (`rcfg` field) or, for the webhook channels, by name.
+CHANNEL_TOPICS = {
+    "channel_id": "Clips waiting for you, 3 versions (A/B/C) each. Approve publishes; Redo, Feedback or Reject"
+                  " otherwise. Each clip's thread takes /preset apply. Nothing posts without Approve.",
+    "tiktok_channel_id": "Approved videos to post by hand on TikTok/Instagram: download, copy the caption, post."
+                         " Lacy clips: log the links with the command shown.",
+    "inspiration_channel_id": "Post a Short link or upload one to copy its style (optional copy: / name: /"
+                              " for: clips or edits). TikTok sound link, audio file or sound: + link = a new"
+                              " trend sound. Videos are deleted after analysis.",
+    "moments": "Chat spikes from watched streams: streamer, score and a VOD link at the moment. Read-only.",
+    "status": "Bot health: restarts, streamers live/offline, chat down/back, Kick key errors, low disk. Read-only.",
+    "daily-summary": "22:00 UK daily: moments per streamer, top 3 of the last 24 h, server CPU. Read-only.",
+    "announcements": "New rules, what the rule compiler built, videos going live, blocked videos, deploy notes."
+                     " Read-only.",
+}
+BY_NAME = ("moments", "status", "daily-summary", "announcements")
+
+
+def topic_plan(channels, rcfg: dict) -> list[tuple[object, str]]:
+    """(channel, topic) for every channel whose topic should change. Config ids win; the
+    webhook channels are matched by name (emoji/prefixes allowed, e.g. "📈-daily-summary"). Pure."""
+    ids = {rcfg.get(k): k for k in CHANNEL_TOPICS if k.endswith("channel_id") and rcfg.get(k)}
+    out, done = [], set()
+    for ch in channels:
+        name = (getattr(ch, "name", "") or "").lower()
+        key = ids.get(getattr(ch, "id", None))
+        if key is None:
+            core = re.sub(r"[^a-z0-9-]+", "", name).strip("-")
+            core = "announcements" if core.endswith("announcement") else core
+            key = next((k for k in BY_NAME if core == k or core.endswith("-" + k)), None)
+        if key is None or key in done:
+            continue
+        done.add(key)
+        if (getattr(ch, "topic", None) or "") != CHANNEL_TOPICS[key]:
+            out.append((ch, CHANNEL_TOPICS[key]))
+    return out
+
+
 def style_overview(profile: st.Profile, presets: dict[str, dict]) -> str:
     """/style text: what variant A uses now, per mode, with scores and pins."""
     lines = ["**Preferred settings** (variant A uses these; 📌 = pinned with /style)"]
@@ -708,6 +748,21 @@ class ReviewBot:
                     return ch
         return None
 
+    async def ensure_topics(self) -> int:
+        """Write the how-to line under each channel name (CHANNEL_TOPICS). Needs Manage Channels;
+        never raises. Returns how many were changed."""
+        guilds = ([self.client.get_guild(self.rcfg["guild_id"])] if self.rcfg.get("guild_id")
+                  else list(getattr(self.client, "guilds", []) or []))
+        n = 0
+        for g in [g for g in guilds if g is not None]:
+            for ch, topic in topic_plan(getattr(g, "text_channels", []) or [], self.rcfg):
+                try:
+                    await ch.edit(topic=topic)
+                    n += 1
+                except Exception as e:  # noqa: BLE001 - e.g. no Manage Channels permission
+                    log.warning("couldn't set the description of #%s: %s", getattr(ch, "name", "?"), e)
+        return n
+
     async def announce(self, key: str, text: str) -> None:
         """Key news for Tim (new rules, what the rule compiler built, videos going live, blocked
         videos, what a deploy changed) goes to #announcements; #status keeps bot health.
@@ -878,6 +933,7 @@ class ReviewBot:
             except Exception as e:  # noqa: BLE001
                 log.warning("slash command sync failed: %s", e)
             asyncio.create_task(bot.ensure_bar_emojis())
+            asyncio.create_task(bot.ensure_topics())
             if not bot.started:
                 bot.started = True
                 bot.render_q = asyncio.Queue()
@@ -1401,12 +1457,14 @@ class ReviewBot:
                                     " paste a TikTok sound link (Share sound > Copy link), upload the audio,"
                                     " or put `sound:` before a link to a video that uses it. Optional notes:"
                                     " `copy: pacing, colour, text, transitions, hook, structure, music-sync, look, framing`,"
-                                    " `name: my-preset`, and anything about what you like in it.",
+                                    " `name: my-preset`, `for: clips` (stream clips) or `for: edits` (trailer/trend"
+                                    " edits; guessed if left out), and anything about what you like in it.",
                                     mention_author=False)
             return
         pending = self.pending_uploads.pop(ch.id, None) if in_thread else None
         copy = presets_.parse_copy(message.content) if "copy:" in message.content.lower() or not pending \
             else pending["copy"]
+        for_kind = presets_.parse_for(message.content) or (pending or {}).get("for")
         if in_thread:
             thread = ch
         else:
@@ -1426,9 +1484,9 @@ class ReviewBot:
                 tmp.mkdir(parents=True, exist_ok=True)
                 path = tmp / f"{uuid.uuid4().hex}{Path(src.filename).suffix or '.mp4'}"
                 await src.save(path)
-            note = re.sub(r"https?://\S+|\b(copy|name)\s*:[^\n]*", " ", message.content or "", flags=re.I).strip()
+            note = re.sub(r"https?://\S+|\b(copy|name|for)\s*:[^\n]*", " ", message.content or "", flags=re.I).strip()
             res = await self.analyse(name, copy, url=src if kind == "url" else None, file=path, note=note,
-                                     channel_id=thread.id)
+                                     channel_id=thread.id, kind=for_kind)
             if res.get("ok"):
                 f = discord.File(res["strip"], filename=f"{res['name']}_strip.jpg") if res.get("strip") else None
                 await thread.send(res["text"], file=f) if f else await thread.send(res["text"])
@@ -1437,7 +1495,7 @@ class ReviewBot:
                 if res.get("strip"):
                     Path(res["strip"]).unlink(missing_ok=True)
             elif res.get("ask_upload"):
-                self.pending_uploads[thread.id] = {"name": name, "copy": copy}
+                self.pending_uploads[thread.id] = {"name": name, "copy": copy, "for": for_kind}
                 await thread.send(f"⚠️ I couldn't download that link ({res.get('error')}).\n"
                                   "**Please upload the video file directly here in this thread** and I'll analyse it.")
             elif res.get("cancelled"):
@@ -1954,12 +2012,13 @@ class ReviewBot:
             pj.finish(ok, "" if ok else why, state)
 
     async def analyse(self, name: str, copy: list[str], url: str | None = None, file: Path | None = None,
-                      note: str = "", channel_id: int | None = None) -> dict:
+                      note: str = "", channel_id: int | None = None, kind: str | None = None) -> dict:
         out = self.data_dir / "inspiration" / f"result_{uuid.uuid4().hex}.json"
         out.parent.mkdir(parents=True, exist_ok=True)
         cmd = [sys.executable, "-m", "spikebot.inspiration", "--config", self.config_path, "analyse",
                "--name", name, "--copy", ",".join(copy), "--json", str(out), "--note", note[:800]]
         cmd += ["--url", url] if url else ["--file", str(file)]
+        cmd += ["--for", kind] if kind else []
         pj = self.progress_job(f"Studying `{name}`", channel_id, "🔎") if channel_id else None
         res: dict = {}
         try:
@@ -2443,14 +2502,18 @@ class ReviewBot:
             rnd = review.latest_round(it)
             label = (variant or rnd["variants"][0]["label"]).upper()
             try:
-                bot.store.presets().load(name)
+                chosen = bot.store.presets().load(name)
                 review.variant_of(it, rnd["n"], label)
                 with bot.store.edit(it["id"]) as x:
                     review.request(x, "preset", round=rnd["n"], label=label, name=name)
             except ValueError as e:
                 await inter.response.send_message(f"⚠️ {e}", ephemeral=True)
                 return
-            await inter.response.send_message(f"🎨 Re-rendering **{label}** with preset `{name}`…")
+            note = ""
+            if not presets_.fits(chosen, review.style_mode(it)):   # his choice, but say so
+                note = (f"\n⚠️ `{name}` was made from {presets_.KIND_LABEL[presets_.kind_of(chosen)]}; only the"
+                        " settings this edit has are used. `/preset edit setting:for value:all` if that's intended.")
+            await inter.response.send_message(f"🎨 Re-rendering **{label}** with preset `{name}`…{note}")
             bot.wake.set()
 
         @group.command(name="list", description="All presets, most approved first")
@@ -2464,7 +2527,7 @@ class ReviewBot:
             prof = bot.store.profile()
             rows = prof.data["presets"]
             names = prof.top_presets(list(ps), n=len(ps))
-            text = "\n".join(f"• **{n}** ({', '.join(ps[n].get('copy') or [])}) · approved "
+            text = "\n".join(f"• **{n}** [{presets_.kind_of(ps[n])}] ({', '.join(ps[n].get('copy') or [])}) · approved "
                              f"{rows.get(n, {}).get('approved', 0)}/{rows.get(n, {}).get('shown', 0)}" for n in names)
             await inter.response.send_message(text[:1990])
 
@@ -2497,7 +2560,7 @@ class ReviewBot:
                 return
             await inter.response.send_message(f"Renamed `{name}` → `{p['name']}`.")
 
-        @group.command(name="edit", description="Change one setting (e.g. pace fast, saturation 1.3, copy pacing,colour)")
+        @group.command(name="edit", description="Change one setting (e.g. pace fast, copy pacing,colour, for clips|edits|all)")
         @app_commands.autocomplete(name=preset_names)
         async def edit(inter: discord.Interaction, name: str, setting: str, value: str):
             if not await guard(inter):

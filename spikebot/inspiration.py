@@ -557,6 +557,16 @@ def first_last_similar(path: Path, duration: float) -> bool:
     return editor.hamming(a, b) <= 10
 
 
+def webcam(path: Path) -> bool | None:
+    """Does the reference have a streamer webcam (a face that stays put)? None = couldn't check."""
+    from . import safety
+    try:
+        return safety.find_facecam(Path(path)) is not None
+    except Exception as e:  # noqa: BLE001 - a bonus: never fails an analysis
+        log.info("webcam check skipped: %s", e)
+        return None
+
+
 def analyse(path: Path, reader=None) -> dict:
     info = editor.probe(path)
     duration = info["duration"]
@@ -583,6 +593,8 @@ def analyse(path: Path, reader=None) -> dict:
     except Exception as e:  # noqa: BLE001 - framing is a bonus, never fails an analysis
         fr = {"framing": None, "why": f"not measured ({e})"}
     tr = transitions(frames, cuts)
+    job.update(0.7, "Looking for a streamer webcam")
+    cam = webcam(path)
     loud = loudest_point(env)
     hook_s = text.get("first_change") or (cuts[0] if cuts else None) or min(3.0, duration)
     ending = st.ending_style(text.get("last", ""), first_last_similar(path, duration))
@@ -590,7 +602,7 @@ def analyse(path: Path, reader=None) -> dict:
             "detector": detector, "cut_times": cuts[:200], "pacing": pace,
             "music": {"bpm": bpm, "phase": phase, "on_beat": on_beat_share(cuts, bpm, phase)},
             "colour": col, "text": text, "motion": mo, "transitions": tr, "framing": fr,
-            "structure": {"hook_s": round(min(hook_s, duration), 2),
+            "facecam": cam, "structure": {"hook_s": round(min(hook_s, duration), 2),
                           "payoff_s": loud, "payoff": round(loud / duration, 2) if loud else None,
                           "ending": ending, "length_s": round(duration, 1)}}
 
@@ -630,7 +642,11 @@ def breakdown(preset: dict) -> str:
     a = preset["analysis"]
     s = preset["settings"]
     p, m, c, t, mo = a["pacing"], a["music"], a.get("colour") or {}, a.get("text") or {}, a.get("motion") or {}
+    kind = presets_.kind_of(preset)
     L = [f"**Preset `{preset['name']}` saved** · copies: {', '.join(preset['copy'])}",
+         f"**Used for** {presets_.KIND_LABEL[kind]} ({preset.get('for_why') or 'old preset'})"
+         + (" · say `for: clips` or `for: edits` next time, or `/preset edit setting:for`" if kind == "all"
+            and preset.get("for_why") != "set by Tim" else ""),
          f"**Length** {a['duration']:.1f}s · {a['size'][0]}x{a['size'][1]}",
          f"**Pacing** {p['cuts']} cuts, avg shot {p['avg_shot_s']}s ({p['cuts_per_s']}/s,"
          f" {p['shortest_s']}-{p['longest_s']}s) → pace **{s['pacing']['pace']}** ({a['detector']})"]
@@ -672,7 +688,8 @@ def breakdown(preset: dict) -> str:
     return "\n".join(L)[:1990]
 
 
-def make_preset(name: str, copy: list[str], analysis: dict, source: dict, art: dict | None = None) -> dict:
+def make_preset(name: str, copy: list[str], analysis: dict, source: dict, art: dict | None = None,
+                kind: str | None = None) -> dict:
     sets = settings_from(analysis)
     if art:
         look = {}
@@ -684,6 +701,12 @@ def make_preset(name: str, copy: list[str], analysis: dict, source: dict, art: d
             sets["look"] = look
     out = {"name": name, "created": time.time(), "source": source, "copy": copy,
            "settings": sets, "analysis": analysis}
+    if kind:
+        out["for"], out["for_why"] = kind, "set by Tim"
+    else:
+        out["for"], out["for_why"] = presets_.guess_kind(analysis.get("facecam"),
+                                                         (analysis.get("music") or {}).get("on_beat") or 0.0,
+                                                         (analysis.get("pacing") or {}).get("cuts_per_s") or 0.0)
     if art:
         out["art"] = art
     return out
@@ -756,7 +779,7 @@ def art_text(preset: dict) -> str | None:
 
 def run(name: str, copy: list[str], data_dir: Path, out_dir: Path, url: str | None = None,
         file: Path | None = None, reader=None, note: str = "", base: Path | None = None,
-        ai_client=None) -> dict:
+        ai_client=None, kind: str | None = None) -> dict:
     """Download (if a link), analyse, save the preset, make the strip. The reference
     video is always deleted. Returns {ok, name, text, strip} or {ok: False, error, ask_upload}."""
     store = presets_.Presets(data_dir / "presets")
@@ -780,7 +803,8 @@ def run(name: str, copy: list[str], data_dir: Path, out_dir: Path, url: str | No
         job.update(0.75, "Claude is studying what makes it good")
         art = study(src, a, note, base, ai_client)
         job.update(0.95, "Saving the preset")
-        preset = make_preset(name, copy, a, {"url": url, "platform": platform_of(url) if url else "upload"}, art)
+        preset = make_preset(name, copy, a, {"url": url, "platform": platform_of(url) if url else "upload"}, art,
+                             kind=kind)
         store.save(preset)
         strip = thumbnail_strip(src, out_dir / f"{name}_strip.jpg", a["duration"])
         return {"ok": True, "name": name, "text": breakdown(preset), "art": art_text(preset),
@@ -803,6 +827,7 @@ def main(argv: list[str] | None = None) -> int:
     an.add_argument("--copy", default="")
     an.add_argument("--json", help="write the result here")
     an.add_argument("--note", default="", help="Tim's words about why he sent it")
+    an.add_argument("--for", dest="kind", default="", help="clips | edits | all (default: guess)")
     args = ap.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     from .review import load_cfg
@@ -816,7 +841,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         res = run(presets_.clean_name(args.name), presets_.parse_copy("copy: " + args.copy) if args.copy
                   else list(presets_.PARTS), data_dir, out_dir, args.url, Path(args.file) if args.file else None,
-                  note=args.note, base=base)
+                  note=args.note, base=base, kind=presets_.kind_name(args.kind) if args.kind else None)
     except progress.Cancelled:   # the reference file is still deleted (run's finally)
         res = {"ok": False, "cancelled": True, "error": "cancelled"}
     if args.json:

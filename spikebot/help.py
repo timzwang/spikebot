@@ -59,7 +59,8 @@ COMMANDS: list[dict] = [
      "how": "`/preset rename name:<preset> new_name:<new>`", "tags": "name"},
     {"name": "/preset edit", "cat": "presets",
      "what": "Changes one setting of a preset, or which parts it copies.",
-     "how": "`/preset edit name:<preset> setting:pace value:fast` · `setting:copy value:pacing,colour`",
+     "how": "`/preset edit name:<preset> setting:pace value:fast` · `setting:copy value:pacing,colour`"
+            " · `setting:for value:clips` (clips / edits / all)",
      "tags": "change setting saturation pace copy"},
     {"name": "/preset delete", "cat": "presets",
      "what": "Deletes a preset.", "how": "`/preset delete name:<preset>`", "tags": "remove"},
@@ -96,7 +97,8 @@ COMMANDS: list[dict] = [
      "what": "Analyses another creator's Short for its style and saves it as a preset (the video is deleted"
              " straight after; only numbers are kept).",
      "how": "Post a TikTok / Instagram / YouTube link or upload a video. Optional: `copy: pacing, colour, text,"
-            " transitions, hook, structure, music-sync, look, framing` and `name: my-preset`",
+            " transitions, hook, structure, music-sync, look, framing`, `name: my-preset` and `for: clips` /"
+            " `for: edits` (which edits may use it; guessed from a streamer webcam if left out)",
      "tags": "reference style analyse preset link upload copy name"},
     {"name": "#inspiration: a sound", "cat": "channels",
      "what": "Adds a song to the music library for trend edits (beats and drop are measured; edits stay silent).",
