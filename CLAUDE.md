@@ -490,8 +490,11 @@ it in sync when behaviour or config changes.
   else chat in the last `CHAT_LIVE_S` = live and the channel is `unchecked`; failed lookups `_poll_warn`.
   `social_loop` -> `spikebot/socialstats.py` (`refresh` every `social_every_s`: YouTube Data API with
   `YOUTUBE_API_KEY` or the OAuth token if it has youtube.readonly, channel from `youtube_channel` or an uploaded
-  video; Instagram followers/likes + per-post `views` insights in turns; TikTok not counted; last good numbers
-  kept `STALE_S`; data/social_stats.json). Tested in `tests/test_socialstats.py`.
+  video, else the upload login's own channel (`my_channel_id`), else `/stats youtube_channel:@handle`
+  (`set_youtube_channel`); the key is read fresh from .env (`env_value`); YouTube also gets its own stats channel
+  `youtube` (views · subs · Shorts, `stat_names`) and `/stats` replies with `status_text`; Instagram
+  followers/likes + per-post `views` insights in turns; TikTok not counted; last good numbers kept `STALE_S`;
+  data/social_stats.json). Tested in `tests/test_socialstats.py`.
   `archive_inspiration` (from `scan_loop`, every 10 min): the bot's #inspiration threads with no
   message for `review.inspiration_archive_hours` (12) are archived (`stale_threads`, snowflake times).
 - `spikebot/help.py` (pure): **/help** [category] [search] (ephemeral): `COMMANDS` (name, `cat`, what, how, tags)

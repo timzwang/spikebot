@@ -109,3 +109,44 @@ def test_combine_sums_platforms():
     t = S.combine(plats, 10)
     assert t["views"] == {"total": 100, "platforms": ["YT"]}
     assert t["likes"] == {"total": 12, "platforms": ["YT", "IG"]}
+
+
+def test_youtube_stats_line_key_from_env_and_channel_from_login(tmp_path):
+    from spikebot import discord_bot as DB
+    from spikebot import socialstats as SS
+    (tmp_path / ".env").write_text("YOUTUBE_API_KEY=abc\n")
+    yt = SS.youtube_client({}, base=tmp_path)
+    assert yt is not None and yt.api_key == "abc"            # read fresh from .env, no restart
+
+    class FakeYT:
+        api_key = "abc"
+
+        def channel_of_video(self, vid):
+            return ""
+
+        def my_channel_id(self):
+            return "UCmine"
+
+        def totals(self, ref):
+            assert ref == "UCmine"
+            return {"views": 12345, "followers": 678, "videos": 9, "channel": ref, "title": "GTA 6 Clipped"}
+    st = SS.refresh({}, tmp_path, tmp_path / "data", now=1000.0, yt=FakeYT(), ig=None)
+    assert st["youtube_channel"] == "UCmine" and st["platforms"]["youtube"]["videos"] == 9
+    assert "GTA 6 Clipped" in SS.status_text(st) and "views 12,345" in SS.status_text(st)
+    names = DB.stat_names({"youtube": st["platforms"]["youtube"]}, 1000.0)
+    assert names["youtube"] == "▶️ YouTube: 12.3K views · 678 subs · 9 Shorts"
+    SS.set_youtube_channel(tmp_path / "data", "@gta6.clipped")
+    again = SS.load(tmp_path / "data")
+    assert again["youtube_channel"] == "@gta6.clipped" and "youtube" not in again["platforms"]
+
+
+def test_youtube_without_a_channel_says_how_to_set_it(tmp_path):
+    from spikebot import socialstats as SS
+
+    class NoChan:
+        api_key = "abc"
+
+        def my_channel_id(self):
+            return ""
+    st = SS.refresh({}, tmp_path, tmp_path / "data", now=1000.0, yt=NoChan(), ig=None)
+    assert "/stats youtube_channel" in st["errors"]["youtube"]

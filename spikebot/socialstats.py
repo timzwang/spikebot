@@ -56,10 +56,12 @@ class YouTubeStats:
     def __init__(self, api_key: str = "", oauth=None, http=None):
         self.api_key, self.oauth, self.http = api_key, oauth, http or _http()
 
-    def _get(self, path: str, params: dict) -> dict:
+    def _get(self, path: str, params: dict, use_oauth: bool = False) -> dict:
         params = dict(params)
         headers = {}
-        if self.api_key:
+        if use_oauth and self.oauth is not None:
+            headers["Authorization"] = f"Bearer {self.oauth.token()}"
+        elif self.api_key:
             params["key"] = self.api_key
         elif self.oauth is not None:
             headers["Authorization"] = f"Bearer {self.oauth.token()}"
@@ -77,15 +79,26 @@ class YouTubeStats:
         items = self._get("videos", {"part": "snippet", "id": video_id}).get("items") or []
         return (items[0].get("snippet") or {}).get("channelId", "") if items else ""
 
+    def my_channel_id(self) -> str:
+        """The channel of the upload login (needs the youtube.readonly scope); "" if it can't tell."""
+        if self.oauth is None:
+            return ""
+        try:
+            items = self._get("channels", {"part": "id", "mine": "true"}, use_oauth=True).get("items") or []
+        except Exception as e:  # noqa: BLE001 - an upload-only token can't read the channel
+            log.info("YouTube channel lookup with the upload login failed: %s", e)
+            return ""
+        return items[0].get("id", "") if items else ""
+
     def channel(self, ref: str) -> dict:
-        p = {"part": "statistics,contentDetails"}
+        p = {"part": "statistics,contentDetails,snippet"}
         if ref.startswith("@"):
             p["forHandle"] = ref
         elif ref:
             p["id"] = ref
         else:
             p["mine"] = "true"
-        items = self._get("channels", p).get("items") or []
+        items = self._get("channels", p, use_oauth=not ref).get("items") or []
         if not items:
             raise StatsError(f"YouTube channel {ref or '(mine)'} not found")
         return items[0]
@@ -115,6 +128,10 @@ class YouTubeStats:
         st = ch.get("statistics") or {}
         uploads = ((ch.get("contentDetails") or {}).get("relatedPlaylists") or {}).get("uploads")
         out = {"views": int(st.get("viewCount") or 0), "channel": ch.get("id", "")}
+        if st.get("videoCount") is not None:
+            out["videos"] = int(st["videoCount"])
+        if (ch.get("snippet") or {}).get("title"):
+            out["title"] = ch["snippet"]["title"]
         if not st.get("hiddenSubscriberCount"):
             out["followers"] = int(st.get("subscriberCount") or 0)
         if uploads:
@@ -143,15 +160,39 @@ def uploaded_video_ids(base: Path, data_dir: Path) -> list[str]:
     return [v for _, v in sorted(ids, reverse=True)]
 
 
-def youtube_client(cfg: dict, http=None) -> YouTubeStats | None:
-    key = str(cfg.get("youtube_api_key") or "").strip()
+def env_value(base: Path | None, name: str) -> str:
+    """A value from the .env next to config.json, read fresh (a key added there works without a
+    restart: the bot's own copy of the environment is from when it started)."""
+    if base is None:
+        return ""
+    from .main import load_dotenv
+    try:
+        return (load_dotenv(Path(base) / ".env").get(name) or "").strip()
+    except OSError:
+        return ""
+
+
+def youtube_client(cfg: dict, http=None, base: Path | None = None) -> YouTubeStats | None:
+    """YOUTUBE_API_KEY reads the public numbers; the upload login (if set) is kept too, to find the
+    channel when nothing has been uploaded yet."""
+    key = env_value(base, "YOUTUBE_API_KEY") or str(cfg.get("youtube_api_key") or "").strip()
     oauth = None
-    if not key and all(cfg.get(k) for k in ("youtube_client_id", "youtube_client_secret", "youtube_refresh_token")):
+    if all(cfg.get(k) for k in ("youtube_client_id", "youtube_client_secret", "youtube_refresh_token")):
         from .youtube import YouTube
         oauth = YouTube(cfg["youtube_client_id"], cfg["youtube_client_secret"], cfg["youtube_refresh_token"])
     if not key and oauth is None:
         return None
     return YouTubeStats(key, oauth, http)
+
+
+def set_youtube_channel(data_dir: Path, ref: str) -> None:
+    """/stats youtube_channel:@handle: remembered in data/social_stats.json."""
+    st = load(Path(data_dir))
+    st["youtube_channel"] = ref.strip()
+    st.get("platforms", {}).pop("youtube", None)   # numbers of another channel must not linger
+    p = path_for(Path(data_dir))
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(st, indent=1), encoding="utf-8")
 
 
 # --------------------------------------------------------------------------
@@ -253,7 +294,7 @@ def refresh(cfg: dict, base: Path, data_dir: Path, now: float | None = None,
     errors = {}
     scfg = ((cfg.get("review") or {}).get("stats") or {})
 
-    yt = yt if yt is not None else youtube_client(cfg)
+    yt = yt if yt is not None else youtube_client(cfg, base=base)
     if yt is not None:
         try:
             ref = str(scfg.get("youtube_channel") or st.get("youtube_channel") or "").strip()
@@ -262,8 +303,11 @@ def refresh(cfg: dict, base: Path, data_dir: Path, now: float | None = None,
                     ref = yt.channel_of_video(vid)
                     if ref:
                         break
+                if not ref and hasattr(yt, "my_channel_id"):
+                    ref = yt.my_channel_id()
                 if not ref:
-                    raise StatsError("set review.stats.youtube_channel (UC... id or @handle)")
+                    raise StatsError("which channel? set it with /stats youtube_channel:@yourhandle"
+                                     " (or review.stats.youtube_channel)")
             row = yt.totals(ref)
             if row.get("channel"):
                 st["youtube_channel"] = row.pop("channel")
@@ -290,6 +334,23 @@ def refresh(cfg: dict, base: Path, data_dir: Path, now: float | None = None,
     tmp.write_text(json.dumps(st, indent=1), encoding="utf-8")
     tmp.replace(p)
     return st
+
+
+def status_text(st: dict) -> str:
+    """/stats reply: what each platform reads right now, or why it can't."""
+    lines = []
+    for name in ("youtube", "instagram"):
+        row = (st.get("platforms") or {}).get(name) or {}
+        err = (st.get("errors") or {}).get(name)
+        label = {"youtube": "▶️ YouTube", "instagram": "📸 Instagram"}[name]
+        if err:
+            lines.append(f"{label}: ⚠️ {err}")
+        elif row:
+            nums = ", ".join(f"{k} {int(row[k]):,}" for k in (*KINDS, "videos") if k in row)
+            lines.append(f"{label}{' (' + row['title'] + ')' if row.get('title') else ''}: {nums}")
+        else:
+            lines.append(f"{label}: not set up")
+    return "\n".join(lines)
 
 
 def main(argv: list[str] | None = None) -> int:

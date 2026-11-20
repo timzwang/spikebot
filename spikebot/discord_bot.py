@@ -595,7 +595,7 @@ def progress_env(job) -> dict | None:
 # GTA 6 unlocks at midnight local time: 00:00 GMT Thu 19 Nov 2026 in the UK (US 05:00 UK).
 # review.stats.gta6_launch overrides it (ISO time with offset).
 GTA6_LAUNCH = "2026-11-19T00:00:00+00:00"
-STAT_KEYS = ("live", "moments", "review", "approved", "views", "likes", "followers", "uptime", "gta6")
+STAT_KEYS = ("live", "moments", "review", "approved", "views", "likes", "followers", "youtube", "uptime", "gta6")
 RENAME_WINDOW_S = 610.0   # Discord: 2 renames per channel per 10 min (+10 s margin)
 RENAME_GAP_S = 305.0      # so normally one rename per channel every ~5 min
 
@@ -656,6 +656,14 @@ def stat_names(snap: dict, now: float, launch: str = GTA6_LAUNCH) -> dict[str, s
         row = social.get(key)
         if row and row.get("platforms"):
             out[key] = f"{icon} {label}: {compact(row['total'])} ({'+'.join(row['platforms'])})"
+    yt = snap.get("youtube") or {}
+    if yt.get("views") is not None:   # the YouTube channel on its own (YOUTUBE_API_KEY)
+        bits = [f"{compact(yt['views'])} views"]
+        if yt.get("followers") is not None:
+            bits.append(f"{compact(yt['followers'])} subs")
+        if yt.get("videos") is not None:
+            bits.append(f"{compact(yt['videos'])} Shorts")
+        out["youtube"] = "▶️ YouTube: " + " · ".join(bits)
     if snap.get("started"):
         out["uptime"] = f"⏱ Bot uptime: {uptime_text(now - snap['started'])}"
     out["gta6"] = launch_text(now, launch)
@@ -1751,6 +1759,10 @@ class ReviewBot:
             from . import socialstats
             self.social = socialstats.load(self.data_dir)   # last totals, kept across restarts
         snap["social"] = (self.social or {}).get("totals") or {}
+        from . import socialstats
+        yt = ((self.social or {}).get("platforms") or {}).get("youtube") or {}
+        if yt and now - float(yt.get("at") or 0) <= socialstats.STALE_S:
+            snap["youtube"] = yt
         if self.stats_source:
             try:
                 snap.update(self.stats_source(now))
@@ -2625,13 +2637,22 @@ class ReviewBot:
                 await inter.followup.send(more, ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
 
         @tree.command(name="stats", description="Refresh the 📊 Stats channels now")
-        async def stats_cmd(inter: discord.Interaction):
+        @app_commands.describe(youtube_channel="Your YouTube channel (@handle or UC... id) for the YouTube stats")
+        async def stats_cmd(inter: discord.Interaction, youtube_channel: str | None = None):
             if not await guard(inter):
                 return
             await inter.response.send_message("📊 Refreshing the stats channels (Discord allows 2 renames per"
                                               " channel every 10 minutes, so a name may lag).", ephemeral=True)
 
             async def go():
+                from . import socialstats
+                try:
+                    if youtube_channel:
+                        socialstats.set_youtube_channel(bot.data_dir, youtube_channel)
+                    bot.social = await asyncio.to_thread(socialstats.refresh, bot.cfg, bot.base, bot.data_dir)
+                    await inter.followup.send(socialstats.status_text(bot.social), ephemeral=True)
+                except Exception as e:  # noqa: BLE001
+                    log.warning("/stats social: %s", e)
                 try:
                     if not await bot.stats_tick(time.time(), force=True):
                         await inter.followup.send("⚠️ Couldn't update them: check the bot has **Manage Channels**.",

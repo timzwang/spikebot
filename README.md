@@ -634,8 +634,10 @@ per ~5 minutes (Discord allows 2 renames per channel per 10 minutes). `/stats` r
 - **Views / likes / followers** add up the platforms the bot can read, shown in brackets
   (`YT+IG`). YouTube: put a free **API key** in `.env` as `YOUTUBE_API_KEY` (Google Cloud
   Console > APIs & Services > Credentials > Create credentials > API key, restricted to YouTube
-  Data API v3); the channel is found from a video the bot uploaded, or set
-  `review.stats.youtube_channel` (`UC...` or `@handle`). Without a key it uses the upload login,
+  Data API v3; read fresh from `.env`, no restart needed); the channel is found from a video the
+  bot uploaded, else from the upload login, else tell it once: `/stats youtube_channel:@yourhandle`
+  (or `review.stats.youtube_channel`). The channel also gets its own line, **▶️ YouTube: views ·
+  subs · Shorts**, and `/stats` replies with what each platform reads (or why it can't). Without a key it uses the upload login,
   which only works after re-running `python -m spikebot.youtube auth --env .env` (it now also
   asks for read-only access). Instagram uses `IG_ACCESS_TOKEN`; views need the insights
   permission and are only counted once every post has a number (25 posts per refresh).

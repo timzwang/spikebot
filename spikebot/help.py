@@ -76,10 +76,10 @@ COMMANDS: list[dict] = [
      "tags": "list board dropdown expand open menu queue"},
     {"name": "/campaigns", "cat": "make",
      "what": "Every clipping campaign joined: status, pay, budget spent, where it posts, required hashtags and"
-             " its rules. Campaigns that run out of budget or end stop getting clips automatically (checked"
+             " its rules. Campaigns that run out of budget or end get no more clips automatically (checked"
              " every 30 min); end or resume one by hand.",
      "how": "`/campaigns` · `/campaigns end:Kai Cenat` · `/campaigns resume:Clix`",
-     "tags": "budget programme rules hashtags streamer kai clix bobby kreekcraft stop pause"},
+     "tags": "budget programme rules hashtags streamer kai clix bobby kreekcraft end resume"},
     {"name": "Approve A/B/C", "cat": "review",
      "what": "Approves that version and posts it (YouTube/Instagram automatically, inside the daily caps and"
              " posting windows; TikTok and the rest go to #tiktok-queue). Nothing posts without this.",
@@ -115,8 +115,10 @@ COMMANDS: list[dict] = [
      "how": "Paste a TikTok sound link (Share sound > Copy link), upload the audio, or `sound:` + a video link",
      "tags": "song music trending audio tiktok"},
     {"name": "/stats", "cat": "server",
-     "what": "Refreshes the 📊 Stats channels now (they also update every 10 min).",
-     "how": "`/stats`", "tags": "numbers views counts"},
+     "what": "Refreshes the 📊 Stats channels now (they also update every 10 min) and replies with what"
+             " YouTube and Instagram read. ▶️ YouTube shows the channel's views, subscribers and Shorts"
+             " (YOUTUBE_API_KEY in .env); tell it which channel once if it can't find it.",
+     "how": "`/stats` · `/stats youtube_channel:@yourhandle`", "tags": "numbers views counts youtube subscribers"},
     {"name": "/help", "cat": "server",
      "what": "This list.", "how": "`/help` · `/help category:Presets` · `/help search:caption`",
      "tags": "commands"},
