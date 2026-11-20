@@ -60,8 +60,9 @@ def source_crop(framing: str, aspect: float, crop: list[int] | None) -> str:
     pre = f"crop={crop[0]}:{crop[1]}:{crop[2]}:{crop[3]}," if crop else ""
     if framing == "fit":                 # the whole frame is shown: compare its centre
         w = CENTRE
-    else:                                # fill: a 9:16 strip from the middle of a wide frame
-        w = CENTRE * min(1.0, (9 / 16) / aspect)
+    else:                                # fill: a 4:5 strip from the middle of a wide frame (edits are 4:5)
+        from .shot_info import CROP_ASPECT
+        w = CENTRE * min(1.0, CROP_ASPECT / aspect)
     return pre + f"crop=iw*{w:.4f}:ih*{CENTRE}:(iw-iw*{w:.4f})/2:ih*{(1 - CENTRE) / 2:.3f}"
 
 
@@ -88,7 +89,7 @@ class Index:
         import numpy as np
         out, changed = {}, False
         for rel, e in self.entries.items():
-            key = f"{framing}|{rel}"
+            key = f"{framing}{'' if framing == 'fit' else '@4x5'}|{rel}"   # 9:16-era hashes don't match
             sig = e.get("sig")
             row = data.get(key)
             if not row or row.get("sig") != sig or "thumb" not in row:
