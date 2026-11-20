@@ -507,6 +507,9 @@ it in sync when behaviour or config changes.
 - `spikebot/updates.py` (pure) + `spikebot/updates.json`: **#updates** changelog -> `messages` (date heading,
   <= 10 embeds per message, one colour per day); `ReviewBot.updates_channel` (`review.updates_channel_id`, else
   a channel named "updates", else created read-only) / `post_updates` / `updates_loop` (every 10 min).
+- Channel descriptions: `discord_bot.CHANNEL_TOPICS` / `topic_plan` (config ids, webhook channels by
+  name) -> `ReviewBot.ensure_topics` on ready, only when different (Manage Channels; failures logged).
+  Tested in `tests/test_channel_topics.py`.
 - `spikebot/help.py` (pure): **/help** [category] [search] (ephemeral): `COMMANDS` (name, `cat`, what, how, tags)
   under `CATEGORIES`, `help_text` / `select` / `chunks` (<= 2000 chars per message). Lists slash commands,
   review buttons and #inspiration actions. **Add a line for every new command**: `tests/test_help.py`

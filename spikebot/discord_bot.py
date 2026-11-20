@@ -542,6 +542,47 @@ def manual_payload(item: dict, v: dict, platforms: list[str], link: str | None =
     return out
 
 
+# The line under each channel's name (Discord's channel topic): how to use it and what lands
+# there. Set by `ReviewBot.ensure_topics` on start, only when it differs. Keys are found by
+# config id (`rcfg` field) or, for the webhook channels, by name.
+CHANNEL_TOPICS = {
+    "channel_id": "One board lists every clip waiting for you: pick one in its drop-down to expand it (A/B/C)."
+                  " Approve publishes; Redo, Feedback or Reject otherwise. Nothing posts without Approve.",
+    "tiktok_channel_id": "Approved videos to post by hand on TikTok/Instagram: download, copy the caption, post."
+                         " Lacy clips: log the links with the command shown.",
+    "inspiration_channel_id": "Post a Short link or upload one to copy its style (optional copy: / name: /"
+                              " type: edit, clip or other). TikTok sound link, audio file or sound: + link = a new"
+                              " trend sound. Videos are deleted after analysis.",
+    "moments": "Chat spikes from watched streams: streamer, score and a VOD link at the moment. Read-only.",
+    "status": "Bot health: restarts, streamers live/offline, chat down/back, Kick key errors, low disk. Read-only.",
+    "daily-summary": "22:00 UK daily: moments per streamer, top 3 of the last 24 h, server CPU. Read-only.",
+    "announcements": "New rules, what the rule compiler built, videos going live, blocked videos, deploy notes."
+                     " Read-only.",
+    "updates": "Every change to the bot, one short line each, grouped by day. Read-only.",
+}
+BY_NAME = ("moments", "status", "daily-summary", "announcements", "updates")
+
+
+def topic_plan(channels, rcfg: dict) -> list[tuple[object, str]]:
+    """(channel, topic) for every channel whose topic should change. Config ids win; the
+    webhook channels are matched by name (emoji/prefixes allowed, e.g. "📈-daily-summary"). Pure."""
+    ids = {rcfg.get(k): k for k in CHANNEL_TOPICS if k.endswith("channel_id") and rcfg.get(k)}
+    out, done = [], set()
+    for ch in channels:
+        name = (getattr(ch, "name", "") or "").lower()
+        key = ids.get(getattr(ch, "id", None))
+        if key is None:
+            core = re.sub(r"[^a-z0-9-]+", "", name).strip("-")
+            core = "announcements" if core.endswith("announcement") else core
+            key = next((k for k in BY_NAME if core == k or core.endswith("-" + k)), None)
+        if key is None or key in done:
+            continue
+        done.add(key)
+        if (getattr(ch, "topic", None) or "") != CHANNEL_TOPICS[key]:
+            out.append((ch, CHANNEL_TOPICS[key]))
+    return out
+
+
 def style_overview(profile: st.Profile, presets: dict[str, dict]) -> str:
     """/style text: what variant A uses now, per mode, with scores and pins."""
     lines = ["**Preferred settings** (variant A uses these; 📌 = pinned with /style)"]
@@ -818,7 +859,7 @@ class ReviewBot:
                 return ch
         try:
             return await guild.create_text_channel(
-                updates.CHANNEL_NAME, topic="Every change to the bot, briefly.",
+                updates.CHANNEL_NAME, topic=CHANNEL_TOPICS["updates"],
                 overwrites={guild.default_role: discord.PermissionOverwrite(send_messages=False, view_channel=True),
                             guild.me: discord.PermissionOverwrite(send_messages=True, embed_links=True,
                                                                   view_channel=True)},
@@ -875,6 +916,21 @@ class ReviewBot:
                     self._announce_id = ch.id
                     return ch
         return None
+
+    async def ensure_topics(self) -> int:
+        """Write the how-to line under each channel name (CHANNEL_TOPICS). Needs Manage Channels;
+        never raises. Returns how many were changed."""
+        guilds = ([self.client.get_guild(self.rcfg["guild_id"])] if self.rcfg.get("guild_id")
+                  else list(getattr(self.client, "guilds", []) or []))
+        n = 0
+        for g in [g for g in guilds if g is not None]:
+            for ch, topic in topic_plan(getattr(g, "text_channels", []) or [], self.rcfg):
+                try:
+                    await ch.edit(topic=topic)
+                    n += 1
+                except Exception as e:  # noqa: BLE001 - e.g. no Manage Channels permission
+                    log.warning("couldn't set the description of #%s: %s", getattr(ch, "name", "?"), e)
+        return n
 
     async def announce(self, key: str, text: str) -> None:
         """Key news for Tim (new rules, what the rule compiler built, videos going live, blocked
@@ -1055,6 +1111,7 @@ class ReviewBot:
             except Exception as e:  # noqa: BLE001
                 log.warning("slash command sync failed: %s", e)
             asyncio.create_task(bot.ensure_bar_emojis())
+            asyncio.create_task(bot.ensure_topics())
             if not bot.started:
                 bot.started = True
                 bot.render_q = asyncio.Queue()
