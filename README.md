@@ -821,6 +821,11 @@ they leave the channel list and sit under the channel's **Threads** button (post
 reopens it). Change it with `review.inspiration_archive_hours` in `config.json` (0 = off).
 The bot needs the **Manage Threads** permission if Discord refuses (it logs a warning).
 
+**Channel descriptions**: on every start the bot writes a one-line how-to under the name of #ready-to-post,
+#tiktok-queue, #inspiration, #moments, #status, #daily-summary and #announcements (the last four found by
+name), only when the text has changed. Needs **Manage Channels**; without it the log says so and nothing
+else changes. The texts are `CHANNEL_TOPICS` in `spikebot/discord_bot.py`.
+
 It measures **style only** and never reuses their footage, audio or words: the video is
 deleted straight after the analysis and the preset holds numbers (average shot length, cuts on
 the beat, grade, text size/position/colour, hook *type* such as POV/question, hook length,
