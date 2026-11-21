@@ -2010,10 +2010,27 @@ class ReviewBot:
     def _progress_index(self) -> Path:
         return progress.folder(self.data_dir) / "_messages.json"
 
+    def _in_review(self, d: dict) -> bool:
+        """The job's bar is in #ready-to-post (not a channel Tim ran a command in)."""
+        return d.get("channel") != "custom" and (d.get("channel_id") or self.rcfg["channel_id"]) == self.rcfg["channel_id"]
+
+    async def _report_failed(self, d: dict, text: str) -> None:
+        """A failed/stopped job from #ready-to-post goes to #status instead (bot health). Clip jobs
+        and failed review items are already reported there (Bot.lacy_failed, review_failed)."""
+        meta = d.get("meta") or {}
+        if meta.get("lacy_job") or (meta.get("item") and d.get("state") == "failed") or not self.notifier:
+            return
+        try:
+            await self.notifier.send(f"job_failed:{d.get('id')}", text[:1900], kind="lacy")
+        except Exception as e:  # noqa: BLE001 - status must never break the bars
+            log.warning("progress: #status report failed: %s", e)
+
     async def progress_tick(self, now: float) -> None:
         """One message per running job, edited as it moves; deleted when done (the card or
-        reply replaces it), kept when it fails, shown for 2 minutes when skipped or cancelled.
-        Running bars carry a Cancel button."""
+        reply replaces it) or skipped (nothing wrong). In #ready-to-post a failure is deleted too
+        and reported in #status, so the review channel only ever holds clips; in a command's own
+        channel it is kept. Cancelled: shown for 2 minutes. Hidden jobs (a clip still waiting
+        for its VOD) get no bar until they show themselves. Running bars carry a Cancel button."""
         async with self._progress_lock:   # the loop and /cancel's poke must not both post a bar
             await self._progress_tick(now)
 
@@ -2041,11 +2058,15 @@ class ReviewBot:
                     rec = {"msg": await ch.fetch_message(index[jid][1]), "text": ""} if ch else None
                 except Exception:  # noqa: BLE001 - deleted meanwhile
                     rec = None
+            quiet = state == "skipped" or (state in ("failed", "stalled") and self._in_review(d))
             if rec is None:
-                if state == "done" or (state == "running" and now - d.get("started", now) < 4):
-                    if state == "done":
+                if (state == "done" or quiet or (state == "running" and d.get("hidden"))
+                        or (state == "running" and now - d.get("started", now) < 4)):
+                    if state in ("failed", "stalled"):
+                        await self._report_failed(d, text)
+                    if state != "running":
                         path.unlink(missing_ok=True)
-                    continue                            # quick jobs never need a bar
+                    continue                            # quick / quiet jobs never need a bar
                 cid = d.get("channel_id") or self.rcfg["channel_id"]
                 ch = await self.channel(cid)
                 if ch is None:
@@ -2054,7 +2075,7 @@ class ReviewBot:
                 rec = {"msg": await ch.send(text, allowed_mentions=_no_mentions(), **kw), "text": text,
                        "button": state == "running", "edited": now}
                 index[jid] = [cid, rec["msg"].id]
-            elif text != rec["text"] and (state != "running" or now - rec.get("edited", 0) >= gap - 0.05):
+            elif text != rec["text"] and not quiet and (state != "running" or now - rec.get("edited", 0) >= gap - 0.05):
                 rec["edited"] = now
                 kw = {}
                 if state != "running" and rec.get("button", True):
@@ -2063,10 +2084,12 @@ class ReviewBot:
                 rec["text"] = text
             self.progress_msgs[jid] = rec
             end = None
-            if state == "done":
+            if state == "done" or quiet:
+                if state in ("failed", "stalled"):
+                    await self._report_failed(d, text)
                 await rec["msg"].delete()
                 end = True
-            elif state in ("skipped", "cancelled"):
+            elif state == "cancelled":
                 rec.setdefault("ended", now)
                 if now - rec["ended"] >= 120:
                     await rec["msg"].delete()

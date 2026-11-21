@@ -120,6 +120,25 @@ def test_comparison_item_renders_three_versions(tmp_path, monkeypatch):
     assert DB.mode_label(item)[0] == "GTA 5 vs GTA 6"
 
 
+@needs_ffmpeg
+def test_no_matching_themes_means_no_item(tmp_path, monkeypatch):
+    """The 06:47 run used to leave "❌ Failed: not enough matching shots" in #ready-to-post."""
+    s = make_libraries(tmp_path)
+    from spikebot import ai
+    monkeypatch.setattr(ai, "available", lambda base=None: True)
+    real = C.label_shots
+    no_match = lambda content: {"shots": [{"id": c["text"].split()[1], "theme": "other", "quality": 1}
+                                          for c in content if c.get("type") == "text" and c["text"].startswith("id ")]}
+    monkeypatch.setattr(C, "label_shots", lambda shots, media, path, base=None, **kw: real(shots, media, path,
+                                                                                         ask=no_match))
+    with pytest.raises(Exception, match="not enough matching"):
+        C.make(s, 1)
+    assert TG.daily_compare(s, "2026-11-19", 0.0) == []
+    assert not list((Path(s["data_dir"]) / "review" / "items").glob("*"))
+    from spikebot import progress as P
+    assert not P.load_all(Path(s["data_dir"]))      # no bar either
+
+
 def test_daily_never_queues_a_failed_comparison(tmp_path):
     s = TG.settings({"data_dir": "data"}, tmp_path)
     assert "GTA 5 footage" in C.not_ready(s)

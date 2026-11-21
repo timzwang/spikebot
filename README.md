@@ -326,7 +326,9 @@ Every rendered version (clips and edits) is scanned with NudeNet (`spikebot/safe
 it reaches #ready-to-post: anything with nudity (or a sustained sexual close-up such as strip-club
 or twerking framing) is **deleted and never shown**; #announcements says what was blocked. It is
 checked again right before posting, and nothing posts if the check can't run. Tokyo Girl / trend
-edits never use trailer shots that were flagged. Manual check: `venv/bin/python -m spikebot.safety scan VIDEO`.
+edits never use trailer shots that were flagged. Stream clips get a quick 1 fps pre-check of the
+downloaded VOD segment first: nudity anywhere in it (e.g. a strip club) = the clip is skipped
+before any rendering. Manual check: `venv/bin/python -m spikebot.safety scan VIDEO`.
 
 ## TikTok auto-post
 
@@ -623,8 +625,10 @@ its pieces once as its own emojis; a text bar if that fails), the time so far an
 is left, updated every 2 s (less often when several bars share a channel, to stay inside Discord's
 edit limit): renders (Lacy clips, Tokyo Girl, trending sounds, redos) in #ready-to-post,
 #inspiration analysis in its thread, sound downloads under your message. It disappears when
-the job finishes (the review card or reply replaces it), stays with the reason if it fails,
-and shows for 2 minutes when a Lacy clip is skipped (BRB, not English...).
+the job finishes (the review card or reply replaces it) or is skipped (BRB, not English, low
+impact, nudity on screen, VOD not there yet). #ready-to-post only ever holds clips: a failure
+there is removed and reported in #status instead (bars in a command's own channel keep the
+reason). A clip still waiting for its VOD shows no bar until the footage has downloaded.
 
 **Cancelling (`/cancel`):** every progress bar shows a run id (e.g. ``run `a1b2c3` ``) and a
 **Cancel** button. `/cancel` on its own lists what's running, including queued re-renders

@@ -314,6 +314,29 @@ def test_render_job_skips_non_english(tmp_path):
     assert job["status"] == "skipped" and "not English" in job["reason"]
 
 
+@needs_ffmpeg
+def test_render_job_skips_nudity_before_rendering(tmp_path, monkeypatch):
+    """A strip-club moment is skipped straight after the download: no 3 renders the safety check
+    would delete anyway, and it shows as skipped (nothing broke), never failed."""
+    from spikebot import safety
+    src = tmp_path / "stream.mp4"
+    make_stream(src, seconds=6)
+    seen = []
+    monkeypatch.setattr(safety, "scan", lambda path, fps=2.0, detector=None: seen.append(fps) or
+                        {"ok": False, "reason": "nudity (female_breast_exposed 63% at 1.5s)", "hits": []})
+    jobs = L.Jobs(tmp_path)
+    job = L.render_job(job_for(tmp_path, jobs), L.settings({}), jobs, set(),
+                       fetch=fake_fetch(src), transcribe=fake_words(), now=T)
+    assert job["status"] == "skipped" and job["reason"].startswith("🔞 nudity on screen")
+    assert seen == [L.SOURCE_SCAN_FPS] and not (jobs.dir(job["id"]) / "short.mp4").exists()
+    assert not (jobs.dir(job["id"]) / "segment.mp4").exists()
+
+    def broken(*a, **k):
+        raise safety.Unavailable("no NudeNet")
+    monkeypatch.setattr(safety, "scan", broken)
+    assert L.source_nudity(src) is None     # only a time saver: the full check on the renders decides
+
+
 def test_render_job_guards(tmp_path):
     jobs = L.Jobs(tmp_path)
 

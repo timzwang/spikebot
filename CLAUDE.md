@@ -176,7 +176,8 @@ it in sync when behaviour or config changes.
   `data/lacy/jobs/<id>/job.json`. `LacyMode.worker()` waits `vod_delay_s`, looks up the VOD
   and runs `python -m spikebot.lacy render ID` as a subprocess (`render_job`: hard guards
   for channel/programme/category, cut segment, BRB/away/camera-off skip, English-only
-  Whisper check, then a review item with 3 variants via `lacy.ReviewAdapter`; the segment and
+  Whisper check, then `source_nudity` (1 fps NudeNet pre-check of the segment: nudity = skipped "🔞" before any render;
+  the 2 fps scan of the renders still runs; all versions blocked = skipped, not failed), then a review item with 3 variants via `lacy.ReviewAdapter`; the segment and
   `words.json` are kept for re-renders until the item closes). Job status `review`. Approval
   and upload happen through the review queue (auto-upload removed). The old single-render
   path (`review_store=None`) and `lacy approve ID` / `upload_job` remain for old `ready` jobs.
@@ -269,8 +270,8 @@ it in sync when behaviour or config changes.
   that crashed on that once.
 - `spikebot/editor.py`: ffmpeg/yt-dlp helpers: `fetch_segment` (1080p60 when the stream had it: `-S res:1080,fps`; only the clip range of a
   VOD: `hls_segments` + `cut_playlist` write a finished local playlist of just the covering segments, because ffmpeg can't
-  seek in a live VOD's playlist; `download_segments` fetches those segments (+ the fMP4 `init` Twitch's newer VODs use) locally, 4 at a time with retries, so ffmpeg only reads local files; tested on real Kai/Lacy/KreekCraft/YourRAGE VODs 21 Nov; the VOD not reaching the clip yet = `VodNotReady` -> job `waiting_vod`, retried every
-  `VOD_RETRY_S`), `layout` (facecam stacked over gameplay for the whole clip), `away_reason`,
+  seek in a live VOD's playlist; `download_segments` fetches those segments (+ the fMP4 `init` Twitch's newer VODs use) locally, 4 at a time with retries, so ffmpeg only reads local files; tested on real Kai/Lacy/KreekCraft/YourRAGE VODs 21 Nov; the VOD not reaching the clip yet, an empty output or an ffmpeg timeout = `VodNotReady` -> job `waiting_vod`,
+  retried every `VOD_RETRY_S`; `lacy.FIXED_AT` = jobs that failed on the old download code are retried once more), `layout` (facecam stacked over gameplay for the whole clip), `away_reason`,
   `build_ass(style=)` (word captions, font/size/position/colours, hook length, end card;
   `caption_margin` keeps clear of the hook box and the bottom 320 px), `keep_segments` /
   `remap_words` (window around the peak at the payoff point + jump cuts, peak always kept),
@@ -334,7 +335,8 @@ it in sync when behaviour or config changes.
   card ending in "?". Remotion gets the same via props `motion`, `framing`, `fade`, `logo.size/out`.
 - `spikebot/compare.py`: **GTA 5 vs GTA 6** comparison edits (`/compare [count]` -> `ReviewBot.run_compare`
   -> `tokyo_girl compare -n`; `daily_compare` tops up `compare_per_day`, default 1, counts in
-  `state.compare_days`). Review items mode `tokyo_girl`, `source.kind: "compare"` (`ReviewAdapter.render` ->
+  `state.compare_days`; `make` labels and dry-runs `pick_pairs` before creating any item, so a run
+  without enough matching themes leaves nothing in #ready-to-post). Review items mode `tokyo_girl`, `source.kind: "compare"` (`ReviewAdapter.render` ->
   `render_variants`, ffmpeg only, label `COMPARE_LABEL`, exports `exports/compare/`). GTA 5 library =
   `<media_dir>/.gta5` (hidden: GTA 6 edits never see it; `gta5_cfg`, `GTA5_SEARCHES` = Rockstar's 2013
   trailers/gameplay, never the PS5 remaster; fetched with the GTA 6 media, `GTA5_FETCH`), shots `prefixed`
@@ -496,7 +498,9 @@ it in sync when behaviour or config changes.
   `trend_loop` (review.trend.times UK, `trend_slots_due`, state data/trend/schedule.json) runs
   `tokyo_girl trend --song auto` (`pick_rotating`, counts in data/trend/used.json).
   `progress_loop` / `progress_tick`: one message per job file in data/progress/ (edited, deleted
-  when done, kept on failure; ids in `_messages.json`). `stats_loop` / `stats_tick`: 📊 Stats
+  when done or skipped; a failure in #ready-to-post is deleted and sent to #status by `_report_failed`
+  (clip jobs / failed items are already reported there), kept in a command's own channel; `hidden` jobs =
+  a clip still downloading its VOD, no bar until the footage is in; ids in `_messages.json`). `stats_loop` / `stats_tick`: 📊 Stats
   category of locked voice channels (`stat_names`, ids in data/discord_stats.json), renamed
   as their numbers change (see Stats below); `stats_source` = `main.Bot.stats_snapshot`.
   Stats: `stats_loop` checks every 60 s; `renames_due` / `note_rename` keep each channel to Discord's 2 renames

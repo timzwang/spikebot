@@ -268,5 +268,29 @@
   "date": "2026-11-21",
   "title": "Brett and Dasgasd3m rules",
   "text": "Brett: face on screen and @BrettLiftsXP tag in every clip. Dasgasd3m: \"Sponsored\" in captions, stops after 19 Dec."
+ },
+ {
+  "id": "2026-11-21-clean-ready-to-post",
+  "date": "2026-11-21",
+  "title": "No more errors in #ready-to-post",
+  "text": "Failures now go to #status. Skipped clips (low impact, nudity, VOD not ready) vanish at once. Clips waiting for a VOD show no bar."
+ },
+ {
+  "id": "2026-11-21-vod-retry",
+  "date": "2026-11-21",
+  "title": "Empty VOD downloads retry",
+  "text": "An empty or slow VOD download now waits 10 min and tries again instead of failing. Today's failed clips get one more go."
+ },
+ {
+  "id": "2026-11-21-nudity-precheck",
+  "date": "2026-11-21",
+  "title": "Nudity skipped before rendering",
+  "text": "Clips with nudity on screen (e.g. strip clubs) are skipped right after download, not after 8 min of rendering."
+ },
+ {
+  "id": "2026-11-21-compare-precheck",
+  "date": "2026-11-21",
+  "title": "GTA 5 vs 6 checks first",
+  "text": "The daily GTA 5 vs GTA 6 edit is only started when enough matching shots exist, so no failed card each morning."
  }
 ]

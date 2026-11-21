@@ -204,7 +204,10 @@ def fetch_segment(vod_url: str, start_s: float, duration_s: float, out: Path, ge
         if tmp is not None:
             shutil.rmtree(tmp, ignore_errors=True)
     if not out.exists() or out.stat().st_size < 10_000:
-        raise EditError("segment download came back empty")
+        # the VOD's newest segments can still be half-written: wait and try again (job waiting_vod,
+        # retried every 10 min while the VOD wait lasts), never a hard failure
+        out.unlink(missing_ok=True)
+        raise VodNotReady("the VOD segment came back empty")
     return out
 
 

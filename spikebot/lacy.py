@@ -548,6 +548,8 @@ def render_job(job: dict, lcfg: dict, jobs: Jobs, used_titles: set[str],
     if review_store is not None:
         pj = progress.Job.create(review_store.data_dir, f"{who(job)[0]} clip {job['id']} ({job.get('category') or '?'})",
                                  channel="review", icon="🎮", meta={"lacy_job": job["id"]})
+        pj.data["hidden"] = True   # no bar while the VOD may not reach the moment yet (retried every 10 min)
+        pj.write(force=True)
 
     def finish(status: str, reason: str | None = None) -> dict:
         if pj:
@@ -606,6 +608,8 @@ def _render_job_body(job, lcfg, jobs, used_titles, fetch, transcribe, now, revie
     try:
         track.update(0.02, "Downloading the VOD segment")
         fetch(job["vod_url"], job["clip_start"] - vod_start, duration, seg)
+        if track.data.pop("hidden", None):   # the footage is here: show the bar from now on
+            track.write(force=True)
         track.update(0.2, "Checking the facecam (BRB / away)")
         info = editor.probe(seg)
         duration = info["duration"] or duration
@@ -659,6 +663,14 @@ def _render_job_body(job, lcfg, jobs, used_titles, fetch, transcribe, now, revie
                          if verdict.get(k) not in (None, "")}
         if verdict["skip"]:
             return finish("skipped", f"low impact: {verdict['why']}")
+        # Nudity on screen anywhere in the source (e.g. a GTA strip club): skip now instead of
+        # rendering 3 versions that the safety check would delete anyway. The rendered versions are
+        # still scanned before review and before posting (spikebot/safety.py); this only saves time.
+        track.update(0.36, "Checking for nudity")
+        why = source_nudity(seg)
+        if why:
+            job["nsfw"] = why
+            return finish("skipped", f"🔞 {why}")
         if review_store is None:  # old single-render path (CLI `lacy approve` / tests)
             return _render_single(job, lcfg, jobs, used_titles, seg, lay, words, lang, duration, day, finish)
         (d / "words.json").write_text(json.dumps([[w.start, w.end, w.text] for w in words]), encoding="utf-8")
@@ -680,7 +692,9 @@ def _render_job_body(job, lcfg, jobs, used_titles, fetch, transcribe, now, revie
                                        now=now, adapter=ReviewAdapter(cfg or {}, base or Path("."), lcfg, jobs,
                                                                       used_titles))
         if item["status"] != "open":
-            return finish("failed", item.get("error") or "variants could not be rendered")
+            err = item.get("error") or "variants could not be rendered"
+            # every version blocked by the nudity check: the check worked, nothing broke
+            return finish("skipped" if err.startswith("🔞") else "failed", err)
         job["status"], job["reason"] = "review", None
         jobs.save(job)
         if pj:
@@ -691,6 +705,21 @@ def _render_job_body(job, lcfg, jobs, used_titles, fetch, transcribe, now, revie
         return finish("waiting_vod", str(e))
     except editor.EditError as e:
         return finish("failed", str(e))
+
+
+SOURCE_SCAN_FPS = 1.0   # the quick pre-check; the rendered versions get the full 2 fps scan
+
+
+def source_nudity(seg: Path, detector=None) -> str | None:
+    """Why the cut VOD segment can't become a clip (nudity on screen), or None. No NudeNet or a
+    broken scan = None: the full check on the rendered versions still decides."""
+    from . import safety
+    try:
+        res = safety.scan(seg, fps=SOURCE_SCAN_FPS, detector=detector)
+    except Exception as e:  # noqa: BLE001 - only a time saver: the real check comes later
+        log.info("nudity pre-check of %s skipped: %s", seg, e)
+        return None
+    return None if res["ok"] else f"nudity on screen: {res['reason']}"
 
 
 def phrase_lines(words: list, gap: float = 0.6, max_words: int = 14) -> list[list[int]]:
@@ -1181,10 +1210,13 @@ VOD_WAIT_S = 14 * 3600     # ...for up to 14 h (Kick publishes VODs when the str
 # failures fixed since: those jobs are rendered once more after the deploy. "segment download came
 # back empty" / TimeoutExpired = live VODs ffmpeg couldn't seek in (fixed 21 Nov: editor.cut_playlist)
 FIXED_CRASHES = ("metadata_errors", "segment download came back empty", "TimeoutExpired")
+# The latest of those fixes (21 Nov 2026 21:45 UK: local segment download, empty = wait and retry).
+# A job retried before it is retried once more, on the fixed code.
+FIXED_AT = 1795297500
 
 
 def retry_after_fix(job: dict, now: float | None = None) -> bool:
-    return (job.get("status") == "failed" and not job.get("retried")
+    return (job.get("status") == "failed" and float(job.get("retried") or 0) < FIXED_AT
             and any(m in (job.get("reason") or "") for m in FIXED_CRASHES)
             and (now or time.time()) - float(job.get("created") or 0) < 2 * 86400)
 

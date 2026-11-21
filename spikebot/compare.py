@@ -342,6 +342,10 @@ def make(lcfg: dict, n: int = 1, now: float | None = None) -> list[str]:
     store = review.Store(Path(lcfg["data_dir"]))
     cfg, base = lcfg.get("_cfg") or {}, lcfg.get("_base") or Path(".")
     adapter = TG.ReviewAdapter(cfg, base, lcfg)
+    # labels the shots and checks enough themes match BEFORE any review item exists, so the daily
+    # run never leaves a failed "GTA 5 vs GTA 6" in #ready-to-post (raises EditError instead)
+    v5, v6, labels = libraries(adapter)
+    pick_pairs(v5, v6, labels, 6, PAIR_S["slow"], random.Random(0))
     job = progress.current()
     ids = []
     for k in range(n):

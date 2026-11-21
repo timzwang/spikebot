@@ -46,6 +46,27 @@ def test_live_vod_not_reaching_the_clip_waits(tmp_path, monkeypatch):
     assert "so far" in str(e.value)
 
 
+def test_empty_download_waits_and_retries_instead_of_failing(tmp_path, monkeypatch):
+    def fake_run(cmd, timeout=600, cwd=None):
+        if "yt_dlp" in cmd:
+            return subprocess.CompletedProcess(cmd, 0, "https://cdn.example/a/clip.mp4\n", "")
+        Path(cmd[-1]).write_bytes(b"x" * 100)      # ffmpeg wrote next to nothing
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+    monkeypatch.setattr(E, "run", fake_run)
+    out = tmp_path / "s.mp4"
+    with pytest.raises(E.VodNotReady) as e:
+        E.fetch_segment("https://www.twitch.tv/videos/1", 30.0, 20.0, out)
+    assert "came back empty" in str(e.value) and not out.exists()
+
+    def slow(cmd, timeout=600, cwd=None):
+        if "yt_dlp" in cmd:
+            return subprocess.CompletedProcess(cmd, 0, "https://cdn.example/a/clip.mp4\n", "")
+        raise subprocess.TimeoutExpired(cmd, timeout)
+    monkeypatch.setattr(E, "run", slow)
+    with pytest.raises(E.VodNotReady):
+        E.fetch_segment("https://www.twitch.tv/videos/1", 30.0, 20.0, out)
+
+
 @pytest.mark.skipif(not shutil.which("ffmpeg"), reason="needs ffmpeg")
 def test_cuts_the_right_range_out_of_a_live_playlist(tmp_path, monkeypatch):
     hls = tmp_path / "vod"

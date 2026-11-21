@@ -737,11 +737,53 @@ def test_progress_bar_is_posted_edited_and_removed(tmp_path):
         job.finish(True)
         await b.progress_tick(1110.0)
         assert getattr(msg, "deleted", False) and not P.load_all(store.data_dir)
-        bad = P.Job.create(store.data_dir, "Lacy clip x", now=1200.0)
+        # a failure never lands in #ready-to-post: it goes to #status (bot health)
+        told = []
+
+        class Notifier:
+            async def send(self, key, text, kind=None):
+                told.append((key, text))
+        b.notifier = Notifier()
+        posted = len(review_ch.sent)
+        bad = P.Job.create(store.data_dir, "Tokyo Girl edit", now=1200.0)
         bad.data["started"] = 1200.0
-        bad.finish(False, "VOD not published")
+        bad.finish(False, "no usable media")
         await b.progress_tick(1300.0)
-        assert "VOD not published" in review_ch.sent[-1].content and not P.load_all(store.data_dir)
+        assert len(review_ch.sent) == posted and not P.load_all(store.data_dir)
+        assert len(told) == 1 and "no usable media" in told[0][1]
+        # ...and a bar already showing is deleted when it fails
+        bad = P.Job.create(store.data_dir, "Trend edit", now=1400.0)
+        bad.data["started"] = 1400.0
+        bad.write(force=True)
+        await b.progress_tick(1410.0)
+        bar = review_ch.sent[-1]
+        bad.finish(False, "ffmpeg broke")
+        await b.progress_tick(1411.0)
+        assert getattr(bar, "deleted", False) and "ffmpeg broke" in told[-1][1]
+        # a clip job's failure is reported by the clip worker itself (no double #status line)
+        clip = P.Job.create(store.data_dir, "Kai Cenat clip k", now=1500.0, meta={"lacy_job": "k"})
+        clip.finish(False, "VOD gone")
+        await b.progress_tick(1600.0)
+        assert len(told) == 2
+        # skipped (low impact, nudity on screen, VOD not there yet): nothing wrong, removed at once
+        skip = P.Job.create(store.data_dir, "Lacy clip y", now=1700.0)
+        skip.data["started"] = 1700.0
+        skip.write(force=True)
+        await b.progress_tick(1710.0)
+        bar = review_ch.sent[-1]
+        skip.finish(False, "low impact: read an ad", state="skipped")
+        await b.progress_tick(1711.0)
+        assert getattr(bar, "deleted", False) and not P.load_all(store.data_dir)
+        # hidden (a clip still downloading its VOD): no bar at all
+        hid = P.Job.create(store.data_dir, "YourRAGE clip z", now=1800.0)
+        hid.data.update(started=1800.0, hidden=True)
+        hid.write(force=True)
+        n = len(review_ch.sent)
+        await b.progress_tick(1900.0)
+        assert len(review_ch.sent) == n and P.load_all(store.data_dir)
+        hid.finish(False, "the VOD segment came back empty: trying again in 10 min", state="skipped")
+        await b.progress_tick(1901.0)
+        assert len(review_ch.sent) == n and not P.load_all(store.data_dir)
     asyncio.run(go())
     # a subprocess finds its job through the environment
     j2 = P.Job.create(store.data_dir, "Studying x", channel="custom", channel_id=555)

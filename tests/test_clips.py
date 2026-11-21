@@ -153,7 +153,8 @@ def test_missing_kick_vod_waits_instead_of_failing(tmp_path):
 def test_renders_that_hit_the_pyav_crash_are_retried_once():
     crashed = {"status": "failed", "created": T, "reason": "render crashed: ... unexpected keyword argument 'metadata_errors'"}
     assert L.retry_after_fix(crashed, now=T + 3600)
-    assert not L.retry_after_fix(crashed | {"retried": T}, now=T + 3600)
+    assert L.retry_after_fix(crashed | {"retried": T}, now=T + 3600)   # retried before the latest fix
+    assert not L.retry_after_fix(crashed | {"retried": L.FIXED_AT + 1}, now=T + 3600)
     assert not L.retry_after_fix(crashed, now=T + 3 * 86400)
     assert not L.retry_after_fix(crashed | {"reason": "no Twitch VOD"}, now=T + 60)
 
