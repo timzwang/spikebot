@@ -182,7 +182,7 @@ def test_adin_ross_job_becomes_three_captioned_variants(tmp_path, monkeypatch):
     from spikebot import ai
     asked = []
 
-    def fake_copy(name, game, transcript, vibe=None, n=3, base=None, client=None):
+    def fake_copy(name, game, transcript, vibe=None, n=3, base=None, client=None, pronouns="he/him"):
         asked.append(transcript)
         return [{"title": "Adin Ross hits the jump of his life in GTA 6", "caption": "adin ross actually landed it 😭"},
                 {"title": "Adin Ross can't believe chat saw this", "caption": "this is so cringe adin ross"},  # banned word

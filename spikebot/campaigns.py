@@ -180,6 +180,14 @@ CAMPAIGNS: dict[str, dict] = {
 }
 
 PLATFORM_URL = {"twitch": "https://www.twitch.tv/{}", "kick": "https://kick.com/{}"}
+# How captions and titles refer to each streamer (Tim, 21 Nov: Lacy and the others are he/him).
+DEFAULT_PRONOUNS = "he/him"
+PRONOUNS = {"laurenhamdenn": "she/her"}
+
+
+def pronouns_for(channel: str | None, cfg: dict | None = None) -> str:
+    c = (registry(cfg).get(str(channel or "lacy").lower()) or {}) if cfg is not None else {}
+    return c.get("pronouns") or PRONOUNS.get(str(channel or "").lower()) or DEFAULT_PRONOUNS
 
 
 def registry(cfg: dict | None = None) -> dict[str, dict]:

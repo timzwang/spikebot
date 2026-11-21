@@ -12,6 +12,8 @@ revenue on a budget of about £20/month. Give all times in UK time.
   YourRAGE, Clix, Dasgasd3m, Bobby Vanriper, KreekCraft, BrettLiftsXP; Lauren Hamden off: needs a
   dedicated account). Each campaign's rules live in its `CAMPAIGNS` entry. Channels with
   `programme: null` need Tim to check permission before anything is posted.
+- Streamers' pronouns: Lacy, Adin Ross, Seal and the other streamers are he/him (`campaigns.PRONOUNS` for
+  exceptions). Every AI prompt gets `ai.pronoun_rule`; `lacy.pronouns_ok` drops AI text with the wrong ones.
 - Reach and Clipping Nation ban AI-generated content: `ai_allowed` stays false unless a campaign
   page says AI is fine. Calls to action go in captions, never on screen.
 - Never write code that downloads video from streamers who haven't allowed clipping (or that
@@ -260,7 +262,9 @@ it in sync when behaviour or config changes.
   faster-whisper (PyAV 19 broke `av.open(metadata_errors=)`). `lacy.retry_after_fix` re-runs renders
   that crashed on that once.
 - `spikebot/editor.py`: ffmpeg/yt-dlp helpers: `fetch_segment` (1080p60 when the stream had it: `-S res:1080,fps`; only the clip range of a
-  VOD), `layout` (facecam stacked over gameplay for the whole clip), `away_reason`,
+  VOD: `hls_segments` + `cut_playlist` write a finished local playlist of just the covering segments, because ffmpeg can't
+  seek in a live VOD's playlist; the VOD not reaching the clip yet = `VodNotReady` -> job `waiting_vod`, retried every
+  `VOD_RETRY_S`), `layout` (facecam stacked over gameplay for the whole clip), `away_reason`,
   `build_ass(style=)` (word captions, font/size/position/colours, hook length, end card;
   `caption_margin` keeps clear of the hook box and the bottom 320 px), `keep_segments` /
   `remap_words` (window around the peak at the payoff point + jump cuts, peak always kept),

@@ -260,6 +260,19 @@ def voice_line_ok(line: str, name: str = "Lacy") -> bool:
             and bool(ENGLISH.match(line)))
 
 
+WRONG_PRONOUNS = {
+    "he/him": re.compile(r"\b(she|her|hers|herself|she's|she'll|she'd)\b", re.I),
+    "she/her": re.compile(r"\b(he|him|his|himself|he's|he'll|he'd)\b", re.I),
+}
+
+
+def pronouns_ok(text: str, pronouns: str = "he/him") -> bool:
+    """No pronoun for the streamer other than theirs (Lacy, Adin Ross, Seal... are he/him). Used on
+    every AI-written title, caption, hook and voice line; a miss falls back to the templates."""
+    bad = WRONG_PRONOUNS.get(pronouns)
+    return not (bad and bad.search(text or ""))
+
+
 def screen_hook_ok(hook: str, name: str = "Lacy") -> bool:
     """The on-screen hook: the streamer's name, 3-8 words, <= 42 characters, plain English, no banned
     words, no calls to follow (those go in the caption)."""
@@ -535,7 +548,10 @@ def render_job(job: dict, lcfg: dict, jobs: Jobs, used_titles: set[str],
 
     def finish(status: str, reason: str | None = None) -> dict:
         if pj:
-            pj.finish(False, reason or status, state="skipped" if status == "skipped" else None)
+            if status == "waiting_vod":   # not a failure: the VOD just doesn't reach the moment yet
+                pj.finish(False, f"⏳ {reason}: trying again in {VOD_RETRY_S // 60} min", state="skipped")
+            else:
+                pj.finish(False, reason or status, state="skipped" if status == "skipped" else None)
         job["status"], job["reason"] = status, reason
         (d / "segment.mp4").unlink(missing_ok=True)  # big; kept only while a clip is in review
         jobs.save(job)
@@ -665,6 +681,8 @@ def _render_job_body(job, lcfg, jobs, used_titles, fetch, transcribe, now, revie
             pj.finish(True)
         log.info("lacy job %s: 3 variants waiting for approval (%s)", job["id"], item["id"])
         return job
+    except editor.VodNotReady as e:
+        return finish("waiting_vod", str(e))
     except editor.EditError as e:
         return finish("failed", str(e))
 
@@ -743,6 +761,10 @@ class ReviewAdapter:
         except ValueError:
             return self.lcfg
 
+    def pronouns(self, job: dict) -> str:
+        from . import campaigns
+        return self.lcfg.get("pronouns") or campaigns.pronouns_for(job.get("channel"), self.cfg)
+
     def clip_copy(self, job: dict, d: Path, words: list) -> list[dict]:
         """Titles + captions written by Claude from the transcript (spikebot/ai.py), made once
         per clip and kept in copy.json. [] without a key or on any failure: templates then."""
@@ -758,7 +780,7 @@ class ReviewAdapter:
         text = " ".join(w.text.strip() for w in words)
         try:
             out = ai.write_clip_copy(name, game_tag(job.get("category") or ""), text, job.get("vibe"),
-                                     n=3, base=self.base)
+                                     n=3, base=self.base, pronouns=self.pronouns(job))
         except ai.AIError as e:
             log.info("clip %s: AI captions unavailable (%s), using templates", job["id"], e)
             return []
@@ -802,7 +824,7 @@ class ReviewAdapter:
         f = d / "voice.json"
         try:
             line = json.loads(f.read_text(encoding="utf-8")).get("line") or ""
-            if voice_line_ok(line, name):
+            if voice_line_ok(line, name) and pronouns_ok(line, self.pronouns(job)):
                 return line
         except (OSError, ValueError):
             pass
@@ -810,8 +832,9 @@ class ReviewAdapter:
         if ai.available(self.base):
             try:
                 line = ai.write_voice_hook(name, game_tag(job.get("category") or ""),
-                                           " ".join(w.text.strip() for w in words), job.get("vibe"), base=self.base)
-                if voice_line_ok(line, name):
+                                           " ".join(w.text.strip() for w in words), job.get("vibe"), base=self.base,
+                                           pronouns=self.pronouns(job))
+                if voice_line_ok(line, name) and pronouns_ok(line, self.pronouns(job)):
                     f.write_text(json.dumps({"line": line}, ensure_ascii=False), encoding="utf-8")
                     return line
                 log.info("clip %s: AI voiceover line %r breaks the rules, using the title", job["id"], line)
@@ -859,6 +882,9 @@ class ReviewAdapter:
         voice = self.streamer_words(job, d, words) if any(
             st.resolve(sp["style"]).get("streamer_only", True) for sp in specs) else words
         written = self.clip_copy(job, d, voice) if not any(sp.get("from") for sp in specs) else []
+        pro = self.pronouns(job)
+        # wrong pronouns anywhere in an option (Lacy is he/him): that option is dropped, templates instead
+        written = [o for o in written if all(pronouns_ok(str(o.get(k) or ""), pro) for k in ("title", "caption", "hook"))]
         hooks_used = instagram.PostLog(instagram.settings(self.cfg, self.base)["posts_csv"]).recent_hooks()
         from . import campaigns
         camp = self.lcfg.get("campaign") or campaigns.for_channel(self.cfg, job.get("channel") or "lacy")
@@ -876,6 +902,8 @@ class ReviewAdapter:
             texts = spec.get("texts") or {}
             if texts.get("hook"):
                 title = texts["hook"].strip()
+                if not pronouns_ok(title, pro):
+                    raise ValueError(f"new hook {title!r} uses the wrong pronouns: {name} is {pro}")
                 if not title_ok(title, name):
                     raise ValueError(f"new hook {title!r} breaks the clip title rules (must contain"
                                      f" '{name}', 10-100 English characters, no negative words)")
@@ -982,6 +1010,11 @@ class ReviewAdapter:
         if not title_ok(v["title"], name):
             raise ValueError(f"clip titles must contain '{name}', be 10-100 English characters"
                              " and avoid negative words")
+        from . import campaigns as _c
+        pro = self.lcfg.get("pronouns") or _c.pronouns_for(job.get("channel"), self.cfg)
+        for k, text in [("title", v["title"]), *v["captions"].items()]:
+            if not pronouns_ok(text, pro):
+                raise ValueError(f"the {k} uses the wrong pronouns: {name} is {pro}")
         for k, text in v["captions"].items():
             if BANNED.search(text):
                 raise ValueError(f"the {k} caption has a word the clip rules ban: {BANNED.search(text).group(0)!r}")
@@ -1128,7 +1161,9 @@ def send_video(dcfg: dict, path: Path, job: dict, **kw) -> str:
 VOD_RETRY_S = 600          # look for a missing VOD again every 10 min...
 VOD_WAIT_S = 14 * 3600     # ...for up to 14 h (Kick publishes VODs when the stream ends)
 # Renders that crashed on the PyAV/faster-whisper break (fixed): run them again once.
-FIXED_CRASHES = ("metadata_errors",)
+# failures fixed since: those jobs are rendered once more after the deploy. "segment download came
+# back empty" / TimeoutExpired = live VODs ffmpeg couldn't seek in (fixed 21 Nov: editor.cut_playlist)
+FIXED_CRASHES = ("metadata_errors", "segment download came back empty", "TimeoutExpired")
 
 
 def retry_after_fix(job: dict, now: float | None = None) -> bool:
@@ -1287,6 +1322,12 @@ class LacyMode:
                 (self.jobs.dir(job_id) / "segment.mp4").unlink(missing_ok=True)
             else:
                 job.update(status="failed", reason=f"render crashed: {out[-300:]}")
+            self.jobs.save(job)
+        if job["status"] == "waiting_vod":   # the live VOD doesn't reach the moment yet: later
+            if time.time() - float(job.get("ready_at") or 0) < VOD_WAIT_S:
+                asyncio.create_task(self._later(job_id, VOD_RETRY_S))
+                return
+            job.update(status="failed", reason=f"the VOD never reached this moment ({job.get('reason')})")
             self.jobs.save(job)
         if job["status"] == "failed":
             await post_status(job)

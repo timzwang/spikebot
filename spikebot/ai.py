@@ -422,12 +422,18 @@ CLIP_COPY_SCHEMA = {
 }
 
 
+def pronoun_rule(name: str, pronouns: str = "he/him") -> str:
+    """The line every streamer prompt ends with (Tim, 21 Nov: "Lacy is he/him, not she/her")."""
+    return (f"\n- Pronouns: {name} is {pronouns}. Whenever you refer to {name} without the name, use "
+            f"{pronouns} only (never any other pronouns).")
+
+
 def write_clip_copy(name: str, game: str, transcript: str, vibe: list[str] | None = None, n: int = 3,
-                    base: Path | None = None, client=None) -> list[dict]:
-    """[{title, caption}] x n for one clip. Raises AIError (callers fall back to templates)."""
-    content = (f"Streamer: {name}\nGame: {game}\nChat reaction: {', '.join((vibe or [])[:8]) or 'none'}\n"
+                    base: Path | None = None, client=None, pronouns: str = "he/him") -> list[dict]:
+    """[{title, caption, hook}] x n for one clip. Raises AIError (callers fall back to templates)."""
+    content = (f"Streamer: {name} ({pronouns})\nGame: {game}\nChat reaction: {', '.join((vibe or [])[:8]) or 'none'}\n"
                f"Options wanted: {n}\nTranscript:\n{transcript.strip()[:3000] or '(no clear speech)'}")
-    out = ask_json(CLIP_COPY_SYSTEM.replace("{name}", name), content, CLIP_COPY_SCHEMA, base,
+    out = ask_json(CLIP_COPY_SYSTEM.replace("{name}", name) + pronoun_rule(name, pronouns), content, CLIP_COPY_SCHEMA, base,
                    max_tokens=1500, client=client, effort="low", task="feedback")
     return [o for o in out.get("options") or [] if o.get("title") and o.get("caption")]
 
@@ -455,11 +461,11 @@ VOICE_HOOK_SCHEMA = {
 
 
 def write_voice_hook(name: str, game: str, transcript: str, vibe: list[str] | None = None,
-                     base: Path | None = None, client=None) -> str:
+                     base: Path | None = None, client=None, pronouns: str = "he/him") -> str:
     """One spoken teaser line for a clip. Raises AIError (callers fall back to the title)."""
-    content = (f"Streamer: {name}\nGame: {game}\nChat reaction: {', '.join((vibe or [])[:8]) or 'none'}\n"
+    content = (f"Streamer: {name} ({pronouns})\nGame: {game}\nChat reaction: {', '.join((vibe or [])[:8]) or 'none'}\n"
                f"Transcript:\n{transcript.strip()[:3000] or '(no clear speech)'}")
-    out = ask_json(VOICE_HOOK_SYSTEM.replace("{name}", name), content, VOICE_HOOK_SCHEMA, base,
+    out = ask_json(VOICE_HOOK_SYSTEM.replace("{name}", name) + pronoun_rule(name, pronouns), content, VOICE_HOOK_SCHEMA, base,
                    max_tokens=400, client=client, effort="low", task="feedback")
     return str(out.get("line") or "").strip()
 

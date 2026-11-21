@@ -62,9 +62,65 @@ def even_pos(x: float) -> int:
 # --------------------------------------------------------------------------
 # Fetching
 # --------------------------------------------------------------------------
-def fetch_segment(vod_url: str, start_s: float, duration_s: float, out: Path) -> Path:
+class VodNotReady(EditError):
+    """The VOD doesn't reach the clip yet (the stream is still live and Twitch/Kick haven't
+    written that part): try again later, it isn't a failure."""
+
+
+def hls_segments(text: str, base_url: str) -> tuple[list[tuple[float, float, str]], str | None, bool]:
+    """([(start s, length s, absolute uri)], init-segment uri or None, ended?) from a media playlist."""
+    from urllib.parse import urljoin
+    out, t, dur, init, ended = [], 0.0, None, None, False
+    for raw in text.splitlines():
+        line = raw.strip()
+        if line.startswith("#EXTINF:"):
+            try:
+                dur = float(line[8:].split(",")[0])
+            except ValueError:
+                dur = None
+        elif line.startswith("#EXT-X-MAP:"):
+            m = re.search(r'URI="([^"]+)"', line)
+            init = urljoin(base_url, m.group(1)) if m else None
+        elif line.startswith("#EXT-X-ENDLIST"):
+            ended = True
+        elif line and not line.startswith("#") and dur is not None:
+            out.append((t, dur, urljoin(base_url, line)))
+            t += dur
+            dur = None
+    return out, init, ended
+
+
+def cut_playlist(segs: list[tuple[float, float, str]], init: str | None, start_s: float,
+                 duration_s: float) -> tuple[str, float]:
+    """(a finished playlist with only the segments covering [start, start+duration], seconds to skip
+    inside its first segment). A finished playlist is what lets ffmpeg seek: a live-VOD playlist
+    (no ENDLIST, the stream is still going) makes ffmpeg jump to the live edge instead."""
+    end = start_s + duration_s
+    keep = [x for x in segs if x[0] + x[1] > start_s and x[0] < end]
+    if not keep:
+        raise VodNotReady("the VOD has no part covering this moment yet")
+    lines = ["#EXTM3U", "#EXT-X-VERSION:6", f"#EXT-X-TARGETDURATION:{int(max(x[1] for x in keep)) + 1}",
+             "#EXT-X-MEDIA-SEQUENCE:0", "#EXT-X-PLAYLIST-TYPE:VOD"]
+    if init:
+        lines.append(f'#EXT-X-MAP:URI="{init}"')
+    for _t, d, uri in keep:
+        lines += [f"#EXTINF:{d:.3f},", uri]
+    lines.append("#EXT-X-ENDLIST")
+    return "\n".join(lines) + "\n", max(0.0, start_s - keep[0][0])
+
+
+def _get_text(url: str, timeout: float = 30) -> str:
+    import urllib.request
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:   # noqa: S310 - a VOD playlist yt-dlp resolved
+        return r.read().decode("utf-8", errors="replace")
+
+
+def fetch_segment(vod_url: str, start_s: float, duration_s: float, out: Path, get_text=_get_text) -> Path:
     """Cut [start, start+duration] out of a VOD without downloading the whole thing:
-    yt-dlp resolves the HLS playlist, ffmpeg copies just that range."""
+    yt-dlp resolves the HLS playlist, only the segments covering the range are fetched and ffmpeg
+    copies the exact range out of them. Raises VodNotReady while the (still live) VOD doesn't reach
+    the end of the clip yet."""
     # yt-dlp from this venv (systemd's PATH doesn't include venv/bin)
     # 1080p60 when the stream had it (Tim: clips at 60 fps): resolution first, then frame rate
     p = run([sys.executable, "-m", "yt_dlp", "-g", "-f", "best[height<=1080]/best", "-S", "res:1080,fps",
@@ -72,11 +128,34 @@ def fetch_segment(vod_url: str, start_s: float, duration_s: float, out: Path) ->
     stream = p.stdout.strip().splitlines()[0] if p.stdout.strip() else ""
     if not stream:
         raise EditError("yt-dlp returned no stream URL (VOD private or sub-only?)")
-    run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-ss", f"{max(start_s, 0):.2f}",
-         "-i", stream, "-t", f"{duration_s:.2f}", "-c", "copy", "-movflags", "+faststart",
-         str(out)], timeout=600)
+    start_s = max(start_s, 0.0)
+    src, skip = stream, start_s
+    if ".m3u8" in stream.split("?")[0]:
+        try:
+            text = get_text(stream)
+        except Exception as e:  # noqa: BLE001 - a playlist hiccup: try again later
+            raise VodNotReady(f"VOD playlist unreadable ({type(e).__name__})") from e
+        segs, init, ended = hls_segments(text, stream)
+        have = segs[-1][0] + segs[-1][1] if segs else 0.0
+        if not ended and have < start_s + duration_s + 2:
+            raise VodNotReady(f"the VOD reaches {have / 60:.0f} min so far; this clip ends at"
+                              f" {(start_s + duration_s) / 60:.0f} min")
+        if segs:
+            local, skip = cut_playlist(segs, init, start_s, duration_s)
+            src = str(out.with_suffix(".m3u8").resolve())
+            Path(src).write_text(local, encoding="utf-8")
+    try:
+        run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+             "-protocol_whitelist", "file,http,https,tcp,tls,crypto", "-ss", f"{skip:.2f}",
+             "-i", src, "-t", f"{duration_s:.2f}", "-c", "copy", "-movflags", "+faststart",
+             str(out)], timeout=600)
+    except subprocess.TimeoutExpired as e:   # slow CDN: worth another go later
+        raise VodNotReady("the VOD download timed out") from e
+    finally:
+        if src != stream:
+            Path(src).unlink(missing_ok=True)
     if not out.exists() or out.stat().st_size < 10_000:
-        raise EditError("segment download came back empty (VOD not ready yet?)")
+        raise EditError("segment download came back empty")
     return out
 
 
