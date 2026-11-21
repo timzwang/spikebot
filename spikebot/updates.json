@@ -249,7 +249,7 @@
   "id": "2026-11-21-live-vods",
   "date": "2026-11-21",
   "title": "Clips from live streams fixed",
-  "text": "Clips no longer fail with an empty download while the stream is still live; they wait for the VOD and retry. Failed ones re-run."
+  "text": "Kai, Lacy, KreekCraft and YourRAGE clips no longer fail while they're live: only the needed VOD parts are downloaded, and clips wait if it's too early."
  },
  {
   "id": "2026-11-21-pronouns",

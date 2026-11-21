@@ -62,10 +62,11 @@ def test_cuts_the_right_range_out_of_a_live_playlist(tmp_path, monkeypatch):
             return subprocess.CompletedProcess(cmd, 0, str(hls / "index.m3u8") + "\n", "")
         return real_run(cmd, timeout, cwd)
     monkeypatch.setattr(E, "run", fake_run)
-    out = E.fetch_segment("x", 21.0, 8.0, tmp_path / "seg.mp4", get_text=lambda u: Path(u).read_text())
+    out = E.fetch_segment("x", 21.0, 8.0, tmp_path / "seg.mp4", get_text=lambda u: Path(u).read_text(),
+                          get_bytes=lambda u: Path(u).read_bytes())
     info = E.probe(out)
     assert info["duration"] == pytest.approx(8.0, abs=1.0) and info["audio"]
-    assert not (tmp_path / "seg.m3u8").exists()          # the cut playlist is cleaned up
+    assert not (tmp_path / ".seg_parts").exists()        # the downloaded parts are cleaned up
 
 
 def test_pronouns():

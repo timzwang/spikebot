@@ -269,7 +269,7 @@ it in sync when behaviour or config changes.
   that crashed on that once.
 - `spikebot/editor.py`: ffmpeg/yt-dlp helpers: `fetch_segment` (1080p60 when the stream had it: `-S res:1080,fps`; only the clip range of a
   VOD: `hls_segments` + `cut_playlist` write a finished local playlist of just the covering segments, because ffmpeg can't
-  seek in a live VOD's playlist; the VOD not reaching the clip yet = `VodNotReady` -> job `waiting_vod`, retried every
+  seek in a live VOD's playlist; `download_segments` fetches those segments (+ the fMP4 `init` Twitch's newer VODs use) locally, 4 at a time with retries, so ffmpeg only reads local files; tested on real Kai/Lacy/KreekCraft/YourRAGE VODs 21 Nov; the VOD not reaching the clip yet = `VodNotReady` -> job `waiting_vod`, retried every
   `VOD_RETRY_S`), `layout` (facecam stacked over gameplay for the whole clip), `away_reason`,
   `build_ass(style=)` (word captions, font/size/position/colours, hook length, end card;
   `caption_margin` keeps clear of the hook box and the bottom 320 px), `keep_segments` /

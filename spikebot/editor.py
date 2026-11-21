@@ -13,6 +13,7 @@ import hashlib
 import json
 import logging
 import re
+import shutil
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -95,10 +96,7 @@ def cut_playlist(segs: list[tuple[float, float, str]], init: str | None, start_s
     """(a finished playlist with only the segments covering [start, start+duration], seconds to skip
     inside its first segment). A finished playlist is what lets ffmpeg seek: a live-VOD playlist
     (no ENDLIST, the stream is still going) makes ffmpeg jump to the live edge instead."""
-    end = start_s + duration_s
-    keep = [x for x in segs if x[0] + x[1] > start_s and x[0] < end]
-    if not keep:
-        raise VodNotReady("the VOD has no part covering this moment yet")
+    keep = covering(segs, start_s, duration_s)
     lines = ["#EXTM3U", "#EXT-X-VERSION:6", f"#EXT-X-TARGETDURATION:{int(max(x[1] for x in keep)) + 1}",
              "#EXT-X-MEDIA-SEQUENCE:0", "#EXT-X-PLAYLIST-TYPE:VOD"]
     if init:
@@ -109,6 +107,51 @@ def cut_playlist(segs: list[tuple[float, float, str]], init: str | None, start_s
     return "\n".join(lines) + "\n", max(0.0, start_s - keep[0][0])
 
 
+def covering(segs: list[tuple[float, float, str]], start_s: float, duration_s: float) -> list:
+    end = start_s + duration_s
+    keep = [x for x in segs if x[0] + x[1] > start_s and x[0] < end]
+    if not keep:
+        raise VodNotReady("the VOD has no part covering this moment yet")
+    return keep
+
+
+def _get_bytes(url: str, timeout: float = 60) -> bytes:
+    import urllib.request
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:   # noqa: S310 - VOD segments yt-dlp resolved
+        return r.read()
+
+
+def download_segments(keep: list[tuple[float, float, str]], init: str | None, folder: Path,
+                      get_bytes=None, tries: int = 3) -> tuple[list[str], str | None]:
+    """Fetch the covering segments (and the fMP4 init segment Twitch's newer VODs use) into `folder`,
+    4 at a time, each retried. Returns (local names in order, init name or None). ffmpeg then
+    reads only local files: no live playlists, proxies or half-loaded remote segments."""
+    import concurrent.futures as cf
+    get_bytes = get_bytes or _get_bytes
+    folder.mkdir(parents=True, exist_ok=True)
+
+    def one(job: tuple[str, str]) -> str:
+        url, name = job
+        last = None
+        for _ in range(tries):
+            try:
+                data = get_bytes(url)
+                if data:
+                    (folder / name).write_bytes(data)
+                    return name
+            except Exception as e:  # noqa: BLE001 - CDN hiccup: try again
+                last = e
+        raise VodNotReady(f"VOD segment unavailable ({type(last).__name__ if last else 'empty'})")
+    ext = lambda u: Path(u.split("?")[0]).suffix or ".ts"   # noqa: E731
+    jobs = [(u, f"seg{i:04d}{ext(u)}") for i, (_t, _d, u) in enumerate(keep)]
+    if init:
+        jobs.append((init, f"init{ext(init)}"))
+    with cf.ThreadPoolExecutor(4) as ex:
+        names = list(ex.map(one, jobs))
+    return (names[:-1], names[-1]) if init else (names, None)
+
+
 def _get_text(url: str, timeout: float = 30) -> str:
     import urllib.request
     req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
@@ -116,7 +159,8 @@ def _get_text(url: str, timeout: float = 30) -> str:
         return r.read().decode("utf-8", errors="replace")
 
 
-def fetch_segment(vod_url: str, start_s: float, duration_s: float, out: Path, get_text=_get_text) -> Path:
+def fetch_segment(vod_url: str, start_s: float, duration_s: float, out: Path, get_text=_get_text,
+                  get_bytes=None) -> Path:
     """Cut [start, start+duration] out of a VOD without downloading the whole thing:
     yt-dlp resolves the HLS playlist, only the segments covering the range are fetched and ffmpeg
     copies the exact range out of them. Raises VodNotReady while the (still live) VOD doesn't reach
@@ -129,7 +173,7 @@ def fetch_segment(vod_url: str, start_s: float, duration_s: float, out: Path, ge
     if not stream:
         raise EditError("yt-dlp returned no stream URL (VOD private or sub-only?)")
     start_s = max(start_s, 0.0)
-    src, skip = stream, start_s
+    src, skip, tmp = stream, start_s, None
     if ".m3u8" in stream.split("?")[0]:
         try:
             text = get_text(stream)
@@ -141,19 +185,24 @@ def fetch_segment(vod_url: str, start_s: float, duration_s: float, out: Path, ge
             raise VodNotReady(f"the VOD reaches {have / 60:.0f} min so far; this clip ends at"
                               f" {(start_s + duration_s) / 60:.0f} min")
         if segs:
-            local, skip = cut_playlist(segs, init, start_s, duration_s)
-            src = str(out.with_suffix(".m3u8").resolve())
+            keep = covering(segs, start_s, duration_s)
+            skip = max(0.0, start_s - keep[0][0])
+            tmp = out.parent / f".{out.stem}_parts"
+            names, init_name = download_segments(keep, init, tmp, get_bytes)
+            local, _ = cut_playlist([(t, d, n) for (t, d, _u), n in zip(keep, names)], init_name,
+                                    keep[0][0], duration_s + skip)
+            src = str((tmp / "local.m3u8").resolve())
             Path(src).write_text(local, encoding="utf-8")
     try:
         run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
-             "-protocol_whitelist", "file,http,https,tcp,tls,crypto", "-ss", f"{skip:.2f}",
+             "-protocol_whitelist", "file,http,https,tcp,tls,crypto,httpproxy", "-ss", f"{skip:.2f}",
              "-i", src, "-t", f"{duration_s:.2f}", "-c", "copy", "-movflags", "+faststart",
              str(out)], timeout=600)
     except subprocess.TimeoutExpired as e:   # slow CDN: worth another go later
         raise VodNotReady("the VOD download timed out") from e
     finally:
-        if src != stream:
-            Path(src).unlink(missing_ok=True)
+        if tmp is not None:
+            shutil.rmtree(tmp, ignore_errors=True)
     if not out.exists() or out.stat().st_size < 10_000:
         raise EditError("segment download came back empty")
     return out
