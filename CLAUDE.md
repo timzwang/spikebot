@@ -160,6 +160,12 @@ it in sync when behaviour or config changes.
   `main.stop_campaign` (waiting jobs cancelled, open items closed). `ended(cfg, ch)` is checked by
   `profiles`, `LacyMode.enqueue/_process` and `render_job`. `/campaigns [end] [resume]`. Tested in
   `tests/test_campaigns.py`.
+- Overlay campaigns `campaigns.OVERLAYS` (ClipUp: sponsor logo `spikebot/brand/clipup_logo.png`, #gta6 #Clipup):
+  `overlay_for(cfg, ch)` only when that streamer's campaign has `logos: True` (Reach ones are False: never a
+  logo on Lacy/Clix/YourRAGE), the overlay isn't ended (same budget watch) and the file exists ->
+  `editor.render_variant(logo=, logo_w=)` top-right (`LOGO_INSET`) for the whole clip, drawn after captions;
+  variant `overlay`. Campaign fields `ends` (UK deadline -> `ended`), `require_face` (no facecam = skip),
+  `pronouns`.
 - `spikebot/picker.py` (pure): **best-of-day** selection: `decide(job, jobs, cap, now, live)` -> go / wait
   (status `standby`, re-checked every `RECHECK_S`) / drop; `bar` = the streamer's usual top-`cap` score from
   the last 7 days; no history = `HOLD_S` wait; stream over / after 23:00 UK = fill best-first. Called in

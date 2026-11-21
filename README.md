@@ -259,6 +259,17 @@ What the bot does with the rules:
 - Switch one off in `config.json`: `"campaigns": {"clix": {"enabled": false}}` (any field can be
   overridden there, or a new campaign added the same way).
 
+**ClipUp (logo campaign)**: $0.30 per 1K Tier-1 views for ClipUp's logo on screen for the whole clip. It
+goes top-right on clips of streamers whose own campaign doesn't ban logos (Kai Cenat, Adin Ross, Seal,
+Dasgasd3m, Bobby, KreekCraft, Brett) with `#gta6 #Clipup` added; **never** on Lacy, Clix or YourRAGE (Reach
+bans logos of any kind). Review cards show 🏷️ ClipUp logo. Logo file: `spikebot/brand/clipup_logo.png`
+(their sign, from their Drive). Off: `"campaigns": {"clipup": {"enabled": false}}`. It stops when its budget
+runs out. For Instagram, ClipUp wants the analytics uploaded at min views (forms.gle/3pwRKfejyz79vKtAA).
+
+**Brett** clips need his face (no facecam = no clip) and tag @BrettLiftsXP; join whop.com/clips-by-jai and put
+his Twitch + YouTube links in the bio. **Dasgasd3m** captions say "Sponsored" (their disclosure), original
+audio only; his campaign stops taking clips after 19 Dec 23:59 Pacific.
+
 Things only you can do: join each campaign on Content Rewards/Reach, submit every post link within
 30 minutes, check the hidden requirements on the Dasgasd3m and BrettLiftsXP pages, and for Bobby open
 the Submit Demographics ticket at 1,500 views. **Check the `kreekcraft` and `brettliftsxp` channel logins**

@@ -239,3 +239,24 @@ def test_lacy_mode_waits_then_selects(tmp_path, monkeypatch):
     saved = mode.jobs.load(j["id"])
     assert saved["status"] == "standby" and later == [P.RECHECK_S]
     assert json.dumps(saved)   # still a plain job file
+
+
+def test_deadline_face_and_sponsored_rules(tmp_path, monkeypatch):
+    cfg = cfg_in(tmp_path, campaigns={"dasgasd3m": {"ends": "2026-01-01T00:00"}})
+    assert "deadline passed" in C.ended(cfg, "dasgasd3m")
+    assert C.ended(cfg_in(tmp_path), "dasgasd3m") is None            # 19 Dec deadline not reached yet
+    out = C.finish_caption("dom loses it 😭 #GTA6", C.CAMPAIGNS["dasgasd3m"])
+    assert "Sponsored" in out and "#Dasgasd3m" in out and "kick.com/dasgasd3m" in out
+    brett = L.profiles(cfg_in(tmp_path))[("twitch", "brettliftsxp")]
+    assert brett["require_face"] is True and "@BrettLiftsXP" in brett["campaign"]["hashtags"]
+
+
+def test_clipup_logo_only_where_the_campaign_allows_logos(tmp_path):
+    cfg = cfg_in(tmp_path)
+    for ch in ("lacy", "clix", "yourragegaming"):          # Reach bans logos of any kind
+        assert C.overlay_for(cfg, ch) is None
+    ov = C.overlay_for(cfg, "kaicenat")
+    assert ov and ov["name"] == "ClipUp" and Path(ov["logo"]).exists() and ov["hashtags"] == ["#gta6", "#Clipup"]
+    C.State(Path(cfg["data_dir"])).set("clipup", True, "budget spent")   # ClipUp's budget gone: no logo
+    assert C.overlay_for(cfg, "kaicenat") is None
+    assert C.overlay_for(cfg_in(tmp_path, campaigns={"clipup": {"enabled": False}}), "bobby_vanriper") is None

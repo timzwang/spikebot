@@ -123,6 +123,8 @@ def variant_cell(item: dict, v: dict) -> str:
         lines.append("⚠️ " + v["intro_note"][:160])
     if v.get("glitch_note"):    # the glitch check fixed (or couldn't fix) a stray cut
         lines.append("🛠️ " + v["glitch_note"][:160])
+    if v.get("overlay"):
+        lines.append(f"🏷️ {v['overlay']} logo")
     if item["mode"] == "lacy" and v.get("title"):
         lines.append(f"“{v['title'][:90]}”")
     return "\n".join(lines)[:1000]

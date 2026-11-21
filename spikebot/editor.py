@@ -664,16 +664,22 @@ def render(src: Path, out: Path, lay: Layout, ass_file: Path | None) -> Path:
     return out
 
 
+LOGO_INSET = 28   # a sponsor logo's distance from the top-right corner
+
+
 def render_variant(src: Path, out: Path, lay: Layout, ass_file: Path | None, src_w: int, src_h: int,
                    segments: list[tuple[float, float]], grade: str = "", transition: str = "cut",
                    audio: bool = True, sfx_cues: list | None = None,
-                   teaser: tuple[float, float] | None = None, voice: Path | None = None) -> Path:
+                   teaser: tuple[float, float] | None = None, voice: Path | None = None,
+                   logo: Path | None = None, logo_w: int = 320) -> Path:
     """One review variant: keep `segments` of the source (jump cuts), optional
     zoom punch-in on every other segment or a white flash at each cut, then the
     facecam layout, colour grade and captions.
     `teaser` (source start, end): that moment plays first, with the clip's sound ducked under
     the `voice` file (the AI voiceover hook), then a white flash into the clip itself. The
-    captions file and `sfx_cues` must already be on that longer timeline."""
+    captions file and `sfx_cues` must already be on that longer timeline.
+    `logo` (a sponsor's PNG, e.g. ClipUp): `logo_w` px wide, aspect kept, top-right corner for the
+    whole clip, drawn last so captions never cover it."""
     parts, labels = [], []
     if teaser is not None and audio:
         ta, tb = teaser
@@ -708,13 +714,19 @@ def render_variant(src: Path, out: Path, lay: Layout, ass_file: Path | None, src
         vf += "," + grade
     if ass_file is not None:
         vf += "," + ass_filter(ass_file.name)
-    graph = ";".join(parts) + ";" + vf + "[v]"
     extra_inputs: list[str] = ["-i", str(Path(voice).resolve())] if voice is not None else []
+    if audio and sfx_cues:
+        for c in sfx_cues:
+            extra_inputs += ["-i", str(Path(c.file).resolve())]
+    if logo is not None:
+        k = 1 + len(extra_inputs) // 2
+        extra_inputs += ["-loop", "1", "-i", str(Path(logo).resolve())]
+        vf += (f"[pre];[{k}:v]scale={even(logo_w)}:-2,format=rgba[lg];"
+               f"[pre][lg]overlay=W-w-{LOGO_INSET}:{LOGO_INSET}:shortest=1:format=auto")
+    graph = ";".join(parts) + ";" + vf + "[v]"
     amap = "[ca]"
     if audio and sfx_cues:
         from .sfx import mix_graph
-        for c in sfx_cues:
-            extra_inputs += ["-i", str(Path(c.file).resolve())]
         graph += ";" + mix_graph(sfx_cues, 1 + (voice is not None))
         amap = "[am]"
     run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-i", str(src.resolve()), *extra_inputs,

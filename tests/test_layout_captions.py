@@ -131,3 +131,24 @@ def test_board_caps_the_drop_down():
     items = [item(f"i{k:02d}", k) for k in range(30)]
     pay = D.board_payload(items, None, 0)
     assert len(pay["rows"][0][0]["options"]) == D.BOARD_MAX and "5 more" in pay["content"]
+
+
+@pytest.mark.skipif(not shutil.which("ffmpeg"), reason="needs ffmpeg")
+def test_sponsor_logo_top_right_for_the_whole_clip(tmp_path):
+    from pathlib import Path
+    src = tmp_path / "s.mp4"
+    subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "color=c=blue:s=1280x720:r=30:d=3",
+                    "-f", "lavfi", "-i", "sine=d=3", "-shortest", str(src)], check=True)
+    logo = Path(E.__file__).resolve().parent / "brand" / "clipup_logo.png"
+    lay = E.layout(1280, 720, None, src_fps=30)
+    out = E.render_variant(src, tmp_path / "o.mp4", lay, None, 1280, 720, [(0, 3)], logo=logo, logo_w=320)
+    assert E.probe(out)["duration"] == pytest.approx(3, abs=0.2)
+
+    def pixel(t, x, y):
+        raw = subprocess.run(["ffmpeg", "-v", "error", "-ss", str(t), "-i", str(out), "-frames:v", "1",
+                              "-vf", f"crop=2:2:{x}:{y}", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"],
+                             capture_output=True, check=True).stdout
+        return tuple(raw[:3])
+    for t in (0.2, 2.8):                                   # the sign's black body, top right, start to end
+        r, g, b = pixel(t, 1080 - E.LOGO_INSET - 300, E.LOGO_INSET + 20)
+        assert r < 60 and g < 60 and b < 60

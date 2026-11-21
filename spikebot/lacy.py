@@ -185,6 +185,9 @@ def with_campaign(p: dict, camp: dict | None) -> dict:
         p.setdefault("platforms", camp.get("platforms"))
         p.setdefault("ai_allowed", bool(camp.get("ai_allowed")))
         p.setdefault("layout", camp.get("layout") or "auto")
+        p.setdefault("require_face", bool(camp.get("require_face")))
+        if camp.get("pronouns"):
+            p.setdefault("pronouns", camp["pronouns"])
     else:
         p.setdefault("ai_allowed", False)
         p.setdefault("layout", "auto")
@@ -629,6 +632,9 @@ def _render_job_body(job, lcfg, jobs, used_titles, fetch, transcribe, now, revie
             if safety.real_facecam(seg, facecam) is False:
                 log.info("clip job %s: the facecam box shows no face: whole frame in 4:5 instead", job["id"])
                 facecam = None
+        if facecam is None and lcfg.get("require_face"):   # e.g. BrettLiftsXP: his face must be on screen
+            return finish("skipped", f"no facecam on screen: the {lcfg.get('name', 'streamer')} campaign needs"
+                                     " his face in every clip")
         job["no_facecam"] = facecam is None
         lay = editor.layout(info["width"], info["height"], facecam, src_fps=info.get("fps"))
         away = editor.away_reason(seg, lay, duration)
@@ -888,6 +894,8 @@ class ReviewAdapter:
         hooks_used = instagram.PostLog(instagram.settings(self.cfg, self.base)["posts_csv"]).recent_hooks()
         from . import campaigns
         camp = self.lcfg.get("campaign") or campaigns.for_channel(self.cfg, job.get("channel") or "lacy")
+        # a sponsor logo (ClipUp) only where this streamer's campaign allows logos (never Lacy / Reach)
+        overlay = campaigns.overlay_for(self.cfg, job.get("channel") or "lacy", self.base)
         out = []
         from . import progress
         track = progress.current()
@@ -982,6 +990,8 @@ class ReviewAdapter:
             try:
                 editor.render_variant(seg, mp4, lay, ass, w, h, segs, ",".join(x for x in (look, fx) if x),
                                       r["transition"], audio=bool(job.get("audio", True)), sfx_cues=None,
+                                      logo=Path(overlay["logo"]) if overlay else None,
+                                      logo_w=int((overlay or {}).get("width") or 320),
                                       teaser=tz["window"] if tz else None, voice=tz["voice"] if tz else None)
             finally:
                 if tz and tz["voice"]:
@@ -995,9 +1005,13 @@ class ReviewAdapter:
             prev = editor.preview(mp4, folder / f"{stem}_preview.mp4", preview_bytes, length)
             desc = description(title, job["category"], job["channel"], name, platform)
             caps, desc = campaigns.finish_copy(caps, desc, camp)   # required hashtags + "watch live" line
+            if overlay:   # the sponsor's own hashtags too (#gta6 #Clipup)
+                caps = {k: campaigns.finish_caption(t, overlay | {"cta": ""}) for k, t in caps.items()}
+                desc = campaigns.finish_caption(desc, overlay | {"cta": ""}, limit=4900)
             out.append({"label": spec["label"], "style": spec["style"], "preset": spec.get("preset"),
                         "experimental": spec.get("experimental", False), "title": title,
                         "description": desc, "frame": "4:5" if lay.cam is None else "9:16", "screen_hook": screen,
+                        "overlay": overlay["name"] if overlay else None,
                         "tags": tags(job["category"], name, platform), "hook": social, "captions": caps,
                         "file": mp4.name, "preview": prev.name, "duration": round(length, 1),
                         "cuts": len(segs) - 1, "peak": peak_cut,
@@ -1023,6 +1037,9 @@ class ReviewAdapter:
         from . import campaigns
         camp = campaigns.for_channel(self.cfg, job.get("channel") or "lacy")
         bad = campaigns.copy_problems(v["captions"], camp)
+        if v.get("overlay"):
+            ov = next((o for o in campaigns.overlays(self.cfg).values() if o["name"] == v["overlay"]), None)
+            bad += campaigns.copy_problems(v["captions"], ov)
         if bad:
             raise ValueError("; ".join(bad))
         v["description"] = campaigns.finish_caption(description(v["title"], job["category"], job["channel"],

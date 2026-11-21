@@ -54,13 +54,13 @@ CAMPAIGNS: dict[str, dict] = {
         "platform": "kick", "name": "Adin Ross", "programme": "Adin Ross clipping programme",
         "network": "Adin Ross", "urls": [], "pay": "programme", "platforms": ["youtube", "tiktok", "instagram"],
         "hashtags": ["#AdinRoss"], "cta": "Watch Adin Ross live on Kick: kick.com/adinross",
-        "ai_allowed": False, "logos": False, "layout": "auto", "rules": [],
+        "ai_allowed": False, "logos": True, "layout": "auto", "rules": [],
     },
     "sealstats": {
         "platform": "kick", "name": "Seal", "programme": "Seal (Content Rewards)", "network": "Content Rewards",
         "urls": [], "pay": "programme", "platforms": ["youtube", "tiktok", "instagram"],
         "hashtags": ["#Seal"], "cta": "Watch Seal live on Kick: kick.com/sealstats",
-        "ai_allowed": False, "logos": False, "layout": "auto", "rules": [],
+        "ai_allowed": False, "logos": True, "layout": "auto", "rules": [],
     },
     # ---- joined 20 Nov 2026 ---------------------------------------------------------------
     "kaicenat": {
@@ -70,7 +70,7 @@ CAMPAIGNS: dict[str, dict] = {
         "pay": "$10K pool split by views (min 750K total views)",
         "platforms": ["youtube", "tiktok", "instagram"], "hashtags": ["#KaiCenat"],
         "cta": "Watch Kai Cenat live on Twitch: twitch.tv/kaicenat",
-        "ai_allowed": False, "logos": False, "layout": "auto",
+        "ai_allowed": False, "logos": True, "layout": "auto",
         "source": "Kai Cenat's GTA 6 marathon (Twitch / YouTube)",
         "rules": ["Content must come from Kai Cenat's GTA 6 marathon on Twitch and YouTube",
                   "Kai Cenat playing GTA 6 must be the main focus",
@@ -125,14 +125,19 @@ CAMPAIGNS: dict[str, dict] = {
         "platform": "kick", "name": "Dasgasd3m", "programme": "Dasgasd3m x RUCKUS GTA 6 CPM (Content Rewards)",
         "network": "Content Rewards",
         "urls": ["https://contentrewards.com/c/campaigns/051002dd-5c46-43d0-a446-43f2957ba3a9"],
-        "pay": "$2 per 1K views (TikTok/YouTube, $10-$150 per video)",
-        "platforms": ["youtube", "tiktok"], "hashtags": ["#Dasgasd3m"],
+        "pay": "$2 per 1K views (TikTok/YouTube; $20 minimum = 10K views on one post, $150 max per post)",
+        # "Sponsored" in the caption is the disclosure RUCKUS asks for (no Paid partnership label needed)
+        "platforms": ["youtube", "tiktok"], "hashtags": ["#Dasgasd3m", "Sponsored"],
         "cta": "Watch Dasgasd3m live on Kick: kick.com/dasgasd3m",
-        "ai_allowed": False, "logos": False, "layout": "auto",
-        "source": "Dom's GTA 6 streams",
-        "rules": ["Funny and entertaining GTA 6 moments, TikTok and YouTube Shorts only",
-                  "GTA 6-specific account required", "1 creator requirement is only visible after joining:"
-                  " check it in Content Rewards"],
+        "ai_allowed": False, "logos": True, "layout": "auto",
+        "source": "Dom's GTA 6 playthrough streams on Kick from 18 Nov 2026 (live or VOD)",
+        "ends": "2026-12-20T07:59",   # submission deadline 19 Dec 23:59 Pacific, in UK time
+        "rules": ["GTA 6 story-mode playthrough on Kick only (from 18 Nov); TikTok and YouTube Shorts only",
+                  "Original stream audio only: no voiceovers, no subtitles in other languages",
+                  "Keep Dom's face or voice in the clip; caption tags him and says \"Sponsored\"",
+                  "GTA 6-specific account (gta6.clipped fits); engagement needed for approval",
+                  "Submit on Content Rewards right after posting (Discord/Whop messages don't count);"
+                  " deadline 19 Dec 23:59 Pacific (20 Dec 07:59 UK)"],
     },
     "bobby_vanriper": {
         "platform": "twitch", "name": "Bobby Vanriper", "programme": "Bobby Vanriper GTA VI CPM (Clipping Nation)",
@@ -142,7 +147,7 @@ CAMPAIGNS: dict[str, dict] = {
         "platforms": ["youtube", "tiktok", "instagram"],
         "hashtags": ["#bobbyvanriper", "#gta6", "#gtavi", "#twitchclips"],
         "cta": "Follow Bobby Vanriper on Twitch: twitch.tv/bobby_vanriper",
-        "ai_allowed": False, "logos": False, "layout": "auto",
+        "ai_allowed": False, "logos": True, "layout": "auto",
         "source": "Bobby's GTA VI streams and videos only",
         "rules": ["GTA VI only: hook in the first 2 s, one clear moment, CTA to watch him live",
                   "#bobbyvanriper and twitch.tv/bobby_vanriper in the caption; English only",
@@ -158,7 +163,7 @@ CAMPAIGNS: dict[str, dict] = {
         "pay": "$1 per 1K views ($3-$300 per video)",
         "platforms": ["youtube", "tiktok", "instagram"], "hashtags": ["#KreekCraft"],
         "cta": "Watch KreekCraft live on Twitch: twitch.tv/kreekcraft",
-        "ai_allowed": False, "logos": False,
+        "ai_allowed": False, "logos": True,
         # "Every clip must include KreekCraft's overlay": keep the whole stream frame
         "layout": "full",
         "source": "KreekCraft's GTA 6 livestreams",
@@ -169,16 +174,39 @@ CAMPAIGNS: dict[str, dict] = {
         "platform": "twitch", "name": "BrettLiftsXP", "programme": "BrettLiftsXP GTA VI CPM (Funnel Clips)",
         "network": "Content Rewards",
         "urls": ["https://contentrewards.com/c/campaigns/954cf1f2-1a69-4f0f-b46c-18a9dfddb219"],
-        "pay": "$2 per 1K views on TikTok, $0.50 on Instagram/YouTube (max $100 per video)",
-        "platforms": ["youtube", "tiktok", "instagram"], "hashtags": ["#BrettLiftsXP"],
-        "cta": "Watch BrettLiftsXP live on Twitch: twitch.tv/brettliftsxp",
-        "ai_allowed": False, "logos": False, "layout": "auto",
-        "source": "Brett's recent streams only (old streams are rejected)",
-        "rules": ["Recent streams only", "1 creator requirement + a requirement doc are only visible after"
-                  " joining: check them in Content Rewards"],
+        "pay": "$2 per 1K views on TikTok, $1 on Instagram/YouTube ($2 min, $100 max per post)",
+        # every clip must tag him; the Twitch banner can be "in the video or caption": the link goes in the caption
+        "platforms": ["youtube", "tiktok", "instagram"], "hashtags": ["@BrettLiftsXP", "#BrettLiftsXP"],
+        "cta": "Watch Brett live on Twitch: twitch.tv/brettliftsxp · YouTube: youtube.com/@BrettLiftsXP",
+        "ai_allowed": False, "logos": True, "layout": "auto",
+        "require_face": True,          # "Show Brett's face": no facecam found = no clip
+        "source": "Brett's Twitch streams and YouTube videos from 20 Oct 2026 on (never older)",
+        "rules": ["Show Brett's face in every clip; tag him; Twitch banner or link in the video or caption",
+                  "New streams only (from 20 Oct 2026); never recycle clips already on his pages",
+                  "At least 6 s; no AI clipping tools (Opus, Vizard); no fake reaction clips",
+                  "No YouTube/Instagram/TikTok/Snapchat logos or UI in the edit",
+                  "Join whop.com/clips-by-jai to be approved; Twitch + YouTube links in the account bio",
+                  "50% Tier 1 audience; at min views send a screen recording of the video analytics",
+                  "Never delete a posted clip (clawbacks)"],
     },
 }
 
+# Overlay campaigns: paid for a sponsor's logo on clips of streamers we already clip (Tim, 21 Nov:
+# only where that streamer's own campaign doesn't ban logos, i.e. `logos: True`; never Reach's
+# Lacy / Clix / YourRAGE). The logo stays on screen for the whole clip, top-right, never under the
+# captions or the hook.
+OVERLAYS: dict[str, dict] = {
+    "clipup": {
+        "name": "ClipUp", "network": "Content Rewards",
+        "urls": ["https://contentrewards.com/c/campaigns/802cf95a-ea84-4070-9a96-8a917831cb16"],
+        "pay": "$0.30 per 1K Tier-1 views (US/UK/CA/AU; 30% on IG), from 3K views, max $150 per clip",
+        "hashtags": ["#gta6", "#Clipup"], "logo": "brand/clipup_logo.png", "width": 320,
+        "rules": ["ClipUp's own logo file only, whole clip, never covered, stretched, recoloured or cropped",
+                  "Streamer gameplay only; #gta6 #Clipup; keep every post up 60 days",
+                  "0.5% engagement (likes + comments); Instagram: upload analytics at min views"
+                  " (forms.gle/3pwRKfejyz79vKtAA)"],
+    },
+}
 PLATFORM_URL = {"twitch": "https://www.twitch.tv/{}", "kick": "https://kick.com/{}"}
 # How captions and titles refer to each streamer (Tim, 21 Nov: Lacy and the others are he/him).
 DEFAULT_PRONOUNS = "he/him"
@@ -204,6 +232,39 @@ def registry(cfg: dict | None = None) -> dict[str, dict]:
         c["channel"] = k
         c.setdefault("enabled", True)
     return out
+
+
+def overlays(cfg: dict | None = None) -> dict[str, dict]:
+    """OVERLAYS with config overrides (`campaigns.<key>`, e.g. {"clipup": {"enabled": false}})."""
+    out = {} if os.environ.get("SPIKEBOT_CAMPAIGNS") == "off" else json.loads(json.dumps(OVERLAYS))
+    for k, v in ((cfg or {}).get("campaigns") or {}).items():
+        if k in out and isinstance(v, dict):
+            out[k] = out[k] | v
+    for k, c in out.items():
+        c["channel"] = k
+        c.setdefault("enabled", True)
+    return out
+
+
+def overlay_for(cfg: dict, channel: str, base: Path | None = None) -> dict | None:
+    """The sponsor logo this streamer's clips carry, or None: only when the streamer's campaign
+    allows logos, the overlay campaign runs and its logo file is there. {name, logo (path), width,
+    hashtags, channel}."""
+    camp = for_channel(cfg, channel)
+    if not camp or not camp.get("logos"):
+        return None
+    for key, ov in overlays(cfg).items():
+        if not ov["enabled"]:
+            continue
+        row = State(data_dir_of(cfg, base)).load().get(key) or {}
+        if row.get("ended"):
+            continue
+        logo = Path(ov["logo"])
+        if not logo.is_absolute():
+            logo = Path(__file__).resolve().parent / logo
+        if logo.exists():
+            return ov | {"logo": str(logo)}
+    return None
 
 
 def merge_channels(cfg: dict) -> dict:
@@ -390,6 +451,15 @@ def ended(cfg: dict, channel: str, base: Path | None = None) -> str | None:
     c = for_channel(cfg, channel)
     if c is not None and not c.get("enabled", True):
         return c.get("off_reason") or "campaign switched off"
+    if c is not None and c.get("ends"):   # submission deadline (UK time) has passed
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+        try:
+            end = datetime.fromisoformat(c["ends"]).replace(tzinfo=ZoneInfo("Europe/London"))
+            if datetime.now(ZoneInfo("Europe/London")) >= end:
+                return f"deadline passed ({end:%d %b %H:%M} UK)"
+        except ValueError:
+            pass
     row = State(data_dir_of(cfg, base)).load().get(str(channel).lower()) or {}
     return (row.get("why") or "campaign ended") if row.get("ended") else None
 
@@ -400,7 +470,7 @@ def update(cfg: dict, base: Path | None = None, fetch=fetch_page, now: float | N
     unless its page changes to a different reason."""
     state = State(data_dir_of(cfg, base))
     just: list[dict] = []
-    for ch, c in registry(cfg).items():
+    for ch, c in [*registry(cfg).items(), *overlays(cfg).items()]:
         if not c["enabled"] or not c.get("urls"):
             continue
         info = check_one(c, fetch)
