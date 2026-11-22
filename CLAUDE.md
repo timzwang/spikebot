@@ -176,7 +176,8 @@ it in sync when behaviour or config changes.
   `data/lacy/jobs/<id>/job.json`. `LacyMode.worker()` waits `vod_delay_s`, looks up the VOD
   and runs `python -m spikebot.lacy render ID` as a subprocess (`render_job`: hard guards
   for channel/programme/category, cut segment, BRB/away/camera-off skip, English-only
-  Whisper check, then `source_nudity` (1 fps NudeNet pre-check of the segment: nudity = skipped "🔞" before any render;
+  Whisper check, then `source_nudity` (1 fps NudeNet pre-check of the segment, exposed classes only within max_clip_s of the
+  peak: nudity = skipped "🔞" before any render;
   the 2 fps scan of the renders still runs; all versions blocked = skipped, not failed), then a review item with 3 variants via `lacy.ReviewAdapter`; the segment and
   `words.json` are kept for re-renders until the item closes). Job status `review`. Approval
   and upload happen through the review queue (auto-upload removed). The old single-render
@@ -271,7 +272,8 @@ it in sync when behaviour or config changes.
 - `spikebot/editor.py`: ffmpeg/yt-dlp helpers: `fetch_segment` (1080p60 when the stream had it: `-S res:1080,fps`; only the clip range of a
   VOD: `hls_segments` + `cut_playlist` write a finished local playlist of just the covering segments, because ffmpeg can't
   seek in a live VOD's playlist; `download_segments` fetches those segments (+ the fMP4 `init` Twitch's newer VODs use) locally, 4 at a time with retries, so ffmpeg only reads local files; tested on real Kai/Lacy/KreekCraft/YourRAGE VODs 21 Nov; the VOD not reaching the clip yet, an empty output or an ffmpeg timeout = `VodNotReady` -> job `waiting_vod`,
-  retried every `VOD_RETRY_S`; `lacy.FIXED_AT` = jobs that failed on the old download code are retried once more), `layout` (facecam stacked over gameplay for the whole clip), `away_reason`,
+  retried every `VOD_RETRY_S`; empty/timeout (not `still_recording`) count `fetch_errors`, `MAX_FETCH_ERRORS` 3 =
+  failed; `lacy.FIXED_AT` = jobs that failed on the old download code are retried once more), `layout` (facecam stacked over gameplay for the whole clip), `away_reason`,
   `build_ass(style=)` (word captions, font/size/position/colours, hook length, end card;
   `caption_margin` keeps clear of the hook box and the bottom 320 px), `keep_segments` /
   `remap_words` (window around the peak at the payoff point + jump cuts, peak always kept),
@@ -335,8 +337,11 @@ it in sync when behaviour or config changes.
   card ending in "?". Remotion gets the same via props `motion`, `framing`, `fade`, `logo.size/out`.
 - `spikebot/compare.py`: **GTA 5 vs GTA 6** comparison edits (`/compare [count]` -> `ReviewBot.run_compare`
   -> `tokyo_girl compare -n`; `daily_compare` tops up `compare_per_day`, default 1, counts in
-  `state.compare_days`; `make` labels and dry-runs `pick_pairs` before creating any item, so a run
-  without enough matching themes leaves nothing in #ready-to-post). Review items mode `tokyo_girl`, `source.kind: "compare"` (`ReviewAdapter.render` ->
+  `state.compare_days`; `make` labels and dry-runs `fit_pairs` before creating any item, so a run
+  without enough matching themes leaves nothing in #ready-to-post; `fit_pairs` = `pick_pairs` at the wanted
+  length, then shorter down to `MIN_PAIR_S` 1.4, then with `GROUPS` (close themes merged); `shortage` = the
+  numbers in the error; `label_shots` skips shots < MIN_PAIR_S and survives failed batches; deploy request
+  `compare` {count}). Review items mode `tokyo_girl`, `source.kind: "compare"` (`ReviewAdapter.render` ->
   `render_variants`, ffmpeg only, label `COMPARE_LABEL`, exports `exports/compare/`). GTA 5 library =
   `<media_dir>/.gta5` (hidden: GTA 6 edits never see it; `gta5_cfg`, `GTA5_SEARCHES` = Rockstar's 2013
   trailers/gameplay, never the PS5 remaster; fetched with the GTA 6 media, `GTA5_FETCH`), shots `prefixed`
@@ -479,7 +484,10 @@ it in sync when behaviour or config changes.
   the drop-down `rv|board|-|0|` expands one in place (previews attached only when the expanded item
   changes, `refresh_board`), `rv|bclose|...` collapses; `scan` -> `board_post` marks ready rounds
   `posted` + `board: True` instead of sending; `say()` without a thread = `board_note` on the line;
-  `close_round_messages` / `refresh_round` refresh the board for board rounds. Pure layouts `round_payload` / `buttons` / `manual_payload` /
+  `close_round_messages` / `refresh_round` refresh the board for board rounds; `board_post` -> `refresh_board(bump=True)`
+  re-sends the board at the bottom when it isn't the channel's last message; the board's `-#` line =
+  `lacy.clip_report` / `report_line` (24 h of clip jobs); `clean_finished_bars` (on ready) deletes the bot's old
+  finished progress messages (`finished_bar`). Pure layouts `round_payload` / `buttons` / `manual_payload` /
   `style_overview`; custom ids `rv|action|item|round|label` handled in `on_interaction` (survive
   restarts). Loops: `scan` (post ready rounds + thread, queue requests, report failures, expire,
   #tiktok-queue, finish), `render_worker` (one subprocess at a time), `publish_loop` (60 s, under

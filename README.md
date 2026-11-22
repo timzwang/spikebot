@@ -327,8 +327,9 @@ it reaches #ready-to-post: anything with nudity (or a sustained sexual close-up 
 or twerking framing) is **deleted and never shown**; #announcements says what was blocked. It is
 checked again right before posting, and nothing posts if the check can't run. Tokyo Girl / trend
 edits never use trailer shots that were flagged. Stream clips get a quick 1 fps pre-check of the
-downloaded VOD segment first: nudity anywhere in it (e.g. a strip club) = the clip is skipped
-before any rendering. Manual check: `venv/bin/python -m spikebot.safety scan VIDEO`.
+downloaded VOD segment first: clear exposed nudity near the chat peak (e.g. a strip club) = the
+clip is skipped before any rendering (bikinis and anything outside the clip window are left to the
+full check). Manual check: `venv/bin/python -m spikebot.safety scan VIDEO`.
 
 ## TikTok auto-post
 
@@ -563,7 +564,11 @@ Every clip from every mode (Lacy, Tokyo Girl, and the stream-clip editor later) 
 your approval. **Nothing is posted anywhere until you press Approve.**
 
 **What you see in #ready-to-post**: **one board message** listing every video waiting for review
-(soonest to expire first). Pick one in its drop-down and it **expands in that same message**: its
+(soonest to expire first). When a new video arrives and other messages have pushed the board up,
+it is re-sent at the bottom (so you see it and get a notification). Under its title a small line
+says what happened to the last 24 h of stream clips, e.g. `Clips (24 h): 2 made · 1 on the way ·
+9 not used: low impact ×5, 🔞 nudity on screen ×2, BRB/away ×2`. Old failed/skipped progress
+messages are deleted from the channel when the bot starts. Pick one in its drop-down and it **expands in that same message**: its
 **3 preview videos A/B/C**, one header line (streamer · category · VOD time · id), then a single box with
 🟢 A | 🔵 B | 🟠 C side by side as columns (length, the sound and where to start it, or the
 clip title; 🎙️ marks the voiceover teaser), then the buttons. Captions and hashtags are in
@@ -776,7 +781,12 @@ library, needs `ANTHROPIC_API_KEY`). An edit pairs up to 6 themes, biggest-diffe
 a GTA 6 hook shot: versions A and B are stacked (GTA 5 on top, GTA 6 below), C shows the GTA 5
 shot then the GTA 6 one. Corner labels "GTA 5 · 2013" / "GTA 6 · 2026", the theme as a caption
 above the picture, a question at the end. Silent like the other trailer edits; approved ones are
-copied to `exports/compare/`.
+copied to `exports/compare/`. Trailer shots are often short, so a pair plays 2.8 s when it can and
+down to 1.4 s when it must, and close themes are merged when too few match exactly (beach + water,
+skyline + crowd + police = streets, sunset + wildlife + weather = nature...). Shots under 1.4 s are
+never labelled (saves API cost). The GTA 5 library also takes Rockstar's three 2013 character
+trailers (Michael, Franklin, Trevor). When it still can't pair, nothing is queued and #status says
+exactly what's missing (shots per game, usable ones, themes in both).
 
 **Footage choice** (Tokyo Girl / trend, 0/1 unless a range is given): `unique_clips` (default 1: never
 the same clip twice in an edit, and the same footage in two files, e.g. a trailer and its extended

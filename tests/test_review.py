@@ -1044,3 +1044,67 @@ def test_board_is_one_message_that_expands_and_updates(tmp_path):
     assert store.load(item["id"])["status"] == "approved"
     assert "Ready to review: 0" in board.content
     assert [m for m in reg[100].sent] == [board]
+
+
+def test_board_moves_to_the_bottom_when_buried_and_shows_the_clip_report(tmp_path):
+    """22 Nov: new videos went onto a board far up the channel, under old error messages, so Tim saw
+    nothing for a day. A new video re-sends the board at the bottom; it also says what the clips did."""
+    import json as _json
+    import time as _time
+    store, item = new_item(tmp_path)
+    b, reg = bot_for(tmp_path, store, board=True)
+    jobs_dir = store.data_dir / "lacy" / "jobs"
+    for i, (st, why) in enumerate((("review", None), ("skipped", "low impact: read an ad"),
+                                   ("skipped", "low impact: answered chat"), ("skipped", "🔞 nudity on screen (x)"))):
+        (jobs_dir / f"j{i}").mkdir(parents=True)
+        (jobs_dir / f"j{i}" / "job.json").write_text(_json.dumps({"id": f"j{i}", "status": st, "reason": why,
+                                                                 "created": _time.time()}))
+    ch = reg[100]
+    asyncio.run(b.scan(T))
+    board = ch.sent[0]
+    assert "Clips (24 h): 1 made" in board.content and "low impact ×2" in board.content
+    other = asyncio.run(ch.send("❌ something else"))              # the board is buried
+    ch.last_message_id = other.id
+    with store.edit(item["id"]) as it:                             # a new round is ready
+        it["rounds"].append(dict(it["rounds"][0], n=2, status="ready", message_id=None))
+    asyncio.run(b.board_post(item["id"]))
+    assert getattr(board, "deleted", False) and ch.sent[-1] is not board
+    assert "Ready to review: 1" in ch.sent[-1].content
+    ch.last_message_id = ch.sent[-1].id                            # already last: edited, not re-sent
+    n = len(ch.sent)
+    asyncio.run(b.board_post(item["id"]))
+    assert len(ch.sent) == n
+
+
+def test_old_failed_bars_are_cleaned_out_of_ready_to_post(tmp_path):
+    store = R.Store(tmp_path / "data")
+    b, reg = bot_for(tmp_path, store, board=True)
+    ch = reg[100]
+
+    class Me:
+        id = 7
+
+    class Other:
+        id = 8
+
+    class Client:
+        user = Me()
+    b.client = Client()
+    msgs = [asyncio.run(ch.send(t)) for t in (
+        "🎮 **Kai Cenat clip k (Grand Theft Auto VI)**\n❌ Failed after 3:36: segment download came back empty",
+        "🎮 **Lacy clip 1 (Grand Theft Auto VI)**\n⏭ Skipped after 1:17: low impact: read an ad",
+        "🎬 **GTA 5 vs GTA 6**\n❌ Failed after 0:00: not enough matching shots",
+        "🎬 **Ready to review: 2** · pick one below",          # the board: kept
+        "🎮 **Lacy clip 2**\n▓▓▓░░ 40%")]                       # a running bar: kept
+    for m in msgs:
+        m.author = Me()
+    stranger = asyncio.run(ch.send("🎮 **x**\n❌ Failed after 1:00: y"))
+    stranger.author = Other()                                      # someone else's message: kept
+
+    async def history(limit=500):
+        for m in reversed(ch.sent):
+            yield m
+    ch.history = history
+    assert asyncio.run(b.clean_finished_bars()) == 3
+    assert [getattr(m, "deleted", False) for m in msgs] == [True, True, True, False, False]
+    assert not getattr(stranger, "deleted", False)

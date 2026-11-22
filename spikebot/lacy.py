@@ -667,7 +667,8 @@ def _render_job_body(job, lcfg, jobs, used_titles, fetch, transcribe, now, revie
         # rendering 3 versions that the safety check would delete anyway. The rendered versions are
         # still scanned before review and before posting (spikebot/safety.py); this only saves time.
         track.update(0.36, "Checking for nudity")
-        why = source_nudity(seg)
+        peak = (job["peak_time"] - job["clip_start"]) if job.get("peak_time") else None
+        why = source_nudity(seg, peak, float(lcfg["max_clip_s"]))
         if why:
             job["nsfw"] = why
             return finish("skipped", f"🔞 {why}")
@@ -702,24 +703,46 @@ def _render_job_body(job, lcfg, jobs, used_titles, fetch, transcribe, now, revie
         log.info("lacy job %s: 3 variants waiting for approval (%s)", job["id"], item["id"])
         return job
     except editor.VodNotReady as e:
+        if not still_recording(str(e)):   # a broken/slow download, not a VOD still catching up
+            job["fetch_errors"] = int(job.get("fetch_errors") or 0) + 1
+            if job["fetch_errors"] >= MAX_FETCH_ERRORS:   # never let one bad VOD hog the render queue
+                return finish("failed", f"VOD download failed {job['fetch_errors']} times ({e})")
         return finish("waiting_vod", str(e))
     except editor.EditError as e:
         return finish("failed", str(e))
 
 
+MAX_FETCH_ERRORS = 3   # empty / timed-out downloads of a VOD that is there: try 3 times, then give up
+
+
+def still_recording(reason: str) -> bool:
+    """The VOD just doesn't reach the moment yet (worth the long VOD_WAIT_S wait)."""
+    return "so far" in reason or "no part covering" in reason
+
+
 SOURCE_SCAN_FPS = 1.0   # the quick pre-check; the rendered versions get the full 2 fps scan
 
 
-def source_nudity(seg: Path, detector=None) -> str | None:
-    """Why the cut VOD segment can't become a clip (nudity on screen), or None. No NudeNet or a
-    broken scan = None: the full check on the rendered versions still decides."""
+def source_nudity(seg: Path, peak: float | None = None, max_clip_s: float = 59.0, detector=None) -> str | None:
+    """Why the cut VOD segment can't become a clip, or None. Only clear exposed nudity counts, and only
+    where the clip can come from (max_clip_s around the chat peak): bikinis, beach crowds or a moment
+    outside the window are left to the full check of the rendered versions, which still decides.
+    No NudeNet or a broken scan = None."""
     from . import safety
     try:
         res = safety.scan(seg, fps=SOURCE_SCAN_FPS, detector=detector)
     except Exception as e:  # noqa: BLE001 - only a time saver: the real check comes later
         log.info("nudity pre-check of %s skipped: %s", seg, e)
         return None
-    return None if res["ok"] else f"nudity on screen: {res['reason']}"
+    lo, hi = (peak - max_clip_s, peak + max_clip_s * 0.6) if peak is not None else (float("-inf"), float("inf"))
+    hits = [h for h in res.get("hits") or [] if lo <= h["t"] <= hi and str(h["class"]).upper() in safety.EXPOSED]
+    strong = [h for h in hits if h["score"] >= safety.BLOCK_SCORE]
+    if strong:
+        h = strong[0]
+        return f"nudity on screen ({str(h['class']).lower()} {h['score']:.0%} at {h['t']:.1f}s)"
+    if len({h["t"] for h in hits}) >= 2:
+        return f"nudity on screen ({str(hits[0]['class']).lower()} at {hits[0]['t']:.1f}s, several frames)"
+    return None
 
 
 def phrase_lines(words: list, gap: float = 0.6, max_words: int = 14) -> list[list[int]]:
@@ -1202,6 +1225,39 @@ def send_video(dcfg: dict, path: Path, job: dict, **kw) -> str:
            ([f"Instagram \u2705 <{job['instagram_url']}>"] if job.get("instagram_url") else []) + \
            [todo]
     return delivery.send(dcfg, path, "lacy", bits, video_blocks(job), name=f"lacy_{job['id']}.mp4", **kw)
+
+
+def clip_report(jobs: list[dict], now: float, hours: float = 24) -> dict:
+    """What happened to the clip jobs of the last `hours`: {"made", "waiting", "skipped", "failed",
+    "why": [(reason, count)] most common first}. Pure, for the board line and /status."""
+    out = {"made": 0, "waiting": 0, "skipped": 0, "failed": 0, "why": []}
+    reasons: dict[str, int] = {}
+    for j in jobs:
+        if now - float(j.get("created") or 0) > hours * 3600:
+            continue
+        st = j.get("status")
+        if st in ("review", "ready", "uploaded", "done", "posted", "published", "approved", "rejected", "expired"):
+            out["made"] += 1
+        elif st in ("queued", "standby", "rendering", "waiting_vod"):
+            out["waiting"] += 1
+        elif st in ("skipped", "failed", "cancelled", "dropped"):
+            out["failed" if st == "failed" else "skipped"] += 1
+            r = re.split(r"[:(]", str(j.get("reason") or st), maxsplit=1)[0].strip() or st
+            reasons[r] = reasons.get(r, 0) + 1
+    out["why"] = sorted(reasons.items(), key=lambda x: -x[1])
+    return out
+
+
+def report_line(rep: dict, hours: int = 24) -> str:
+    """One line: "Clips (24 h): 3 made · 2 on the way · 12 not used: low impact ×6, 🔞 nudity ×3 …"."""
+    bits = [f"{rep['made']} made"]
+    if rep["waiting"]:
+        bits.append(f"{rep['waiting']} on the way")
+    gone = rep["skipped"] + rep["failed"]
+    if gone:
+        why = ", ".join(f"{r} ×{n}" for r, n in rep["why"][:4])
+        bits.append(f"{gone} not used" + (f": {why}" if why else ""))
+    return f"🎮 Clips ({hours} h): " + " · ".join(bits)
 
 
 VOD_RETRY_S = 600          # look for a missing VOD again every 10 min...

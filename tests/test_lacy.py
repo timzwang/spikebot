@@ -323,7 +323,8 @@ def test_render_job_skips_nudity_before_rendering(tmp_path, monkeypatch):
     make_stream(src, seconds=6)
     seen = []
     monkeypatch.setattr(safety, "scan", lambda path, fps=2.0, detector=None: seen.append(fps) or
-                        {"ok": False, "reason": "nudity (female_breast_exposed 63% at 1.5s)", "hits": []})
+                        {"ok": False, "reason": "nudity (female_breast_exposed 63% at 1.5s)",
+                         "hits": [{"t": 1.5, "class": "FEMALE_BREAST_EXPOSED", "score": 0.63}]})
     jobs = L.Jobs(tmp_path)
     job = L.render_job(job_for(tmp_path, jobs), L.settings({}), jobs, set(),
                        fetch=fake_fetch(src), transcribe=fake_words(), now=T)

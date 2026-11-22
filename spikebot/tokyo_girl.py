@@ -2465,7 +2465,7 @@ def daily(lcfg: dict, now: float | None = None) -> list:
     return made
 
 
-GTA5_FETCH = "gta5-official-trailers"   # marks the GTA 5 library as fetched (comparisons)
+GTA5_FETCH = "gta5-official-trailers-2"   # marks the GTA 5 library as fetched (comparisons; -2 = character trailers)
 
 
 def daily_compare(lcfg: dict, day: str, now: float) -> list[str]:

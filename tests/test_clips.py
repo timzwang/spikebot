@@ -290,3 +290,53 @@ def test_facecam_is_the_face_that_stays_put():
     assert prof["facecam_auto"] is True
     fixed = L.profiles({"channels": CHANNELS, "clips": {"streamers": {"adinross": {"facecam": {"x": 0.7}}}}})
     assert fixed[("kick", "adinross")]["facecam_auto"] is False
+
+
+def test_nudity_precheck_only_counts_clear_nudity_where_the_clip_can_be(monkeypatch, tmp_path):
+    from spikebot import safety
+    hits = [{"t": 5.0, "class": "BUTTOCKS_COVERED", "score": 0.9}, {"t": 6.0, "class": "FEMALE_BREAST_COVERED", "score": 0.9},
+            {"t": 7.0, "class": "BUTTOCKS_COVERED", "score": 0.9},                   # bikinis: left to the full check
+            {"t": 100.0, "class": "FEMALE_BREAST_EXPOSED", "score": 0.8}]          # far from the peak
+    monkeypatch.setattr(safety, "scan", lambda *a, **k: {"ok": False, "reason": "x", "hits": hits})
+    assert L.source_nudity(tmp_path / "s.mp4", peak=10.0, max_clip_s=59) is None
+    hits.append({"t": 20.0, "class": "FEMALE_BREAST_EXPOSED", "score": 0.7})
+    assert "female_breast_exposed 70% at 20.0s" in L.source_nudity(tmp_path / "s.mp4", peak=10.0, max_clip_s=59)
+
+
+def test_a_broken_download_gives_up_after_three_tries(tmp_path):
+    from spikebot import review as R
+    from spikebot import editor as E
+    from tests.test_lacy import job_for
+    jobs, lcfg = L.Jobs(tmp_path), L.settings({})
+    job = job_for(tmp_path, jobs, 1)
+
+    def empty(url, start, dur, out):
+        raise E.VodNotReady("the VOD segment came back empty")
+    for want in ("waiting_vod", "waiting_vod", "failed"):
+        job = L.render_job(job, lcfg, jobs, set(), fetch=empty, transcribe=lambda p, m: ([], "en", 1.0),
+                           review_store=R.Store(tmp_path), cfg={"data_dir": str(tmp_path)}, base=tmp_path)
+        assert job["status"] == want
+    assert "failed 3 times" in job["reason"]
+
+    def growing(url, start, dur, out):
+        raise E.VodNotReady("the VOD reaches 40 min so far; this clip ends at 52 min")
+    job = job_for(tmp_path, jobs, 2)
+    for _ in range(5):      # a VOD still being recorded waits the long wait, however many tries
+        job = L.render_job(job, lcfg, jobs, set(), fetch=growing, transcribe=lambda p, m: ([], "en", 1.0),
+                           review_store=R.Store(tmp_path), cfg={"data_dir": str(tmp_path)}, base=tmp_path)
+    assert job["status"] == "waiting_vod"
+
+
+def test_clip_report_says_why_nothing_was_made():
+    now = T + 3600
+    jobs = [{"status": "review", "created": T}, {"status": "skipped", "reason": "low impact: ad", "created": T},
+            {"status": "skipped", "reason": "low impact: answered chat", "created": T},
+            {"status": "skipped", "reason": "🔞 nudity on screen (x)", "created": T},
+            {"status": "failed", "reason": "VOD download failed 3 times (y)", "created": T},
+            {"status": "waiting_vod", "reason": "so far", "created": T},
+            {"status": "skipped", "reason": "old", "created": T - 3 * 86400}]
+    rep = L.clip_report(jobs, now)
+    assert (rep["made"], rep["waiting"], rep["skipped"], rep["failed"]) == (1, 1, 3, 1)
+    line = L.report_line(rep)
+    assert line.startswith("🎮 Clips (24 h): 1 made · 1 on the way · 4 not used: low impact ×2")
+    assert "🔞 nudity on screen ×1" in line and "VOD download failed 3 times ×1" in line

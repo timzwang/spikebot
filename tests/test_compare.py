@@ -158,3 +158,38 @@ def test_a_new_source_is_fetched_straight_away(tmp_path, monkeypatch):
     assert calls == [s["media_dir"], str(Path(s["media_dir"]) / ".gta5")]
     TG.daily(s, now + 60)
     assert len(calls) == 2                                    # once only
+
+
+def test_short_trailer_shots_and_close_themes_still_pair():
+    """Trailer shots are often under 2.8 s and the same subject gets close labels (beach / water)."""
+    v5 = [shot(".gta5/a.mp4", 0, 1.8), shot(".gta5/b.mp4", 0, 1.9), shot(".gta5/c.mp4", 0, 5)]
+    v6 = [shot("x.mp4", 0, 6), shot("y.mp4", 0, 6), shot("z.mp4", 0, 6)]
+    labels = {v5[0].key: {"theme": "beach", "quality": 2}, v6[0].key: {"theme": "beach", "quality": 3},
+              v5[1].key: {"theme": "faces", "quality": 2}, v6[1].key: {"theme": "faces", "quality": 3},
+              v5[2].key: {"theme": "skyline", "quality": 2}, v6[2].key: {"theme": "crowd", "quality": 3}}
+    with pytest.raises(Exception):
+        C.pick_pairs(v5, v6, labels, 6, 2.8, random.Random(1))   # the old rule: nothing long enough
+    pairs, s = C.fit_pairs(v5, v6, labels, 6, 2.8, random.Random(1))
+    assert s == 1.7 and {p[0] for p in pairs} == {"beach", "faces"}
+    only_close = {v5[2].key: labels[v5[2].key], v6[2].key: labels[v6[2].key],
+                  v5[0].key: {"theme": "beach", "quality": 2}, v6[1].key: {"theme": "water", "quality": 2}}
+    pairs, s = C.fit_pairs(v5, v6, only_close, 6, 2.8, random.Random(1))
+    assert {p[0] for p in pairs} == {"city_day", "water"}          # skyline~crowd, beach~water merged
+    with pytest.raises(Exception) as e:
+        C.fit_pairs(v5, v6, {}, 6, 2.8, random.Random(1))
+    assert "GTA 5: 3 shots, 0 usable" in str(e.value) and "need labels" in str(e.value)
+
+
+def test_labelling_skips_short_shots_and_survives_a_bad_batch(tmp_path, monkeypatch):
+    from spikebot import ai
+    monkeypatch.setattr(C, "thumb", lambda media, s, width=384: b"\xff\xd8jpg")
+    sh = [shot(f"v{i}.mp4") for i in range(4)] + [shot("short.mp4", 0, 0.8)]
+    calls = []
+
+    def ask(content):
+        calls.append(1)
+        if len(calls) == 1:
+            raise ai.AIError("overloaded")
+        return fake_ask(content)
+    labels = C.label_shots(sh, tmp_path, tmp_path / "l.json", ask=ask, batch=2)
+    assert len(calls) == 2 and len(labels) == 2 and sh[-1].key not in labels

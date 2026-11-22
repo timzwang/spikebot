@@ -292,5 +292,35 @@
   "date": "2026-11-21",
   "title": "GTA 5 vs 6 checks first",
   "text": "The daily GTA 5 vs GTA 6 edit is only started when enough matching shots exist, so no failed card each morning."
+ },
+ {
+  "id": "2026-11-22-board-bump",
+  "date": "2026-11-22",
+  "title": "New videos show at the bottom",
+  "text": "The review board jumps to the bottom of #ready-to-post when a new video arrives, so it's never hidden under old messages."
+ },
+ {
+  "id": "2026-11-22-clip-report",
+  "date": "2026-11-22",
+  "title": "Board says what clips did",
+  "text": "A line under the board: clips made, on the way and not used in the last 24 h, with the top reasons (low impact, nudity...)."
+ },
+ {
+  "id": "2026-11-22-old-errors-gone",
+  "date": "2026-11-22",
+  "title": "Old error messages removed",
+  "text": "The old Failed/Skipped messages are deleted from #ready-to-post when the bot starts."
+ },
+ {
+  "id": "2026-11-22-compare-works",
+  "date": "2026-11-22",
+  "title": "GTA 5 vs GTA 6 fixed",
+  "text": "Pairs short trailer shots too, merges close themes, adds 3 GTA 5 character trailers. One edit is made after this update."
+ },
+ {
+  "id": "2026-11-22-nudity-window",
+  "date": "2026-11-22",
+  "title": "Fewer clips wrongly skipped",
+  "text": "The quick nudity check only skips clear nudity near the moment. Bikinis are left to the full check. Broken VOD downloads stop after 3 tries."
  }
 ]

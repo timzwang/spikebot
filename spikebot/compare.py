@@ -36,6 +36,9 @@ GTA5_SEARCHES = [
     {"query": "Grand Theft Auto V official trailer", "title": _GTA5 + ".*trailer", "exclude": _NOT_REMASTER,
      "max": 8},
     {"query": "Grand Theft Auto V official gameplay video", "title": _GTA5 + ".*gameplay", "exclude": _NOT_REMASTER},
+    # the three character trailers (2013): long, steady shots of the city, coast and countryside
+    {"query": "Grand Theft Auto V Michael Franklin Trevor", "title": _GTA5 + ".*(michael|franklin|trevor)",
+     "exclude": _NOT_REMASTER, "max": 6},
 ]
 
 # theme -> (caption on screen, how big the GTA 5 -> 6 difference usually looks: 3 = huge)
@@ -109,8 +112,10 @@ def label_shots(shots: list[TG.Shot], media: Path, path: Path, base: Path | None
     `ask(content) -> dict` replaces the API call in tests."""
     from . import ai, progress
     labels = load_labels(path)
-    todo = [s for s in shots if s.key not in labels][:max_new]
+    # only shots long enough to pair are worth a label (trailer shots are often under 1.5 s)
+    todo = [s for s in shots if s.key not in labels and (s.kind == "image" or s.length >= MIN_PAIR_S)][:max_new]
     job = progress.current()
+    failed = 0
     for i in range(0, len(todo), batch):
         chunk = todo[i:i + batch]
         job.update(i / max(1, len(todo)), detail=f"labelling shots {i + 1}-{i + len(chunk)} of {len(todo)}")
@@ -127,8 +132,15 @@ def label_shots(shots: list[TG.Shot], media: Path, path: Path, base: Path | None
         if not ids:
             continue
         content.append({"type": "text", "text": f"Label all {len(ids)} frames above."})
-        out = ask(content) if ask else ai.ask_json(LABEL_SYSTEM, content, label_schema(), base=base, max_tokens=6000,
-                                                   client=client, effort="low", task="feedback")
+        try:
+            out = ask(content) if ask else ai.ask_json(LABEL_SYSTEM, content, label_schema(), base=base,
+                                                       max_tokens=6000, client=client, effort="low", task="feedback")
+        except ai.AIError as e:   # one bad batch must not lose the others: they're saved as they come
+            failed += 1
+            log.warning("labelling shots %d-%d failed: %s", i + 1, i + len(chunk), e)
+            if failed >= 3:
+                break
+            continue
         for row in out.get("shots") or []:
             key = ids.get(row.get("id"))
             if key:
@@ -142,6 +154,49 @@ def label_shots(shots: list[TG.Shot], media: Path, path: Path, base: Path | None
 # --------------------------------------------------------------------------
 # Pairs and plan (pure)
 # --------------------------------------------------------------------------
+MIN_PAIR_S = 1.4   # the shortest a pair may play (trailers cut fast: longer shots are rare)
+# Close themes merged when too few exact ones match (theme -> the theme whose caption covers both)
+GROUPS = {"beach": "water", "boats": "water", "crowd": "city_day", "police": "city_day", "skyline": "city_day",
+          "driving": "cars", "animals": "nature", "weather": "nature", "sunset": "nature"}
+
+
+def grouped(labels: dict) -> dict:
+    return {k: dict(v, theme=GROUPS.get(v.get("theme"), v.get("theme"))) for k, v in labels.items()}
+
+
+def fit_pairs(v5: list[TG.Shot], v6: list[TG.Shot], labels: dict, n: int, pair_s: float, rng: random.Random,
+              uses: dict[str, int] | None = None, keep: list[dict] | None = None
+              ) -> tuple[list[tuple[str, TG.Shot, TG.Shot]], float]:
+    """(pairs, seconds per pair): the wanted length first, then shorter (down to MIN_PAIR_S), then the
+    same with close themes merged. Raises EditError saying exactly what is missing."""
+    lengths = [pair_s] + [x for x in (2.4, 2.0, 1.7, MIN_PAIR_S) if x < pair_s]
+    for lab in (labels, grouped(labels)):
+        for need in lengths:
+            try:
+                return pick_pairs(v5, v6, lab, n, need, random.Random(rng.random()), uses, keep), need
+            except editor.EditError:
+                continue
+    raise editor.EditError(shortage(v5, v6, labels))
+
+
+def shortage(v5: list[TG.Shot], v6: list[TG.Shot], labels: dict) -> str:
+    """Why no comparison can be paired, in numbers Tim can act on."""
+    lab = grouped(labels)
+    a, b = by_theme(v5, lab, MIN_PAIR_S), by_theme(v6, lab, MIN_PAIR_S)
+    n5, n6 = sum(map(len, a.values())), sum(map(len, b.values()))
+    unlabelled = sum(1 for s in v5 + v6 if (s.kind == "image" or s.length >= MIN_PAIR_S) and s.key not in labels)
+    shared = sorted(set(a) & set(b))
+    bits = [f"GTA 5: {len(v5)} shots, {n5} usable", f"GTA 6: {len(v6)} shots, {n6} usable",
+            f"themes in both: {', '.join(shared) or 'none'}"]
+    if unlabelled:
+        hint = f"{unlabelled} shots still need labels (ANTHROPIC_API_KEY in .env; labelled a batch per run)"
+    elif n5 <= n6:
+        hint = "the GTA 5 library needs more footage (Rockstar's GTA V trailers, next daily fetch)"
+    else:
+        hint = "more official GTA 6 footage needed"
+    return "not enough matching GTA 5 / GTA 6 shots yet (" + "; ".join(bits) + "): " + hint
+
+
 def by_theme(shots: list[TG.Shot], labels: dict, need_s: float) -> dict[str, list[TG.Shot]]:
     out: dict[str, list[TG.Shot]] = {}
     for s in shots:
@@ -275,7 +330,7 @@ def render_variants(adapter, item: dict, specs: list[dict], n: int, folder: Path
             if r["pace"].get("shot_s"):
                 pair_s = max(1.8, min(4.0, float(r["pace"]["shot_s"]) * 2))
             keep = base_v.get("pairs") if spec.get("keep_footage", True) else None
-            pairs = pick_pairs(v5, v6, labels, 6, pair_s, rng, uses, keep)
+            pairs, pair_s = fit_pairs(v5, v6, labels, 6, pair_s, rng, uses, keep)
             hook = (spec.get("texts") or {}).get("hook") or base_v.get("hook_card") or rng.choice(HOOKS)
             question = base_v.get("question") or rng.choice(QUESTIONS)
             heroes = [s for s in v6 if (labels.get(s.key) or {}).get("quality", 0) >= 3
@@ -345,7 +400,7 @@ def make(lcfg: dict, n: int = 1, now: float | None = None) -> list[str]:
     # labels the shots and checks enough themes match BEFORE any review item exists, so the daily
     # run never leaves a failed "GTA 5 vs GTA 6" in #ready-to-post (raises EditError instead)
     v5, v6, labels = libraries(adapter)
-    pick_pairs(v5, v6, labels, 6, PAIR_S["slow"], random.Random(0))
+    fit_pairs(v5, v6, labels, 6, PAIR_S["normal"], random.Random(0))
     job = progress.current()
     ids = []
     for k in range(n):

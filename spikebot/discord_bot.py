@@ -218,15 +218,19 @@ def board_option(item: dict) -> dict:
             "description": (title or f"{len(rnd.get('variants') or [])} versions")[:100]}
 
 
-def board_payload(items: list[dict], opened: str | None, now: float, entry_on: dict | None = None) -> dict:
+def board_payload(items: list[dict], opened: str | None, now: float, entry_on: dict | None = None,
+                  report: str | None = None) -> dict:
     """The board: the list (one line per video), a drop-down to expand one, and the expanded
-    video's card (A | B | C + Approve / Redo / Reject / Feedback / Edit caption + Collapse)."""
+    video's card (A | B | C + Approve / Redo / Reject / Feedback / Edit caption + Collapse).
+    `report`: one line under the title saying what happened to the last 24 h of clips."""
     shown = board_items(items)
     ids = {it["id"] for it in shown}
     if opened not in ids:
         opened = None
     head = [f"🎬 **Ready to review: {len(shown)}**" + (" · pick one below to expand it" if shown else
                                                        " · nothing waiting right now")]
+    if report:
+        head.append(f"-# {report}"[:400])
     for it in shown[:BOARD_MAX]:
         head.append(board_line(it, now, it["id"] == opened))
     if len(shown) > BOARD_MAX:
@@ -254,6 +258,14 @@ def board_payload(items: list[dict], opened: str | None, now: float, entry_on: d
     return {"content": content, "embeds": embeds, "rows": rows, "opened": opened,
             "round": board_rounds(next(it for it in shown if it["id"] == opened))["n"] if opened else None,
             "allowed_mentions": {"parse": []}}
+
+
+FINISHED_BAR = re.compile(r"^\S+ \*\*.+\*\*\n(❌ (Failed|Stopped)|⏭ Skipped|🛑 Stopped) after ")
+
+
+def finished_bar(content: str) -> bool:
+    """A progress message that ended (failed / skipped / stopped): `progress.text` of a finished job."""
+    return bool(FINISHED_BAR.match(content or ""))
 
 
 # ---- the rules list (/rules) ------------------------------------------------------
@@ -1116,6 +1128,7 @@ class ReviewBot:
             asyncio.create_task(bot.ensure_topics())
             if not bot.started:
                 bot.started = True
+                asyncio.create_task(bot.clean_finished_bars())
                 bot.render_q = asyncio.Queue()
                 for coro in (bot.scan_loop(), bot.render_worker(), bot.publish_loop(), bot.trend_loop(),
                              bot.progress_loop(), bot.stats_loop(), bot.social_loop(), bot.rules_loop(), bot.run_deploy_requests(),
@@ -1216,6 +1229,34 @@ class ReviewBot:
                 await self.refresh_board()   # list changes (approved / expired / new): edited, never re-sent
             except Exception as e:  # noqa: BLE001
                 log.warning("review board refresh failed: %s", e)
+
+    async def clean_finished_bars(self, limit: int = 500) -> int:
+        """Delete the bot's old finished progress messages (❌ Failed / ⏭ Skipped / 🛑 Stopped) from
+        #ready-to-post: they are left from before failures moved to #status. Never touches the board,
+        a live bar or anything else. Returns how many went."""
+        me = getattr(self.client, "user", None)
+        ch = await self.channel(self.rcfg["channel_id"])
+        if me is None or ch is None or not hasattr(ch, "history"):
+            return 0
+        try:
+            live = {v[1] for v in json.loads(self._progress_index().read_text(encoding="utf-8")).values()}
+        except (OSError, ValueError):
+            live = set()
+        keep = live | {self.board_state().get("message_id")}
+        n = 0
+        try:
+            async for m in ch.history(limit=limit):
+                if getattr(m.author, "id", None) == me.id and m.id not in keep and finished_bar(m.content or ""):
+                    try:
+                        await m.delete()
+                        n += 1
+                    except Exception as e:  # noqa: BLE001 - one stuck message must not stop the rest
+                        log.info("old progress message %s not deleted: %s", m.id, e)
+        except Exception as e:  # noqa: BLE001 - history unreadable (permissions): nothing else to do
+            log.warning("cleaning #ready-to-post failed: %s", e)
+        if n:
+            log.info("removed %d old failed/skipped progress messages from #ready-to-post", n)
+        return n
 
     async def archive_inspiration(self, now: float, every: float = 600) -> None:
         """Archive the bot's #inspiration threads after `inspiration_archive_hours` without a
@@ -1378,9 +1419,11 @@ class ReviewBot:
         self.board_path.write_text(json.dumps(st), encoding="utf-8")
 
     async def board_post(self, item_id: str) -> None:
-        """A round is ready: it goes on the board (opened there if nothing else is), no new message."""
+        """A round is ready: it goes on the board (opened there if nothing else is). The board moves
+        to the bottom of the channel when other messages have buried it, so a new video is seen
+        (and notifies) instead of being edited into a message far up the channel."""
         st = self.board_state()
-        await self.refresh_board(opened=item_id if not st.get("open") else KEEP)
+        await self.refresh_board(opened=item_id if not st.get("open") else KEEP, bump=True)
         st = self.board_state()
         item = self.store.load(item_id)
         with self.store.edit(item_id) as it:
@@ -1394,23 +1437,37 @@ class ReviewBot:
         if any(r.get("entries") for r in item["rounds"] if r["status"] == "ready"):
             await self.refresh_board(force=True)
 
-    async def refresh_board(self, opened=KEEP, force: bool = False) -> None:
+    def clip_report(self, now: float | None = None) -> str | None:
+        """The board's "Clips (24 h): ..." line (None when no clip jobs exist at all)."""
+        from . import lacy
+        try:
+            jobs = lacy.Jobs(self.data_dir).all()
+        except OSError:
+            return None
+        return lacy.report_line(lacy.clip_report(jobs, now or time.time())) if jobs else None
+
+    async def refresh_board(self, opened=KEEP, force: bool = False, bump: bool = False) -> None:
         """Edit the board to match the queue. `opened`: the item id to expand ("" = collapse,
-        KEEP = as it is). Previews are attached only when the expanded video changes."""
+        KEEP = as it is). Previews are attached only when the expanded video changes. `bump`: a new
+        video arrived, so re-send the board at the bottom if it isn't the channel's last message."""
         import discord
         async with self.board_lock:
             st = self.board_state()
             if opened is not KEEP:
                 st["open"] = opened or None
             items = await asyncio.to_thread(self.store.all)
-            pay = board_payload(items, st.get("open"), time.time(), entry_on=self.entry_states())
+            report = await asyncio.to_thread(self.clip_report)
+            pay = board_payload(items, st.get("open"), time.time(), entry_on=self.entry_states(), report=report)
             st["open"] = pay["opened"]
             want = f"{pay['opened']}:{pay['round']}" if pay["opened"] else ""
             sig = json.dumps([pay["content"], pay["embeds"], pay["rows"], want], sort_keys=True, default=str)
-            if not force and st.get("sig") == sig and st.get("message_id"):
+            ch = await self.channel(self.rcfg["channel_id"]) if bump else None
+            buried = bool(bump and ch is not None and st.get("message_id")
+                          and getattr(ch, "last_message_id", None) not in (None, st["message_id"]))
+            if not force and not buried and st.get("sig") == sig and st.get("message_id"):
                 self.save_board_state(st)
                 return
-            ch = await self.channel(self.rcfg["channel_id"])
+            ch = ch or await self.channel(self.rcfg["channel_id"])
             if ch is None:
                 return
             msg = None
@@ -1419,6 +1476,12 @@ class ReviewBot:
                     msg = await ch.fetch_message(st["message_id"])
                 except Exception:  # noqa: BLE001 - deleted: post a new board
                     msg = None
+            if msg is not None and buried:   # re-sent at the bottom: Tim sees (and is notified of) it
+                try:
+                    await msg.delete()
+                except Exception as e:  # noqa: BLE001 - can't delete: still post the new one
+                    log.info("old board message not deleted: %s", e)
+                msg = None
             kw = dict(content=pay["content"], embeds=self.embeds(pay["embeds"]), view=self.view(pay["rows"]),
                       allowed_mentions=discord.AllowedMentions.none())
             new_files = want != st.get("files") or msg is None
@@ -2470,7 +2533,8 @@ class ReviewBot:
     # ---- one-off requests shipped with a deploy (spikebot/deploy_requests.json) -------------
     async def run_deploy_requests(self, now: float | None = None, path: Path | None = None) -> list[str]:
         """Run each request in the deployed code once, after the restart, if it hasn't expired.
-        Only whitelisted actions: `trend`, `daily` (top up today's Tokyo Girl edits), and `feedback` (a Feedback re-render of one version,
+        Only whitelisted actions: `trend`, `daily` (top up today's Tokyo Girl edits), `compare` (GTA 5 vs
+        GTA 6 edits now, {count}), and `feedback` (a Feedback re-render of one version,
         as if Tim had pressed the button: {item, round, label, notes}; the result posts in that
         item's thread in #ready-to-post). Done ids live in data/deploy_requests.json."""
         path = path or Path(__file__).with_name("deploy_requests.json")
@@ -2487,7 +2551,8 @@ class ReviewBot:
         ran = []
         for r in reqs if isinstance(reqs, list) else []:
             rid = str(r.get("id") or "")
-            if not rid or rid in done or r.get("action") not in ("trend", "feedback", "repost", "daily", "announce"):
+            if not rid or rid in done or r.get("action") not in ("trend", "feedback", "repost", "daily", "announce",
+                                                               "compare"):
                 continue
             done.add(rid)   # once, even if it is stale or fails
             until = r.get("until")
@@ -2500,6 +2565,8 @@ class ReviewBot:
                 asyncio.create_task(self.run_trend(None, r.get("song"), int(r.get("per_song") or 1)))
             elif r["action"] == "announce":   # what a deploy changed, for Tim
                 await self.announce(f"deploy:{rid}", str(r.get("text") or ""))
+            elif r["action"] == "compare":   # GTA 5 vs GTA 6 edits now (a failure says why in #status)
+                asyncio.create_task(self.run_compare(None, int(r.get("count") or 1)))
             elif r["action"] == "daily":   # top today's Tokyo Girl edits up to per_day now
                 asyncio.create_task(self.run_daily(int(r.get("per_day") or 0)))
             elif r["action"] == "repost":
