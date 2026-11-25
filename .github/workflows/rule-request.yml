@@ -13,7 +13,8 @@ name: Build rule request
 
 on:
   issues:
-    types: [opened, labeled]
+    # opened only: the bot files each issue with 3 labels, and `labeled` started 3 more runs per issue
+    types: [opened]
   workflow_dispatch:
     inputs:
       issue:
