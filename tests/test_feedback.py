@@ -60,11 +60,14 @@ def test_no_key_means_not_available(tmp_path, monkeypatch):
     assert ai.api_key(tmp_path) == "sk-test" and ai.model_name(tmp_path) == "claude-sonnet-5-5"
 
 
-def test_feedback_uses_sonnet_and_study_uses_opus(tmp_path, monkeypatch):
-    monkeypatch.delenv("SPIKEBOT_AI_MODEL", raising=False)
-    monkeypatch.delenv("SPIKEBOT_FEEDBACK_MODEL", raising=False)
+def test_each_task_has_its_own_model(tmp_path, monkeypatch):
+    for var in ("SPIKEBOT_AI_MODEL", "SPIKEBOT_FEEDBACK_MODEL", "SPIKEBOT_COPY_MODEL", "SPIKEBOT_CHEAP_MODEL"):
+        monkeypatch.delenv(var, raising=False)
     assert ai.model_name(tmp_path, "feedback") == "claude-sonnet-5-5"
-    assert ai.model_name(tmp_path) == "claude-opus-5-5"
+    assert ai.model_name(tmp_path) == "claude-sonnet-5-5"           # #inspiration: Sonnet, not Opus (credits)
+    assert ai.model_name(tmp_path, "copy") == "claude-sonnet-5-5"
+    for task in ("labels", "compare_labels", "impact", "speakers"):  # the high-volume checks: Haiku
+        assert ai.model_name(tmp_path, task) == "claude-haiku-5-5"
     c = FakeClaude(answer([row("grade", "warm")]))
     ai.interpret_feedback("warmer please", "lacy", base=tmp_path, client=c)
     assert c.requests[0]["model"] == "claude-sonnet-5-5"

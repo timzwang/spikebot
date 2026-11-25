@@ -220,7 +220,9 @@ it in sync when behaviour or config changes.
   / `find_version`: "B1" or `B_<item id>`), `trim_to`, `plan_from_footage`. `spikebot/shot_info.py`: one
   72x40 2 fps decode per file (`entry["looks"]`: YUV, 12-strip detail, 64-bit hash) -> `shot_stats` (`subject_x` only
   moves off-centre when the centre crop would cut the subject off). `spikebot/shot_labels.py`: Claude vision
-  labels per shot (`entry["labels"]`, `VERSION`, retry after 6 h; `UNSAFE` shots never used; `presents_segments`;
+  labels per shot (Haiku; `entry["labels"]`, `VERSION`, retry after 24 h; a failed batch is asked once more and
+  only missing shots are re-asked, <= `MAX_MISSING` unanswered = neutral `missing` rows that `for_range` treats
+  as unlabelled; `UNSAFE` shots never used; `presents_segments`;
   `STORY_TAGS`); `Library.add_extra` / `needs_extra` / `presents_shots`; `Library.label_ask` = test hook.
   Lacy: `editor.keep_segments(lead_in=)`, `lacy.facecam_required(review_store)`, `safety.real_facecam`
   (conftest stubs it to None), `streamer_only` -> `ReviewAdapter.streamer_words` (`phrase_lines` +
@@ -257,7 +259,7 @@ it in sync when behaviour or config changes.
   `chat_prompt` (saved with `filtered_why`, no alert, no clip; before low_score). 2) in `lacy._render_job_body`
   after transcription, before the review item: `judge` = `speech_verdict` (`ASKED_RE` / `THANKS_RE` in the 30 s
   before the peak, no `REACTION_RE` around it and `reaction_level` < `loud_ratio`) then `ai_verdict`
-  (`ai.rate_impact`, Sonnet low effort: kind + 0-10 score; `NON_MOMENTS` or < `min_score` = skip; no key / API
+  (`ai.rate_impact`, Haiku low effort: kind + 0-10 score; `NON_MOMENTS` or < `min_score` (5) = skip; no key / API
   failure = through) -> job `impact`, skip reason "low impact: ...". `Bot.filtered_since` ->
   `messages.summary(filtered=)` 🧹 line. Tested in `tests/test_impact.py`.
 - Kick key: `kick_pusher_credentials` tries the realtime descriptor, then `pusher_from_js` on
@@ -274,7 +276,12 @@ it in sync when behaviour or config changes.
   seek in a live VOD's playlist; `download_segments` fetches those segments (+ the fMP4 `init` Twitch's newer VODs use) locally, 4 at a time with retries, so ffmpeg only reads local files; tested on real Kai/Lacy/KreekCraft/YourRAGE VODs 21 Nov; the VOD not reaching the clip yet, an empty output or an ffmpeg timeout = `VodNotReady` -> job `waiting_vod`,
   retried every `VOD_RETRY_S`; empty/timeout (not `still_recording`) count `fetch_errors`, `MAX_FETCH_ERRORS` 3 =
   failed; `lacy.FIXED_AT` = jobs that failed on the old download code are retried once more), `layout` (facecam stacked over gameplay for the whole clip), `away_reason`,
-  `build_ass(style=)` (word captions, font/size/position/colours, hook length, end card;
+  `build_ass(style=)` (word captions, font/size/position/colours, hook length, end card; captions over the
+  gameplay on a see-through box = `TEXT_BOX` / `text_box(r)` / `box_colour` (BorderStyle 3; custom `text_box`
+  0-1, 0 = outline; the 4:5 band keeps the outline; Tokyo Girl `build_text_ass` Card likewise unless in the
+  band); `mean_luma` (YAVG 0-1) -> `ReviewAdapter.brightness` (look.json) -> `style.stream_grade` (no negative
+  brightness, contrast <= `STREAM_MAX_CONTRAST`, gamma lift under `STREAM_DARK_Y`; `grade_filter` gamma; no
+  vignette in lacy; A/B/C explore only `STREAM_GRADES`);
   `caption_margin` keeps clear of the hook box and the bottom 320 px), `keep_segments` /
   `remap_words` (window around the peak at the payoff point + jump cuts, peak always kept),
   `render_variant` (trim/concat, zoom punch or white flash per cut, grade, captions, SFX mix),
@@ -312,8 +319,12 @@ it in sync when behaviour or config changes.
   With review on (default) `daily` makes `per_day` review items (`make_review`, 3 variants:
   own story/hook kind, `PACE_PATTERNS`, grade, text style, transition `flash`/`zoom`/`cut`);
   approved edits are copied to `exports/tokyo_girl/`. With review off the old `make` +
-  `deliver` (webhook) path runs. Rules from style: `media: clips` drops images; `max_s` caps the plan
-  (logo included; `edit_cap`: Tokyo Girl only, trend edits ignore it); with a song the plan is re-planned /
+  `deliver` (webhook) path runs. **Never stills** (Tim, 24 Nov): `render`, `make` and compare drop image shots
+  (`resolve` media is always clips); `max_s` caps the plan
+  (logo included; the Presents intro, up to `PRESENTS_MAX_S` 12 s, is added on top; `edit_cap`: Tokyo Girl only,
+  trend edits ignore it); caption line = `pick_line` (skips lines whose `LINE_TAGS` the library can't show) ->
+  `Prefs.theme` (`_choose_pref` tries those vision tags first) -> `line_for_footage` (< `LINE_SHARE` of the
+  clips show it = a fitting / general line) -> title + `tg_captions` / `trend_captions`; with a song the plan is re-planned /
   `trim_plan`ned so it never runs past the sound's end from `song_start`; `plan_clip(hold_beats=, intact=, intro_s=)` (`merge_holds`, middle of each clip,
   `with_intro_shot` = one `calm_shot` under the logo: `Shot.motion` from `measure_motion`, cached in
   library.json, added once to old entries); the logo builds for `logo_s` (song window starts that many
@@ -342,7 +353,8 @@ it in sync when behaviour or config changes.
   length, then shorter down to `MIN_PAIR_S` 1.4, then with `GROUPS` (close themes merged); `shortage` = the
   numbers in the error; `label_shots` skips shots < MIN_PAIR_S and survives failed batches; deploy request
   `compare` {count}). Review items mode `tokyo_girl`, `source.kind: "compare"` (`ReviewAdapter.render` ->
-  `render_variants`, ffmpeg only, label `COMPARE_LABEL`, exports `exports/compare/`). GTA 5 library =
+  `render_variants`, ffmpeg only, `end_fade_s=0` = never fades out, video shots only, label `COMPARE_LABEL`,
+  exports `exports/compare/`). GTA 5 library =
   `<media_dir>/.gta5` (hidden: GTA 6 edits never see it; `gta5_cfg`, `GTA5_SEARCHES` = Rockstar's 2013
   trailers/gameplay, never the PS5 remaster; fetched with the GTA 6 media, `GTA5_FETCH`), shots `prefixed`
   `.gta5/...`. `label_shots`: one frame per shot -> Claude (Sonnet, effort low) theme from `THEMES` +
@@ -446,15 +458,22 @@ it in sync when behaviour or config changes.
   platform twice. CLI `list | render | approve ITEM LABEL | reject | publish` (fallback only); `reopen ITEM` undoes an
   approval with nothing auto-published and queues an `again` request (same version, current renderer).
 - `spikebot/ai.py`: Claude API (optional; `ANTHROPIC_API_KEY` from `.env` next to config, then env;
-  model `claude-opus-5-5` (`SPIKEBOT_AI_MODEL`) for #inspiration, `claude-sonnet-5-5`
-  (`SPIKEBOT_FEEDBACK_MODEL`) for feedback via `model_name(base, task)`; lazy `anthropic` import). `ask_json` = one
-  structured-output request with server-side refusal fallback; `interpret_feedback` (feedback ->
+  lazy `anthropic` import). **Credits (Tim, 24 Nov)**: `TASKS` = task -> (env var, model, budget tier):
+  Sonnet 5.5 for study/feedback/rules/copy/voice, Haiku 5.5 for labels/compare_labels/impact/speakers
+  (`SPIKEBOT_AI_MODEL` / `_FEEDBACK_MODEL` / `_COPY_MODEL` / `_CHEAP_MODEL`); every caller passes its `task=`.
+  `ask_json` = one structured-output request (server-side refusal fallback only on `FALLBACK_MODELS`: Haiku
+  has none), `check_budget` first, `record` after: ledger data/ai_usage.json (per UK day + task, flock'd,
+  `cost_usd` from `PRICES`), `daily_budget` (`SPIKEBOT_AI_DAILY_USD` / `ai.daily_usd`, default `DAILY_USD`
+  0.75, 0 = none): tier background stops at `BACKGROUND_SHARE`, clip at 100%, tim never; `usage_line` ->
+  `Bot.ai_line` -> `messages.summary(ai_line=)`. New AI calls need a `TASKS` entry. `interpret_feedback` (feedback ->
   settings rows with scope this_edit/always, notes, unsupported, hook_text) and `study_reference`
   (frames + measured numbers -> what makes it good, techniques, text use, look settings).
   `settings_menu()` lists every setting the editor really has: keep it in sync with style.py.
 - `spikebot/rules.py`: **rule compiler**. `ReviewBot.rules_loop` (start, after /feedback via `rules_wake`,
   every 2 min, AI backoff) -> `compile_rules`: `decide` (one Claude request for the enabled note/unsupported
-  entries not yet `checked` against `capabilities_version()` = hash of `ai.settings_menu()` + `style.BUILT_IN`)
+  entries not yet `checked` against `capabilities_version()` = hash of `ai.settings_menu()` + `style.BUILT_IN`;
+  `pending`: `not_editor` never again, others at most once per `RECHECK_S` 24 h (`checked_at`); entries the
+  answer skipped get verdict "none" = marked read)
   -> `apply` under `profile_lock` on a fresh profile: verdict settings (new entries, limited to the note's
   kinds, note off "now #N"), built_in (off), needs_code (stays on, `status`/`needs`, `data/rules/needs_code.json`,
   GitHub issue label `rule-request` when `GITHUB_TOKEN` is in .env, retried hourly; the issue starts

@@ -222,6 +222,7 @@ def test_lacy_mode_waits_then_selects(tmp_path, monkeypatch):
     cfg = cfg_in(tmp_path, channels=[{"platform": "twitch", "name": "kaicenat", "programme": "x"}])
     mode = L.LacyMode(cfg, Path(cfg["data_dir"]))
     mode.is_live = lambda key: True
+    monkeypatch.setattr(P, "LATE_HOUR", 25)   # not the 23:00 UK fill-up, whatever time the test runs
     now = time.time()
     j = job("kaicenat-20261120-150000", 10, now - 400)
     j["ready_at"] = now - 100

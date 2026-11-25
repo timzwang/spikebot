@@ -29,6 +29,21 @@ FONT = "DejaVu Sans"  # fonts-dejavu-core on Ubuntu (install.sh)
 FONTS_DIR = Path(__file__).resolve().parent / "fonts"
 CAPTION_FONT = "TikTok Sans"
 CAPTION_HOLD_S = 1.5   # captions and the hook stay this much longer, so there's time to read them
+# Text over the picture sits on a see-through dark box (Tim, 24 Nov: white text with only an outline
+# "clashes and blends in" on bright or busy footage). `text_box` = the box's opacity (0 = outline only).
+TEXT_BOX = 0.55
+BOX_PAD = 14            # px of box around the letters
+
+
+def box_colour(opacity: float) -> str:
+    """ASS colour (&HAABBGGRR) of the black text box at this opacity (0-1)."""
+    alpha = round(255 * (1.0 - max(0.0, min(1.0, float(opacity)))))
+    return f"&H{alpha:02X}000000"
+
+
+def text_box(r: dict | None) -> float:
+    v = (r or {}).get("text_box")
+    return TEXT_BOX if v is None else max(0.0, min(1.0, float(v)))
 
 
 def ass_filter(ass_name: str) -> str:
@@ -383,6 +398,22 @@ def away_reason(path: Path, lay: Layout, duration: float, max_share: float = 0.3
     return _away(path, checks, duration, max_share)
 
 
+def mean_luma(path: Path, every_s: float = 1.0) -> float | None:
+    """The picture's average brightness, 0 (black) to 1 (white), sampled every `every_s` seconds
+    (stream clips: dark footage is lifted, style.stream_grade). None when it can't be measured."""
+    vf = f"fps=1/{max(0.2, every_s):g},scale=96:-2,signalstats,metadata=print:key=lavfi.signalstats.YAVG"
+    try:
+        p = subprocess.run(["ffmpeg", "-hide_banner", "-nostats", "-loglevel", "info", "-i", str(path), "-vf", vf,
+                            "-an", "-f", "null", "-"], capture_output=True, text=True, timeout=300)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    vals = [float(v) for v in re.findall(r"lavfi\.signalstats\.YAVG=([\d.]+)", p.stderr)]
+    if not vals:
+        return None
+    y = sum(vals) / len(vals)
+    return round(max(0.0, min(1.0, (y - 16.0) / 219.0)), 3)   # limited range 16-235
+
+
 def _away(path: Path, checks: list, duration: float, max_share: float) -> str | None:
     for label, vf, measure in checks:
         p = subprocess.run(["ffmpeg", "-hide_banner", "-nostats", "-i", str(path), "-vf", vf,
@@ -550,6 +581,14 @@ def build_ass(words: list[Word], hook: str, duration: float, cam_h: int,
         hook_style = f"Style: Hook,{font},{hook_px},&H00000000,&H00000000,&H00FFFFFF,&H00FFFFFF,-1,0,0,0,100,100,0,0,3,16,0,8,60,60,{cam_h + 36},1"
         cap_margin = caption_margin(r.get("position") or "low", cam_h, cap, r.get("text_y"), frame_h)
         pos = f"{{\\an2\\pos({OUT_W // 2},{frame_h - cap_margin})\\q2}}"
+    box = text_box(r)
+    if box > 0 and not picture:   # over the gameplay: on a see-through box (in the 4:5 band: plain)
+        bc = box_colour(box)
+        cap_style = (f"Style: Cap,{font},{cap},{main},{main},{bc},{bc},-1,0,0,0,100,100,0,0,3,{BOX_PAD},0,2,70,70,"
+                     f"{cap_margin},1")
+    else:
+        cap_style = (f"Style: Cap,{font},{cap},{main},{main},&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,{outline},"
+                     f"{shadow},2,70,70,{cap_margin},1")
     head = f"""[Script Info]
 ScriptType: v4.00+
 PlayResX: {OUT_W}
@@ -560,7 +599,7 @@ ScaledBorderAndShadow: yes
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
 {hook_style}
-Style: Cap,{font},{cap},{main},{main},&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,{outline},{shadow},2,70,70,{cap_margin},1
+{cap_style}
 Style: End,{font},{int(68 * scale)},&H00000000,&H00000000,&H00FFFFFF,&H00FFFFFF,-1,0,0,0,100,100,0,0,3,20,0,5,80,80,0,1
 Style: Mark,{FONT},36,&H80FFFFFF,&H80FFFFFF,&H80000000,&H00000000,-1,0,0,0,100,100,0,0,1,2,0,3,30,30,30,1
 

@@ -134,7 +134,7 @@ def label_shots(shots: list[TG.Shot], media: Path, path: Path, base: Path | None
         content.append({"type": "text", "text": f"Label all {len(ids)} frames above."})
         try:
             out = ask(content) if ask else ai.ask_json(LABEL_SYSTEM, content, label_schema(), base=base,
-                                                       max_tokens=6000, client=client, effort="low", task="feedback")
+                                                       max_tokens=6000, client=client, effort="low", task="compare_labels")
         except ai.AIError as e:   # one bad batch must not lose the others: they're saved as they come
             failed += 1
             log.warning("labelling shots %d-%d failed: %s", i + 1, i + len(chunk), e)
@@ -298,7 +298,7 @@ def libraries(adapter) -> tuple[list[TG.Shot], list[TG.Shot], dict]:
     media = Path(lcfg["media_dir"])
     job = progress.current()
     job.update(stage="Checking the GTA 5 library")
-    v5 = prefixed(TG.Library(gta5_cfg(lcfg)).shots())
+    v5 = [s for s in prefixed(TG.Library(gta5_cfg(lcfg)).shots()) if s.kind == "video"]   # never stills
     v6 = [s for s in adapter.shots() if s.kind == "video"]
     if not v5:
         raise editor.EditError("no GTA 5 footage yet: it downloads with the daily fetch (official Rockstar"
@@ -341,7 +341,9 @@ def render_variants(adapter, item: dict, specs: list[dict], n: int, folder: Path
             stem = f"r{n}_{label}"
             mp4 = folder / f"{stem}.mp4"
             # captions always on (Tim: good captions); the theme sits in the band above the picture
-            style_r = dict(r, framing="stack" if layout == "stack" else "box45", position="high", text_y=None)
+            # no fade to black at the end (Tim, 24 Nov): the last pair plays to the final frame
+            style_r = dict(r, framing="stack" if layout == "stack" else "box45", position="high", text_y=None,
+                           end_fade_s=0)
             job.update(0.05, f"Version {label} ({vi + 1}/{len(specs)}): rendering")
             with job.span(0.05, 0.9):
                 TG.render_plan(plan, adapter.lcfg, mp4, st.grade_filter(r["grade"]), style_r, cards=plan.cards,

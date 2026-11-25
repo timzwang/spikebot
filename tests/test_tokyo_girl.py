@@ -28,6 +28,10 @@ def img_shot(name: str, tags: list[str]) -> TG.Shot:
     return TG.Shot(name, "image", 0.0, float("inf"), tags, None, 1920, 1080)
 
 
+def vid_shot(name: str, start: float, end: float, tags: list[str]) -> TG.Shot:
+    return TG.Shot(name, "video", start, end, tags, None, 1920, 1080)
+
+
 # ---- config -----------------------------------------------------------------
 def test_settings_defaults_env_and_paths(tmp_path):
     from spikebot.main import apply_env
@@ -219,7 +223,7 @@ def test_page_media_parsing():
 def test_daily_tops_up_to_per_day(tmp_path, monkeypatch):
     s = cfg(tmp_path, per_day=2)
     s["review"] = False  # old flow: straight to exports (review mode is tested in test_review_modes.py)
-    shots = [img_shot(f"c{i}.jpg", ["city", "cars", "couple"]) for i in range(30)]
+    shots = [vid_shot(f"c{i}.mp4", 0, 12, ["city", "cars", "couple"]) for i in range(30)]   # never stills
     monkeypatch.setattr(TG.Library, "shots", lambda self, entries=None: shots)
     monkeypatch.setattr(TG, "fetch", lambda lcfg: None)
     monkeypatch.setattr(TG, "render_plan", lambda plan, lcfg, out: out.parent.mkdir(parents=True, exist_ok=True)

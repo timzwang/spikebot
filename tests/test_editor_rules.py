@@ -28,7 +28,7 @@ TIM_RULES = [("all", "motion", "none"), ("tokyo_girl", "framing", "fit"), ("toky
 def test_new_settings_exist_and_resolve():
     tg, lacy = S.dims("tokyo_girl"), S.dims("lacy")
     assert tg["motion"] == lacy["motion"] == ("none", "subtle", "full")
-    assert tg["framing"] == ("box45", "box11", "stack", "fill", "fit") and tg["media"] == ("clips", "mixed") and "fade" in tg["transition"]
+    assert tg["framing"] == ("box45", "box11", "stack", "fill", "fit") and tg["media"] == ("clips",) and "fade" in tg["transition"]
     assert "framing" not in lacy and "fade" not in lacy["transition"] and "plain" not in lacy["text_level"]
     assert "countdown" in tg["intro"] and "plain" in tg["text_level"]
     r = S.resolve(S.default_style("lacy") | {"motion": "none", "transition": "zoom"})

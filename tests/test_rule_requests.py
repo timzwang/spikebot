@@ -155,7 +155,7 @@ def test_labels_are_made_once_and_cached(tmp_path):
     def boom(content):
         raise shot_labels.LabelError("down")
     assert not shot_labels.ensure(f, e2, "x", None, ask=boom, now=5000.0) and e2["labels_tried"] == 5000.0
-    assert not shot_labels.needs_labels(e2, now=5000.0 + 60) and shot_labels.needs_labels(e2, now=5000.0 + 7 * 3600)
+    assert not shot_labels.needs_labels(e2, now=5000.0 + 60) and shot_labels.needs_labels(e2, now=5000.0 + 25 * 3600)
 
 
 def test_black_presents_card_is_told_apart():

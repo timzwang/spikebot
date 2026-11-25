@@ -26,7 +26,7 @@ from pathlib import Path
 log = logging.getLogger("impact")
 
 DEFAULTS = {"enabled": True, "chat_prompt_share": 0.45, "max_hype_share": 0.3, "max_clip_mentions": 2,
-            "min_score": 4, "ai": True, "loud_ratio": 2.2}
+            "min_score": 5, "ai": True, "loud_ratio": 2.2}
 
 # Phrases where the streamer turns to chat rather than something happening in the game.
 ASKED_RE = re.compile(

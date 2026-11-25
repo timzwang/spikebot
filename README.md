@@ -92,7 +92,7 @@ sudo bash ~/spikebot/deploy/auto_update.sh --force   # redeploy even with no new
   nothing happened after it (no reaction words, nothing loud), the clip is skipped; with
   `ANTHROPIC_API_KEY` Claude then rates the moment 0-10 (funny / shock / skill / fail / rage /
   social vs chat prompt / thanks / ad / idle / just talking) and anything under `min_score`
-  (default 4) or not a real moment is skipped (about 0.2p a clip; an API failure lets the clip
+  (default 5) or not a real moment is skipped (Haiku, well under 0.1p a clip; an API failure lets the clip
   through). Skips show on the progress bar as "low impact: ..." and the daily summary has a
   🧹 Filtered out line. `"impact": {"enabled": false}` turns it all off; `"ai": false` keeps only
   the free checks.
@@ -312,11 +312,17 @@ cd /opt/spikebot && sudo -u spikebot venv/bin/python -m spikebot.lacy layout --s
   `"clips": {"streamers": {"adinross": {"facecam": {"x": 0.75, "y": 0.0, "w": 0.25, "h": 0.3}}}}`.
 - Same review as Lacy: 3 variants in #ready-to-post (labelled with the streamer's name).
   **Captions are always on** for stream clips, in **TikTok's own text style**: TikTok Sans (bundled,
-  `spikebot/fonts`), white with a thin black outline, the hook as black text on a white box. Nothing
-  moves, pops or fades; each line stays 1.5 s after it's said (the hook too) so it can be read.
+  `spikebot/fonts`), white on a see-through dark box over the gameplay (`text_box`; plain outline on the
+  4:5 black band), the hook as black text on a white box. Nothing moves, pops or fades; each line stays
+  1.5 s after it's said (the hook too) so it can be read.
   **No sound effects** on any clip or edit. Titles, post captions and a short on-screen hook (the
   setup, never the payoff) are written by Claude from what was actually said (with
-  `ANTHROPIC_API_KEY`), templates otherwise.
+  `ANTHROPIC_API_KEY`), templates otherwise. The prompt asks for a curiosity gap, stakes or a line he
+  actually said, never a flat summary like "Lacy takes on another security job in GTA 6".
+- **Never too dark**: each clip's brightness is measured once (`look.json`); no grade may lower the
+  brightness or push contrast past 1.12, there's no vignette, and dark footage (night, dark rooms) is
+  brightened with a gamma lift. A/B/C only try the bright grades (natural, clean, punchy, vivid, warm,
+  cool); moody / muted only when you pin them.
 - Each streamer has its own daily cap (`max_uploads_per_day`, default 3) and its own
   submissions CSV: `logs/<channel>_submissions.csv`. Job ids are `<channel>-YYYYMMDD-HHMMSS`.
 
@@ -722,10 +728,25 @@ rule handled.
 `/style setting value` also adds an entry. Version C (experimental) never tries an option
 you've rejected more often than you've picked it.
 
-Needs `ANTHROPIC_API_KEY` in `/opt/spikebot/.env` (console.anthropic.com > API keys). Feedback
-runs on `claude-sonnet-5-5` (override with `SPIKEBOT_FEEDBACK_MODEL`), #inspiration analysis on
-`claude-opus-5-5` (`SPIKEBOT_AI_MODEL`). Each `/feedback` costs under 1p and
-each #inspiration analysis about 5-8p. Without a key the rule parser is used (fewer phrasings).
+Needs `ANTHROPIC_API_KEY` in `/opt/spikebot/.env` (console.anthropic.com > API keys). Without a key
+the rule parser is used (fewer phrasings).
+
+**Claude API costs** (24 Nov). Each job uses the cheapest model that does it well:
+
+| Job | Model | Override |
+|---|---|---|
+| Stream-clip titles, captions, hooks; voiceover lines | `claude-sonnet-5-5` | `SPIKEBOT_COPY_MODEL` |
+| `/feedback`, Feedback button, rule compiler | `claude-sonnet-5-5` | `SPIKEBOT_FEEDBACK_MODEL` |
+| #inspiration analysis (was Opus) | `claude-sonnet-5-5` | `SPIKEBOT_AI_MODEL` |
+| Shot labels, GTA 5 vs 6 labels, impact ratings, game-audio lines | `claude-haiku-5-5` | `SPIKEBOT_CHEAP_MODEL` |
+
+Every request is logged with its tokens and cost in `data/ai_usage.json`, and #daily-summary has a
+🤖 line with the day's spend per job. A **daily budget** (`"ai": {"daily_usd": 0.75}` in
+config.json, or `SPIKEBOT_AI_DAILY_USD` in `.env`; 0 = no limit) stops shot labelling and the rule
+compiler at half of it and the per-clip checks and titles at all of it (they fall back to the free
+checks and templates until midnight UK). `/feedback` and #inspiration always run. The rule compiler
+no longer re-sends every saved note after each deploy (at most once a day, and never notes it judged
+"not about the editor").
 
 **On-screen text** (`text_level`, varied across A/B/C and learned like the others):
 `none` = no captions, hook or end card at all; `minimal` = a 2.5 s opening hook and captions
@@ -740,10 +761,12 @@ PNG at `/opt/spikebot/data/brand/gta6_logo.png`; without the file the intro is s
 `intro: countdown` shows a plain "N days left until GTA 6 releases" line instead.
 `intro: rockstar_presents` opens with the trailer's own "Rockstar Games Presents" shot (over the ocean
 and skyscrapers, where the text fades in) up to the drop; the plain black title card is never used.
+It may play up to 12 s and comes **on top of** `max_s`, so the edit after it keeps its full length.
 `intro_mix` (0-1) sends that share of logo-intro edits to the Rockstar opening instead, so not every
 edit starts with the logo. `logo_fade_s` sets how fast the logo bursts away (default 0.4 s), and
 `end_fade_s` (default 3) fades the last seconds slowly to black; the card's sound note reminds you
-to fade the sound out over the same seconds in the app (the files stay silent).
+to fade the sound out over the same seconds in the app (the files stay silent). GTA 5 vs GTA 6
+comparisons never fade out.
 
 **Movement, framing and footage** (all settings, so `/feedback` and `/rules` control them):
 `motion` `none` (every shot completely still: no pans, push-ins, punch-in zooms or animated
@@ -755,12 +778,14 @@ or `fill` (same as box45 now). **Nothing is cut off**: a shot whose 4:5 crop wou
 text (title cards, text overlays: the vision labels) or a subject wider than the crop is shown whole
 (`fit`) instead. Text cards use TikTok's own style (TikTok Sans, white with a thin outline, the
 question as black on a white box), never pop or fade, and stay 1.5 s longer when the next card
-isn't due yet. Version A uses 4:5; B and C try 1:1 and stacked, so your
+isn't due yet. **Text over the picture always sits on a see-through dark box** (stream-clip captions
+over the gameplay, comparison captions over a full picture); `text_box` (0-1, default 0.55) sets how
+dark, 0 = the old outline only. Text on a black band keeps the plain outline. Version A uses 4:5; B and C try 1:1 and stacked, so your
 approvals show which works (older `fill`/`fit` rules were switched off once; turn them back on in
 `/rules`). **Smart fill** (`smart_fill`, on unless set to 0): a close-up of one person goes full
 screen, and every crop is centred on the subject instead of the middle of the frame (faces come
-from the same pass as the nudity check, once per file); `media` `clips` (trailer video only, never screenshots) or
-`mixed`; `transition` `fade` (a soft crossfade, `fade_s` seconds); `hold_beats` (no clip shorter
+from the same pass as the nudity check, once per file); trailer edits use trailer **video only, never
+screenshots** (there is no setting for stills any more); `transition` `fade` (a soft crossfade, `fade_s` seconds); `hold_beats` (no clip shorter
 than that many beats, and each shows the middle of its clip so the action stays intact);
 `max_s` (the longest a Tokyo Girl edit may be, logo intro included; trending-sound edits
 ignore it and are only limited by their sound: an edit never runs past the end of the sound
@@ -805,9 +830,12 @@ Every crossfade blends exactly the two clips next to it: a fade is never longer 
 clip, and a clip whose fade tail would run into another scene of the trailer holds its last clean
 frame instead. Each trailer file is measured once (colour, where the detail sits, picture hashes:
 `spikebot/shot_info.py`) and, with `ANTHROPIC_API_KEY`, every shot is labelled once by a vision check
-(`spikebot/shot_labels.py`, Sonnet, roughly 1p per 16 shots, cached in `library.json`): action,
+(`spikebot/shot_labels.py`, Haiku, well under 1p per 16 shots, cached in `library.json`): action,
 atmosphere, walking/driving away, title cards, "Rockstar Games Presents", and strip club / twerking /
-suggestive, which are never used.
+suggestive, which are never used. The post caption line has to match the footage: lines that name
+something ("vice city at night", "golden hour in vice city", "jason and lucia"...) steer the clip choice
+towards shots with that label, and if under half the edit's clips show it, a line that fits (or a
+general one) is used instead.
 
 **Reusing another version's clips**: Feedback such as "use all the clips from B1" (or a pasted file
 name / link like `B_tokyogirl-20261118-004557.mp4`, even from another item) rebuilds the edit from

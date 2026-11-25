@@ -192,7 +192,7 @@ def status(kind: str, text: str) -> dict:
 # --------------------------------------------------------------------------
 def summary(rows: list[dict], channels: list[tuple[str, str]], now: float,
             names: dict | None = None, window_s: float = 86400, cpu: dict | None = None,
-            cores: int | None = None, filtered: dict | None = None) -> dict:
+            cores: int | None = None, filtered: dict | None = None, ai_line: str | None = None) -> dict:
     """rows: candidate moments in the window (platform, channel, score, onset and,
     when known, peak_rate, baseline, vod_url). channels: every tracked (platform, name)."""
     names = names or {}
@@ -233,6 +233,8 @@ def summary(rows: list[dict], channels: list[tuple[str, str]], now: float,
         lines += ["", "🧹 **Filtered out**: " + "; ".join(bits)]
     if cpu:
         lines += ["", cpu_line(cpu, cores)]
+    if ai_line:   # what the Claude API cost today (spikebot/ai.py ledger)
+        lines += ["", ai_line]
     return embed("\n".join(lines), BLURPLE, title="📊 Daily summary")
 
 

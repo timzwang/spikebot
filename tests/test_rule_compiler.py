@@ -69,10 +69,36 @@ def test_apply_turns_notes_into_settings_and_marks_the_rest(tmp_path):
 def test_new_capabilities_recheck_open_notes(tmp_path, monkeypatch):
     store, _ = new_item(tmp_path)
     prof = notes_profile(store)
-    RC.apply(prof, RC.capabilities_version(), [res(e["n"], "needs_code", needs="x") for e in prof.entries()])
-    assert RC.pending(prof.entries(), RC.capabilities_version()) == []
+    t0 = 1_000_000.0
+    RC.apply(prof, RC.capabilities_version(), [res(e["n"], "needs_code", needs="x") for e in prof.entries()], now=t0)
+    assert RC.pending(prof.entries(), RC.capabilities_version(), now=t0) == []
     monkeypatch.setattr(S, "BUILT_IN", S.BUILT_IN + ("Tokyo Girl: a new automatic behaviour",))
-    assert len(RC.pending(prof.entries(), RC.capabilities_version())) == 5
+    # credits: a run of deploys doesn't re-send every note; a day later the new editor is checked
+    assert RC.pending(prof.entries(), RC.capabilities_version(), now=t0 + 3600) == []
+    assert len(RC.pending(prof.entries(), RC.capabilities_version(), now=t0 + RC.RECHECK_S + 1)) == 5
+
+
+def test_not_editor_notes_and_skipped_answers_are_never_asked_again(tmp_path):
+    store, _ = new_item(tmp_path)
+    prof = notes_profile(store)
+    ns = [e["n"] for e in prof.entries()]
+    t0 = 1_000_000.0
+    # the model answers only the first note: the rest are still marked as read
+    RC.apply(prof, "v1", [res(ns[0], "not_editor")] + [{"n": n, "verdict": "none"} for n in ns[1:]], now=t0)
+    assert RC.pending(prof.entries(), "v1", now=t0 + 60) == []
+    later = RC.pending(prof.entries(), "v2", now=t0 + RC.RECHECK_S + 1)
+    assert ns[0] not in {e["n"] for e in later} and len(later) == len(ns) - 1
+
+
+def test_decide_marks_entries_the_answer_skipped(tmp_path, monkeypatch):
+    store, _ = new_item(tmp_path)
+    prof = notes_profile(store)
+    ns = [e["n"] for e in prof.entries()]
+    monkeypatch.setattr(RC, "ask", lambda todo, eff, base, client=None: [res(ns[0], "built_in")])
+    version, results = RC.decide(prof, None)
+    assert {r["n"] for r in results} == set(ns) and sum(r["verdict"] == "none" for r in results) == len(ns) - 1
+    RC.apply(prof, version, results)
+    assert RC.pending(prof.entries(), version) == []
 
 
 def test_bot_compiles_saved_rules_and_files_issues(tmp_path, monkeypatch):

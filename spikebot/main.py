@@ -144,6 +144,7 @@ async def post_discord_file(url: str, payload: dict, path: Path) -> None:
 class Bot:
     def __init__(self, cfg: dict, config_path: str | None = None):
         self.cfg = cfg
+        self.base = Path(config_path).resolve().parent if config_path else None   # .env, data/ai_usage.json
         self.det_cfg = DetectorConfig(**cfg.get("detector", {}))
         self.store = Store(Path(cfg.get("data_dir", "data")))
         # every campaign Tim joined is watched (spikebot/campaigns.py), on top of config.json
@@ -767,7 +768,18 @@ class Bot:
         return msg_.summary(self.store.candidates_since(now - 86400),
                             list(self.detectors), now, self.names,
                             cpu=st_.cpu_summary(self.status_state.data.get("cpu"), now), cores=os.cpu_count(),
-                            filtered=self.filtered_since(now - 86400))
+                            filtered=self.filtered_since(now - 86400), ai_line=self.ai_line(now))
+
+    def ai_line(self, now: float) -> str | None:
+        """Today's Claude API spend for the summary (None without a config dir)."""
+        if self.base is None:
+            return None
+        try:
+            from . import ai as ai_
+            return ai_.usage_line(self.base, ai_.uk_day(now))
+        except Exception as e:  # noqa: BLE001 - the summary must never fail
+            log.info("could not read AI usage: %s", e)
+            return None
 
     async def summary_loop(self) -> None:
         if st_.summary_due_on_start(time.time(), self.status_state.data.get("last_summary_date")):

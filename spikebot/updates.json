@@ -322,5 +322,41 @@
   "date": "2026-11-22",
   "title": "Fewer clips wrongly skipped",
   "text": "The quick nudity check only skips clear nudity near the moment. Bikinis are left to the full check. Broken VOD downloads stop after 3 tries."
+ },
+ {
+  "id": "2026-11-24-ai-costs",
+  "date": "2026-11-25",
+  "title": "Much lower Claude API costs",
+  "text": "Cheap Haiku for labels and checks, no repeat rule checks, a $0.75 daily cap. #daily-summary shows the day's spend."
+ },
+ {
+  "id": "2026-11-24-bright-clips",
+  "date": "2026-11-25",
+  "title": "Stream clips never too dark",
+  "text": "Grades can't darken clips any more, no vignette, and dark footage is brightened automatically."
+ },
+ {
+  "id": "2026-11-24-text-boxes",
+  "date": "2026-11-25",
+  "title": "Text is always readable",
+  "text": "Captions over the picture sit on a see-through dark box, so they no longer blend into bright footage."
+ },
+ {
+  "id": "2026-11-24-better-titles",
+  "date": "2026-11-25",
+  "title": "Punchier clip titles and hooks",
+  "text": "Titles and hooks now build tension or curiosity instead of describing the clip. Weak moments (under 5/10) are skipped."
+ },
+ {
+  "id": "2026-11-24-trailer-edits",
+  "date": "2026-11-25",
+  "title": "Trailer edits: video only",
+  "text": "No screenshots in edits. Captions match the clips (night line = night clips). Rockstar Presents edits can run longer."
+ },
+ {
+  "id": "2026-11-24-compare-no-fade",
+  "date": "2026-11-25",
+  "title": "GTA 5 vs 6: no fade at the end",
+  "text": "Comparison videos play to the last frame instead of fading to black."
  }
 ]

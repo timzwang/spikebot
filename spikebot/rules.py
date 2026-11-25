@@ -46,10 +46,25 @@ def capabilities_version() -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:12]
 
 
-def pending(entries: list[dict], version: str) -> list[dict]:
-    """Enabled notes / "not possible" items not yet read against this version of the editor."""
-    return [e for e in entries if e.get("on", True) and e.get("kind") in ("note", "unsupported")
-            and e.get("checked") != version]
+RECHECK_S = 24 * 3600   # a "needs code" note is read again after a deploy at most once a day
+
+
+def pending(entries: list[dict], version: str, now: float | None = None) -> list[dict]:
+    """Enabled notes / "not possible" items not yet read against this version of the editor.
+    Credits (Tim, 24 Nov): a note already judged "not about the editor" is never asked again, and
+    one that needs new code is asked again only when the editor changed AND a day has passed, so a
+    run of deploys doesn't re-send every note each time."""
+    now = now or time.time()
+    out = []
+    for e in entries:
+        if not e.get("on", True) or e.get("kind") not in ("note", "unsupported") or e.get("checked") == version:
+            continue
+        if e.get("checked") and e.get("status") == "not_editor":
+            continue
+        if e.get("checked") and now - float(e.get("checked_at") or 0) < RECHECK_S:
+            continue
+        out.append(e)
+    return out
 
 
 RESULT = {
@@ -105,7 +120,7 @@ def ask(entries: list[dict], effective: dict[str, dict], base: Path | None, clie
                + "\n\nSaved instructions (one JSON per line):\n" + "\n".join(lines))
     system = SYSTEM.format(menu=ai.settings_menu(), built_in="\n- ".join(st.BUILT_IN))
     out = ai.ask_json(system, content, SCHEMA, base=base, max_tokens=8000, client=client,
-                      effort="medium", task="feedback")
+                      effort="medium", task="rules")
     return out.get("results") or []
 
 
@@ -117,7 +132,13 @@ def decide(profile: st.Profile, base: Path | None, client=None, limit: int = BAT
     if not todo:
         return version, []
     effective = {m: profile._effective(m) for m in st.STYLE_MODES}
-    return version, ask(todo, effective, base, client=client)
+    results = ask(todo, effective, base, client=client)
+    # an entry the answer skipped is still marked as read (no verdict): otherwise it was asked
+    # again every 2 minutes, forever
+    got = {int(r.get("n", -1)) for r in results}
+    results += [{"n": e["n"], "verdict": "none", "settings": [], "reason": "", "needs": ""}
+                for e in todo if e["n"] not in got]
+    return version, results
 
 
 def apply(profile: st.Profile, version: str, results: list[dict], now: float | None = None) -> list[dict]:
@@ -128,6 +149,9 @@ def apply(profile: st.Profile, version: str, results: list[dict], now: float | N
     for r in results:
         e = profile.entry(int(r.get("n", -1)))
         if e is None or not e.get("on", True) or e.get("kind") not in ("note", "unsupported"):
+            continue
+        if r.get("verdict") == "none":   # skipped by the model: read, nothing changes
+            e["checked"], e["checked_at"] = version, now
             continue
         verdict = r.get("verdict") if r.get("verdict") in VERDICTS else "needs_code"
         mine = st.entry_modes(e)
@@ -142,7 +166,7 @@ def apply(profile: st.Profile, version: str, results: list[dict], now: float | N
         needs = (r.get("needs") or "").strip()
         if verdict == "settings" and not added:
             verdict, needs = "needs_code", needs or "; ".join(bad) or (r.get("reason") or "")
-        e["checked"] = version
+        e["checked"], e["checked_at"] = version, now
         e["reason"] = (r.get("reason") or "")[:300]
         if added and not needs:
             e["on"], e["upgraded"], e["status"] = False, "now " + ", ".join(f"#{n}" for n in added), "done"

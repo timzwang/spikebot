@@ -8,7 +8,7 @@ skyscrapers (and never the plain black title card).
 
 Each shot of a library video (the segments between its scene cuts, trailer head and tail
 included) becomes one small image of 3 frames side by side; up to 16 go in one Claude
-request (Sonnet, structured output). About 1p per 16 shots, once per file: the answers are
+request (Haiku 5.5, structured output). Well under 1p per 16 shots, once per file: the answers are
 cached in library.json (`labels`) by file signature, so nothing is sent again unless the
 file changes or VERSION goes up. Without ANTHROPIC_API_KEY nothing happens and every rule
 falls back to the measured numbers (motion, colour, detail).
@@ -28,7 +28,8 @@ log = logging.getLogger("shot_labels")
 
 VERSION = 1
 BATCH = 16
-RETRY_S = 6 * 3600       # a failed file is tried again after this long
+RETRY_S = 24 * 3600      # a failed file is tried again after this long (was 6 h: credits)
+MAX_MISSING = 0.1        # up to this share of shots may stay unanswered (neutral labels)
 TILE_W = 256
 
 TAGS = ("action", "atmosphere", "scenery", "establishing", "ocean", "beach", "city", "skyline", "night",
@@ -157,14 +158,28 @@ def label_file(path: Path, entry: dict, base: Path | None = None, ask=None, work
             j = row.get("i")
             if isinstance(j, int) and 0 <= j < len(idx):
                 got[idx[j]] = clean(row)
-        if len(got) < len(idx):
-            raise LabelError(f"labels missing for {len(idx) - len(got)} shot(s)")
         return got
+
+    def safe(idx: list[int]) -> dict[int, dict]:
+        try:
+            return run(idx)
+        except LabelError as e:
+            log.info("a batch of shot labels failed (%s): it is asked once more", e)
+            return {}
 
     labels: dict[int, dict] = {}
     with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
-        for got in pool.map(run, batches):
+        for got in pool.map(safe, batches):
             labels.update(got)
+    # credits (Tim, 24 Nov): what was answered is kept; only the missing shots are asked again, once
+    missing = [i for i in range(len(segs)) if i not in labels]
+    for k in range(0, len(missing), BATCH):
+        labels.update(safe(missing[k:k + BATCH]))
+    missing = [i for i in range(len(segs)) if i not in labels]
+    if len(missing) > int(len(segs) * MAX_MISSING):   # a whole failure is retried later
+        raise LabelError(f"labels missing for {len(missing)} of {len(segs)} shot(s)")
+    for i in missing:   # a few unanswered shots: neutral labels (numbers decide for them, as unlabelled)
+        labels[i] = dict(clean({}), missing=True)
     return [[a, b, labels[i]] for i, (a, b) in enumerate(segs)]
 
 
@@ -210,7 +225,7 @@ def for_range(entry: dict, s: float, e: float) -> dict | None:
         ov = min(b, e) - max(a, s)
         if ov > best_ov:
             best, best_ov = row, ov
-    return best
+    return None if best and best.get("missing") else best   # unanswered = as if unlabelled
 
 
 def presents_segments(entry: dict) -> list[tuple[float, float, str]]:

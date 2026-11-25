@@ -18,6 +18,7 @@ there are no presets), C is the experimental one (least-tried options).
 from __future__ import annotations
 
 import json
+import math
 import random
 import re
 import time
@@ -104,7 +105,7 @@ TG_LIKE = ("tokyo_girl", "trend")
 DEFAULT = {"grade": "natural", "pace": "normal", "font": "dejavu", "size": "m",
            "position": "low", "colour": "classic", "transition": "flash",
            "ending": "none", "text_level": "minimal", "intro": "none", "motion": "full",
-           "framing": "box45", "media": "mixed", "opening": "normal"}
+           "framing": "box45", "media": "clips", "opening": "normal"}
 TG_ONLY = ("intro", "framing", "media")   # dimensions only Tokyo Girl has
 # Not varied between A/B/C: a rule, not a style to explore. Default unless Tim sets it.
 FIXED = ("media",)
@@ -143,6 +144,8 @@ CUSTOM_KEYS = {
     # Tokyo Girl / trend: how strongly clips and source videos used in recent edits are avoided
     "variety": (0, 1),
     "smart_fill": (0, 1),   # close-ups of one person full screen, crops follow the subject (default 1)
+    # every kind: opacity of the dark box behind text over the picture (0 = outline only)
+    "text_box": (0, 1),
 }
 TG_CUSTOM = ("max_s", "hold_beats", "logo_s", "logo_size", "fade_s", "smart_fill", "logo_fade_s", "end_fade_s",
              "intro_mix",
@@ -153,7 +156,8 @@ LACY_CUSTOM = ("lead_in_s", "require_facecam", "streamer_only")   # stream clips
 CUSTOM_DEFAULTS = {"logo_fade_s": 0.4, "end_fade_s": 3.0, "intro_mix": 0.0, "unique_clips": 1, "crop_safe": 1,
                    "action_first": 0, "ambient_bias": 0.0, "palette_match": 0.0, "impact_ending": 0,
                    "opener_rotation": 10, "footage_match": 1, "glitch_check": 1, "sharpen": 0.0,
-                   "lead_in_s": 0.0, "require_facecam": 1, "streamer_only": 1, "variety": 0.7}
+                   "lead_in_s": 0.0, "require_facecam": 1, "streamer_only": 1, "variety": 0.7,
+                   "text_box": 0.55}
 
 # What the editor does by itself, with no setting (the rule compiler, spikebot/rules.py, reads
 # saved notes against this and the settings menu). Add a line when new code makes a behaviour
@@ -164,9 +168,18 @@ BUILT_IN = (
     " whole stream frame, nothing cropped off, in a 1080x1350 (4:5) video with the hook above and captions below",
     "Every edit (Tokyo Girl / trend / GTA 5 vs 6) is 1080x1350 (4:5), never 9:16; a shot whose crop would cut"
     " off on-screen text or the subject is shown whole on black instead",
-    "On-screen text looks like TikTok's own: TikTok Sans, white captions with a thin black outline in sentence"
-    " case, the hook / question as black text on a white box; nothing moves, pops or fades, a line just"
-    " disappears, and each stays 1.5 s longer (the hook too) so it can be read",
+    "On-screen text looks like TikTok's own: TikTok Sans, white captions in sentence case on a see-through dark"
+    " box whenever they sit over the picture (text_box sets how dark; on a black band just a thin outline), the"
+    " hook / question as black text on a white box; nothing moves, pops or fades, a line just disappears, and"
+    " each stays 1.5 s longer (the hook too) so it can be read",
+    "Stream clips are never darker than the stream: no grade lowers the brightness or pushes contrast past 1.12,"
+    " no vignette, and dark footage (night, dark rooms) is measured and brightened automatically",
+    "Tokyo Girl / trend / GTA 5 vs 6: trailer video only, never screenshots or still images",
+    "GTA 5 vs GTA 6 comparisons never fade out at the end (the last pair plays to the final frame)",
+    "Tokyo Girl / trend: the Rockstar Games Presents opening is added on top of max_s (the edit after it keeps"
+    " its full length) and can play up to 12 s",
+    "Tokyo Girl / trend: the post caption line matches the footage (\"vice city at night\" only when the edit"
+    " shows night shots; the footage is picked to fit the line first)",
     "No sound effects on any edit or clip (whooshes / risers / hits removed); the sfx setting does nothing",
     "Calls to action (follow X / watch X live on Twitch) go in the post caption and description, never on"
     " screen; every campaign's required hashtags and mentions are added to every caption",
@@ -184,7 +197,7 @@ BUILT_IN = (
     "Stream clips: the clip never starts or ends mid-word or mid-sentence",
     "Stream clips: moments where chat only surged because the streamer asked chat something (a question, poll,"
     " 'type 1', 'spam W'), thanked subs / a raid or read an ad are skipped before editing; with the Claude key"
-    " each moment is rated 0-10 and below `impact.min_score` (default 4) it is not edited",
+    " each moment is rated 0-10 and below `impact.min_score` (default 5) it is not edited",
     "Captions sit at one fixed spot, one line at a time, never jumping up or down",
     "Tokyo Girl / trend: never any on-screen text (no captions, story cards or hook box); text_level is always none",
     "Tokyo Girl / trend: silent files (no audio track); the sound is added in the app",
@@ -259,7 +272,7 @@ def dims(mode: str) -> dict[str, tuple[str, ...]]:
     if tg:
         out["intro"] = INTROS
         out["framing"] = FRAMINGS
-        out["media"] = MEDIA
+        out["media"] = ("clips",)   # never screenshots: nothing to vary
     return out
 
 
@@ -326,7 +339,7 @@ def resolve(style: dict) -> dict:
         "transition": transition, "motion": motion,
         "framing": style.get("framing") if style.get("framing") in FRAMINGS else DEFAULT["framing"],
         "smart_fill": bool(num("smart_fill", 1)),
-        "media": style.get("media") if style.get("media") in MEDIA else "mixed",
+        "media": "clips",   # trailer edits never use screenshots (Tim, 24 Nov: "never use images")
         "max_s": num("max_s", None), "hold_beats": int(num("hold_beats", 1)),
         "logo_s": num("logo_s", None), "logo_size": num("logo_size", 0.78), "fade_s": num("fade_s", 0.45),
         "ending": style.get("ending") if style.get("ending") in ENDINGS else "none",
@@ -347,6 +360,7 @@ def resolve(style: dict) -> dict:
         "footage_match": bool(num("footage_match", 1)), "glitch_check": bool(num("glitch_check", 1)),
         "lead_in_s": num("lead_in_s", 0.0), "require_facecam": bool(num("require_facecam", 1)),
         "streamer_only": bool(num("streamer_only", 1)), "variety": num("variety", CUSTOM_DEFAULTS["variety"]),
+        "text_box": num("text_box", CUSTOM_DEFAULTS["text_box"]),
     }
 
 
@@ -361,25 +375,52 @@ def sharpen_filter(amount: float) -> str:
 
 
 def grade_filter(g: dict) -> str:
-    """ffmpeg filter for a grade ('' when it is neutral)."""
+    """ffmpeg filter for a grade ('' when it is neutral). `gamma` > 1 lifts the shadows and mids
+    (stream_grade sets it for dark footage)."""
     parts = []
-    if any(abs(g.get(k, d) - d) > 1e-3 for k, d in (("saturation", 1), ("contrast", 1), ("brightness", 0))):
+    gamma = float(g.get("gamma") or 1.0)
+    if any(abs(g.get(k, d) - d) > 1e-3 for k, d in (("saturation", 1), ("contrast", 1), ("brightness", 0))) \
+            or abs(gamma - 1.0) > 1e-3:
         parts.append(f"eq=saturation={g['saturation']:.3f}:contrast={g['contrast']:.3f}"
-                     f":brightness={g['brightness']:.3f}")
+                     f":brightness={g['brightness']:.3f}" + (f":gamma={gamma:.3f}" if abs(gamma - 1.0) > 1e-3 else ""))
     w = g.get("warmth", 0.0)
     if abs(w) > 1e-3:  # warm = more red / less blue in mids and highlights
         parts.append(f"colorbalance=rm={w:.3f}:bm={-w:.3f}:rh={w / 2:.3f}:bh={-w / 2:.3f}")
     return ",".join(parts)
 
 
+# Stream clips are never darker than the stream (Tim, 24 Nov: "way too dark, impossible to see
+# anything"): the grade can't lower brightness or push contrast far (that crushes night scenes), and
+# footage whose average brightness is under STREAM_DARK_Y is lifted towards STREAM_TARGET_Y with gamma.
+# grades the A/B/C versions of a stream clip try by themselves (moody / muted only when Tim pins them)
+STREAM_GRADES = ("natural", "clean", "punchy", "vivid", "warm", "cool")
+STREAM_MAX_CONTRAST = 1.12
+STREAM_DARK_Y, STREAM_TARGET_Y, STREAM_MAX_GAMMA = 0.34, 0.42, 1.7
+
+
+def stream_grade(g: dict, mean_y: float | None = None) -> dict:
+    """A stream clip's grade made safe: never darker, contrast capped, dark footage lifted.
+    `mean_y`: the clip's average brightness 0-1 (editor.mean_luma), None = not measured."""
+    g = dict(g)
+    g["brightness"] = max(0.0, float(g.get("brightness", 0.0)))
+    g["contrast"] = min(float(g.get("contrast", 1.0)), STREAM_MAX_CONTRAST)
+    if mean_y is not None and 0.02 < mean_y:
+        after = (mean_y - 0.5) * g["contrast"] + 0.5 + g["brightness"]   # what eq makes of the average
+        if after < STREAM_DARK_Y:
+            gamma = math.log(max(after, 0.02)) / math.log(STREAM_TARGET_Y)
+            g["gamma"] = round(max(1.0, min(STREAM_MAX_GAMMA, gamma)), 3)
+    return g
+
+
 def look_filter(look: dict, mode: str, width: int = 1080, height: int = 1350) -> str:
     """Film-look ffmpeg filters (grain, vignette, cinema bars) for a resolved style.
-    Cinema bars only in Tokyo Girl: the Lacy layout needs the full frame."""
+    Cinema bars only in Tokyo Girl: the Lacy layout needs the full frame. No vignette on stream
+    clips: it darkens the gameplay at the edges."""
     parts = []
     sharp = sharpen_filter((look or {}).get("sharpen") or 0)
     if sharp:
         parts.append(sharp)
-    if (look or {}).get("vignette"):
+    if (look or {}).get("vignette") and mode != "lacy":
         parts.append("vignette=angle=PI/5")
     g = float((look or {}).get("grain") or 0)
     if g > 0:
@@ -488,6 +529,8 @@ SETTING_INFO = {
     "logo_size": ("Logo size", "logo width as a share of the screen"),
     "sfx": ("Sound effects", "removed: no edit or clip gets sound effects any more (Tim, 20 Nov)"),
     "sharpen": ("Sharpening", "extra definition / clarity, the TikTok \"4K\" look (0 = off, 1 = strong)"),
+    "text_box": ("Text background", "how dark the see-through box behind text over the picture is (0 = no box, just"
+                 " an outline; 1 = solid black)"),
     "logo_fade_s": ("Logo fade-out", "seconds the GTA VI logo takes to burst away on the drop (lower = faster)"),
     "end_fade_s": ("End fade", "seconds the last clip fades out to black (0 = no fade)"),
     "intro_mix": ("Rockstar intro share", "share of logo-intro edits that open with \"Rockstar Games Presents\""
@@ -924,6 +967,8 @@ def pick_variants(profile: Profile, mode: str, rng: random.Random,
                 if i == 0 and base.get(dim) not in opts:
                     style[dim] = DEFAULT[dim]   # A: the 4:5 default; B/C try 1:1 and stacked
                     continue
+            if dim == "grade" and mode == "lacy" and base.get(dim) not in opts:
+                opts = STREAM_GRADES   # never tries the dark / washed-out grades on stream clips by itself
             taken = {v["style"].get(dim) for v in out}
             fresh = [o for o in opts if o not in taken] or list(opts)
             unseen = [o for o in fresh if all(a.get(dim) != o for a in avoid)] or fresh

@@ -915,6 +915,23 @@ class ReviewAdapter:
         return {"line": line, "voice": vo, "s": length,
                 "window": editor.teaser_window(levels, peak, duration, length)}
 
+    @staticmethod
+    def brightness(d: Path, seg: Path) -> float | None:
+        """The segment's average brightness (0-1), measured once per clip and kept in look.json:
+        dark footage gets lifted by style.stream_grade."""
+        f = d / "look.json"
+        try:
+            return json.loads(f.read_text(encoding="utf-8"))["mean_y"]
+        except (OSError, ValueError, KeyError):
+            pass
+        y = editor.mean_luma(seg)
+        if y is not None:
+            try:
+                f.write_text(json.dumps({"mean_y": y}), encoding="utf-8")
+            except OSError:
+                pass
+        return y
+
     def _used(self) -> set[str]:
         if self.used_titles is not None:
             return set(self.used_titles)
@@ -948,6 +965,7 @@ class ReviewAdapter:
         camp = self.lcfg.get("campaign") or campaigns.for_channel(self.cfg, job.get("channel") or "lacy")
         # a sponsor logo (ClipUp) only where this streamer's campaign allows logos (never Lacy / Reach)
         overlay = campaigns.overlay_for(self.cfg, job.get("channel") or "lacy", self.base)
+        mean_y = self.brightness(d, seg)   # never darker than the stream; dark footage lifted
         out = []
         from . import progress
         track = progress.current()
@@ -1036,7 +1054,7 @@ class ReviewAdapter:
                                                 picture=lay.picture),
                                encoding="utf-8")
             mp4 = folder / f"{stem}.mp4"
-            look = st.grade_filter(r["grade"])
+            look = st.grade_filter(st.stream_grade(r["grade"], mean_y))
             fx = st.look_filter(r["look"], "lacy")
             # no sound effects on any edit or clip (Tim, 20 Nov): the clip's own sound only
             try:

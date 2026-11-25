@@ -285,6 +285,79 @@ def edit_line(story: "Story", today: date, salt: str = "") -> str:
     return fill(pool[i], today)
 
 
+# Caption lines that name what's on screen (Tim, 24 Nov: "vice city at night should actually show clips
+# of vice city at night"): line -> vision tags (shot_labels) of the footage it needs. The edit's
+# footage is picked to show it, and the line is only used when at least LINE_SHARE of the edit's
+# clips really do; otherwise a line that fits the footage (or a general one) is used instead.
+LINE_TAGS = {
+    "vice city hits different at night": {"night"},
+    "vice city at night": {"night"},
+    "golden hour in vice city": {"sunset"},
+    "jason and lucia": {"couple"},
+    "this city 🌴": {"city", "skyline", "beach"},
+    "vice city in {days_text} 🌴": {"city", "skyline", "beach", "ocean"},
+    "leonida looks unreal": {"scenery", "establishing", "ocean", "beach", "skyline", "sunset"},
+    "the detail in this game": {"close_up", "character", "interior"},
+}
+LINE_SHARE = 0.5       # share of the edit's clips that must show what the line names
+LINE_MIN_SHOTS = 6     # the library needs this many fitting labelled clips before footage is steered
+
+
+def line_tags(line: str) -> set[str]:
+    """The vision tags a caption line needs (empty = a general line that fits any footage)."""
+    return set(LINE_TAGS.get(line, set()))
+
+
+def footage_share(plan: "Plan", tags: set[str]) -> float:
+    """Share of the edit's clips showing any of `tags` (vision labels)."""
+    slots = [sl for sl in plan.slots if sl.shot.kind == "video"]
+    if not slots or not tags:
+        return 0.0
+    return sum(1 for sl in slots if sl.shot.vtags & tags) / len(slots)
+
+
+def pick_line(story: "Story", today: date, salt: str, shots: list["Shot"]) -> str:
+    """The caption line for an edit, before it is planned: edit_line, unless it names footage the
+    library can't show (too few labelled clips with those tags): then the next general line."""
+    raw = _line_pool(today)
+    first = edit_line(story, today, salt)
+    i = raw.index(_raw_of(first, today)) if _raw_of(first, today) in raw else 0
+    for k in range(len(raw)):
+        cand = raw[(i + k) % len(raw)]
+        need = line_tags(cand)
+        if not need or sum(1 for s in shots if s.vtags & need) >= LINE_MIN_SHOTS:
+            return fill(cand, today)
+    return first
+
+
+def line_for_footage(line: str, plan: "Plan", story: "Story", today: date, salt: str) -> str:
+    """`line` if the edit's footage really shows what it names, else a line whose footage the edit
+    does show, else a general line (never "at night" over daytime clips)."""
+    raw = _raw_of(line, today)
+    if raw is None or not line_tags(raw) or footage_share(plan, line_tags(raw)) >= LINE_SHARE:
+        return line
+    pool = _line_pool(today)
+    h = int(hashlib.sha1(f"{story.id}|{today.isoformat()}|{salt}|fit".encode()).hexdigest(), 16)
+    fits = [c for c in pool if line_tags(c) and footage_share(plan, line_tags(c)) >= LINE_SHARE]
+    general = [c for c in pool if not line_tags(c)]
+    choice = fits or general or pool
+    return fill(choice[h % len(choice)], today)
+
+
+def _line_pool(today: date) -> list[str]:
+    d = days_to_launch(today)
+    phase = "pre" if d > 0 else "launch" if d == 0 else "post"
+    return EDIT_LINES[phase] + (EDIT_LINES["any"] if phase != "launch" else [])
+
+
+def _raw_of(line: str, today: date) -> str | None:
+    """The EDIT_LINES template a filled-in line came from."""
+    for raw in _line_pool(today):
+        if fill(raw, today) == line:
+            return raw
+    return None
+
+
 def days_to_launch(today: date) -> int:
     return (LAUNCH - today).days
 
@@ -1062,6 +1135,7 @@ class Prefs:
     variety: float = 0.0         # variety 0-1: avoid clips / source videos used in the recent edits
     recent: set[str] = field(default_factory=set)            # clips of the last few edits
     src_load: dict[str, float] = field(default_factory=dict)  # recent uses per source video / its shots
+    theme: set[str] = field(default_factory=set)   # vision tags the caption line names ("night"): preferred
 
 
 _groups_cache: dict[tuple, dict[str, str]] = {}
@@ -1283,7 +1357,8 @@ def _choose_pref(fits: list[Shot], tag: str, dur: float, used_here, uses: dict[s
     used = {group_of(prefs, k) for k in order}
     fresh = [s for s in fits if group_of(prefs, s.key) not in used]
     near = set(order)
-    for pool in ([s for s in fresh if tag in s.tags], fresh):
+    themed = [s for s in fresh if s.vtags & prefs.theme] if prefs.theme else []
+    for pool in (themed, [s for s in fresh if tag in s.tags], fresh):
         if not pool:
             continue
         pool = narrow(pool, lambda s: not near_used(s, near))   # variety across one long video
@@ -1362,14 +1437,24 @@ def build_text_ass(cards: list[tuple[float, float, str]], font: str, size: int,
     size = int(r.get("text_px") or size * float(r.get("scale") or 1.0))
     q = int(size * 1.05)
     align, margin = TEXT_POS.get(r.get("position") or "high", TEXT_POS["high"])
+    in_band = False
     if r.get("text_y") is not None:
         align, margin = 2, int(max(150, min(H - 150, H * (1 - float(r["text_y"])) - size)))
     elif (r.get("position") or "high") == "high" and r.get("framing") in BAND_FRAMINGS:
         margin = BAND_MARGIN   # in the band above the picture, not over it
+        in_band = True
     main = ass_colour(r.get("text_colour") or "#FFFFFF")
     hi = "&H" + ass_colour(r.get("highlight") or "#FFE500")[4:] + "&"
     outline = int(r["outline"]) if r.get("outline") is not None else 5
     shadow = int(r["shadow"]) if r.get("shadow") is not None else 1
+    box = editor.text_box(r)
+    if box > 0 and not in_band:   # over the picture: on a see-through dark box, so it never blends in
+        bc = editor.box_colour(box)
+        card_style = (f"Style: Card,{font},{size},{main},{main},{bc},{bc},-1,0,0,0,100,100,0,0,3,{editor.BOX_PAD + 4},0,"
+                      f"{align},90,90,{margin},1")
+    else:
+        card_style = (f"Style: Card,{font},{size},{main},{main},&H00000000,&H96000000,-1,0,0,0,100,100,0,0,1,{outline},"
+                      f"{shadow},{align},90,90,{margin},1")
     head = f"""[Script Info]
 ScriptType: v4.00+
 PlayResX: {W}
@@ -1379,7 +1464,7 @@ ScaledBorderAndShadow: yes
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Card,{font},{size},{main},{main},&H00000000,&H96000000,-1,0,0,0,100,100,0,0,1,{outline},{shadow},{align},90,90,{margin},1
+{card_style}
 Style: Ask,{font},{q},&H00000000,&H00000000,&H00FFFFFF,&H00FFFFFF,-1,0,0,0,100,100,0,0,3,22,0,{align},90,90,{margin},1
 Style: Label,{font},{LABEL_PX},&H00FFFFFF,&H00FFFFFF,&H50000000,&H50000000,-1,0,0,0,100,100,0,0,3,14,0,7,0,0,0,1
 
@@ -1784,6 +1869,7 @@ def cards_for_level(cards: list[tuple[float, float, str]], level: str,
 
 LOGO_GROW = 0.35    # how much bigger the logo gets as it bursts away on the drop
 LOGO_OUT_S = 0.4    # the burst: quick
+PRESENTS_MAX_S = 12.0   # the "Rockstar Games Presents" opening may play this long (added on top of max_s)
 
 
 def intro_filter(logo_w: int, intro_s: float, out_s: float = LOGO_OUT_S) -> str:
@@ -1936,7 +2022,7 @@ def make(lcfg: dict, n: int = 1, story_id: str | None = None, now: float | None 
     today = dt.date()
     state_path = Path(lcfg["state_file"])
     state = load_state(state_path)
-    shots = Library(lcfg).shots() if shots is None else shots
+    shots = [s for s in (Library(lcfg).shots() if shots is None else shots) if s.kind == "video"]   # never stills
     export = Path(lcfg["export_dir"])
     out = []
     for i in range(n):
@@ -2035,12 +2121,11 @@ class ReviewAdapter:
                     log.warning("song beat map unavailable, using the %s BPM grid: %s", self.lcfg["bpm"], e)
             is_tg_song = not song or music.clean_name(song["name"]) == music.clean_name(
                 self.lcfg.get("song") or music.TOKYO_GIRL_SONG)
-            shots = self.shots()
-            if r["media"] == "clips":   # trailer video only, never screenshots
-                shots = [x for x in shots if x.kind == "video"]
-                if not shots:
-                    raise editor.EditError("no trailer clips in the library (screenshots are switched off):"
-                                           " run `fetch` or add official trailers")
+            # trailer video only, never screenshots (Tim, 24 Nov: "never use images"; no setting brings them back)
+            shots = [x for x in self.shots() if x.kind == "video"]
+            if not shots:
+                raise editor.EditError("no trailer clips in the library (screenshots are never used):"
+                                       " run `fetch` or add official trailers")
             logo = Path(self.lcfg.get("logo_file") or "")
             intro, pres, intro_note = self.pick_intro(r, item, n, spec, base_v, state)
             want_logo = intro == "logo" and logo.is_file()
@@ -2049,10 +2134,12 @@ class ReviewAdapter:
                 log.warning("logo intro asked for but %s is missing: rendering without it", logo)
             lead_s = r["logo_s"] or None    # how long the logo builds before the drop
             if want_pres:   # the "Rockstar Games Presents" shot plays up to the drop
-                lead_s = min(pres.length, 8.0)
+                lead_s = min(pres.length, PRESENTS_MAX_S)
             fade = float(r.get("fade_s") or 0.45) if r["transition"] == "fade" else 0.0
             prefs = prefs_for(r, shots, state.get("openers"), fade, state.get("recent_edits"))
             cap = edit_cap(r, self.lcfg, trend)
+            if want_pres:   # the long Presents opening comes on top: the edit after it keeps its length
+                cap += lead_s
             plan_cfg, song_start = dict(self.lcfg, max_s=cap, min_s=min(float(self.lcfg["min_s"]), cap)), None
             build_beats = music.BUILD_BEATS
             if song:
@@ -2070,6 +2157,9 @@ class ReviewAdapter:
                                            taken, rng0, r.get("hook_style"))
                 seed = rng0.randrange(1_000_000)
             taken.add(story.id)
+            # the caption line, and footage that shows what it names ("vice city at night" = night clips)
+            line = pick_line(story, today, "", shots)
+            prefs.theme = line_tags(_raw_of(line, today) or "") if not base_v else set()
             cards = list(base_v["cards"]) if base_v and base_v.get("cards") else list(story.cards)
             if texts.get("hook"):
                 cards[0] = texts["hook"]
@@ -2133,6 +2223,7 @@ class ReviewAdapter:
                     base_v = src_v
             if r["framing"] == "stack":
                 plan = with_seconds(plan, shots, random.Random(seed + 1), state.get("uses"))
+            line = line_for_footage(line, plan, story, today, spec["label"])   # never "at night" over daytime
             stem = f"r{n}_{spec['label']}"
             mp4 = folder / f"{stem}.mp4"
             if r["text_level"] == "plain":
@@ -2165,9 +2256,9 @@ class ReviewAdapter:
             hook = plain(fill(texts["hook"], today)) if texts.get("hook") else None
             same_song = ((base_v or {}).get("music") or {}).get("song") == (song or {}).get("name")
             caps = dict(base_v["captions"]) if base_v and not hook and same_song else \
-                (tg_captions if (is_tg_song and not trend) else trend_captions)(story, today, self.lcfg, hook)
+                (tg_captions if (is_tg_song and not trend) else trend_captions)(story, today, self.lcfg, hook or line)
             title = (base_v["title"] if base_v and not hook
-                     else (hook or edit_line(story, today))[:95])
+                     else (hook or line)[:95])
             out.append({"label": spec["label"], "style": spec["style"], "preset": spec.get("preset"),
                         "experimental": spec.get("experimental", False), "story": story.id, "seed": seed,
                         "cards": cards, "title": title,

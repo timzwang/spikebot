@@ -6,9 +6,18 @@ caller falls back to the rule-based parser (style.parse_feedback) and the measur
 numbers only. The `anthropic` package is imported lazily, so the chat bot never
 needs it.
 
-Models: /feedback runs on Sonnet 5.5 (SPIKEBOT_FEEDBACK_MODEL), #inspiration on Opus 5.5
-(SPIKEBOT_AI_MODEL). Cost: one /feedback is a few thousand tokens (under 1p); one #inspiration
-analysis with 8 small frames is roughly 10-15k tokens (about 5-8p).
+Models (Tim, 24 Nov: "it's burning through my credits"): each task has its own model (`TASKS`).
+Sonnet 5.5 for the writing and judgement Tim sees (stream-clip titles/hooks, /feedback, the rule
+compiler, #inspiration); Haiku 5.5 (a twentieth of Sonnet's price) for the high-volume checks
+(shot labels, GTA 5 vs 6 labels, impact ratings, which lines are game audio). Env overrides:
+SPIKEBOT_AI_MODEL (#inspiration), SPIKEBOT_FEEDBACK_MODEL (/feedback, rules), SPIKEBOT_COPY_MODEL
+(titles, hooks), SPIKEBOT_CHEAP_MODEL (labels, impact, speakers).
+
+Spend: every request is logged with its tokens and cost in data/ai_usage.json (per UK day and
+task) and shown in #daily-summary. A daily budget (`ai.daily_usd` in config.json or
+SPIKEBOT_AI_DAILY_USD, default $0.75) stops background work (labelling, the rule compiler) at
+half of it and clip copy / impact checks at all of it; callers then fall back to their
+non-AI path. Requests Tim starts himself (/feedback, #inspiration) always run.
 
 Privacy/policy: only frames and numbers are sent, never the reference file itself,
 and the model is told not to copy on-screen words, speech or footage. Nothing it
@@ -17,18 +26,49 @@ returns is ever burned into our edits as their wording.
 from __future__ import annotations
 
 import base64
+import fcntl
 import json
 import logging
 import os
+import time
+from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from . import style as st
 
 log = logging.getLogger("ai")
 
-MODEL = "claude-opus-5-5"            # #inspiration study (vision, harder judgement)
-FEEDBACK_MODEL = "claude-sonnet-5-5"  # /feedback and the review Feedback button
+OPUS, SONNET, HAIKU = "claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5"
+MODEL = SONNET            # #inspiration study (was Opus at high effort: several times the cost)
+FEEDBACK_MODEL = SONNET   # /feedback, the review Feedback button, the rule compiler
+COPY_MODEL = SONNET       # stream-clip titles, captions, hooks (what viewers read)
+CHEAP_MODEL = HAIKU       # shot labels, impact ratings, game-audio lines (high volume)
 FALLBACK_BETA = "server-side-fallback-2026-07-01"
+# Models with a server-side refusal fallback (Haiku has none: the fallback params would 400)
+FALLBACK_MODELS = ("claude-opus-5-5", "claude-opus-5", "claude-sonnet-5-5", "claude-fable-5")
+
+# task -> (env var that overrides the model, default model, budget tier)
+# tiers: "tim" = Tim asked for it (never blocked); "clip" = per stream clip (blocked at the daily
+# budget); "background" = labelling / rule compiling (blocked at half of it)
+TASKS = {
+    "study": ("SPIKEBOT_AI_MODEL", MODEL, "tim"),
+    "feedback": ("SPIKEBOT_FEEDBACK_MODEL", FEEDBACK_MODEL, "tim"),
+    "rules": ("SPIKEBOT_FEEDBACK_MODEL", FEEDBACK_MODEL, "background"),
+    "copy": ("SPIKEBOT_COPY_MODEL", COPY_MODEL, "clip"),
+    "voice": ("SPIKEBOT_COPY_MODEL", COPY_MODEL, "clip"),
+    "impact": ("SPIKEBOT_CHEAP_MODEL", CHEAP_MODEL, "clip"),
+    "speakers": ("SPIKEBOT_CHEAP_MODEL", CHEAP_MODEL, "clip"),
+    "labels": ("SPIKEBOT_CHEAP_MODEL", CHEAP_MODEL, "background"),
+    "compare_labels": ("SPIKEBOT_CHEAP_MODEL", CHEAP_MODEL, "background"),
+}
+# $ per million tokens (input, output); cache reads 0.1x input, cache writes 1.25x
+PRICES = {"claude-opus-5-5": (4.0, 20.0), "claude-sonnet-5-5": (2.0, 10.0), "claude-haiku-5-5": (0.10, 0.50),
+          "claude-opus-5": (5.0, 25.0), "claude-sonnet-5": (2.0, 10.0), "claude-opus-4-8": (5.0, 25.0),
+          "claude-fable-5-2": (8.0, 40.0)}
+DAILY_USD = 0.75          # default daily budget (about £18 a month at most; a normal day is far less)
+BACKGROUND_SHARE = 0.5    # labelling and the rule compiler stop at this share of it
+UK = ZoneInfo("Europe/London")
 
 
 class AIError(RuntimeError):
@@ -59,10 +99,9 @@ def api_key(base: Path | None = None) -> str | None:
 
 
 def model_name(base: Path | None = None, task: str = "study") -> str:
-    """`task="feedback"` -> SPIKEBOT_FEEDBACK_MODEL (default Sonnet 5.5); anything else ->
-    SPIKEBOT_AI_MODEL (default Opus 5.5). .env next to config wins over the environment."""
-    var, default = ("SPIKEBOT_FEEDBACK_MODEL", FEEDBACK_MODEL) if task in ("feedback", "labels") \
-        else ("SPIKEBOT_AI_MODEL", MODEL)
+    """The model for a task (`TASKS`); its env var in .env next to config wins over the
+    environment, which wins over the default."""
+    var, default, _tier = TASKS.get(task, TASKS["study"])
     if base is not None:
         v = _dotenv(Path(base) / ".env").get(var)
         if v:
@@ -82,7 +121,10 @@ def available(base: Path | None = None) -> bool:
 
 def ask_json(system: str, content: list[dict] | str, schema: dict, base: Path | None = None,
              max_tokens: int = 8000, client=None, effort: str = "medium", task: str = "study") -> dict:
-    """One structured-output request. Returns the parsed JSON. Raises AIError."""
+    """One structured-output request on the task's model. Returns the parsed JSON. Raises AIError
+    (also when today's budget for this kind of task is used up: `check_budget`)."""
+    model = model_name(base, task)
+    check_budget(base, task)
     if client is None:
         try:
             import anthropic
@@ -92,14 +134,15 @@ def ask_json(system: str, content: list[dict] | str, schema: dict, base: Path | 
         if not key:
             raise AIError("ANTHROPIC_API_KEY is not set")
         client = anthropic.Anthropic(api_key=key, timeout=120.0)
+    kw = dict(model=model, max_tokens=max_tokens, system=system, messages=[{"role": "user", "content": content}],
+              output_config={"effort": effort, "format": {"type": "json_schema", "schema": schema}})
+    if model.startswith(FALLBACK_MODELS):   # a refusal re-runs on the fallback model; Haiku has none
+        kw.update(betas=[FALLBACK_BETA], fallbacks="default")
     try:
-        resp = client.beta.messages.create(
-            model=model_name(base, task), max_tokens=max_tokens, system=system,
-            messages=[{"role": "user", "content": content}],
-            output_config={"effort": effort, "format": {"type": "json_schema", "schema": schema}},
-            betas=[FALLBACK_BETA], fallbacks="default")
+        resp = client.beta.messages.create(**kw)
     except Exception as e:  # noqa: BLE001 - network/API errors become a fallback, never a crash
         raise AIError(f"Claude API call failed: {type(e).__name__}: {str(e)[:200]}") from e
+    record(base, task, getattr(resp, "model", None) or model, getattr(resp, "usage", None))
     if getattr(resp, "stop_reason", None) == "refusal":
         raise AIError("the model declined this request")
     if getattr(resp, "stop_reason", None) == "max_tokens":
@@ -109,6 +152,124 @@ def ask_json(system: str, content: list[dict] | str, schema: dict, base: Path | 
         return json.loads(text)
     except ValueError as e:
         raise AIError("the answer was not valid JSON") from e
+
+
+# --------------------------------------------------------------------------
+# Spend: a ledger per UK day and a daily budget
+# --------------------------------------------------------------------------
+def usage_path(base: Path | None) -> Path | None:
+    """data/ai_usage.json next to config.json (None without a base: tests, one-off scripts)."""
+    return Path(base) / "data" / "ai_usage.json" if base is not None else None
+
+
+def cost_usd(model: str, usage) -> float:
+    """What one response cost, from its usage (input, output, cache reads and writes)."""
+    if usage is None:
+        return 0.0
+    pin, pout = PRICES.get(str(model), PRICES["claude-sonnet-5-5"])
+
+    def n(k: str) -> float:
+        v = getattr(usage, k, None) if not isinstance(usage, dict) else usage.get(k)
+        return float(v) if isinstance(v, (int, float)) else 0.0
+    return (n("input_tokens") * pin + n("cache_creation_input_tokens") * pin * 1.25
+            + n("cache_read_input_tokens") * pin * 0.1 + n("output_tokens") * pout) / 1e6
+
+
+def uk_day(now: float | None = None) -> str:
+    return datetime.fromtimestamp(now or time.time(), UK).strftime("%Y-%m-%d")
+
+
+def _read_usage(path: Path) -> dict:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def record(base: Path | None, task: str, model: str, usage, now: float | None = None) -> float:
+    """Add one request to the ledger (locked: the bot and render subprocesses all write). Never raises."""
+    path = usage_path(base)
+    usd = cost_usd(model, usage)
+    if path is None or usage is None:
+        return usd
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path.with_suffix(".lock"), "w") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            data = _read_usage(path)
+            days = data.setdefault("days", {})
+            day = days.setdefault(uk_day(now), {"usd": 0.0, "tasks": {}})
+            row = day["tasks"].setdefault(task, {"calls": 0, "in": 0, "out": 0, "usd": 0.0})
+            row["calls"] += 1
+            row["in"] += int(getattr(usage, "input_tokens", 0) or 0)
+            row["out"] += int(getattr(usage, "output_tokens", 0) or 0)
+            row["usd"] = round(row["usd"] + usd, 5)
+            day["usd"] = round(day["usd"] + usd, 5)
+            for old in sorted(days)[:-40]:   # 40 days kept
+                days.pop(old, None)
+            tmp = path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(data, indent=1, sort_keys=True), encoding="utf-8")
+            tmp.replace(path)
+    except OSError as e:
+        log.info("could not log AI usage: %s", e)
+    return usd
+
+
+def usage_on(base: Path | None, day: str | None = None) -> dict:
+    """{"usd", "tasks": {task: {calls, in, out, usd}}} for one UK day (today by default)."""
+    path = usage_path(base)
+    if path is None:
+        return {"usd": 0.0, "tasks": {}}
+    return (_read_usage(path).get("days") or {}).get(day or uk_day(), {"usd": 0.0, "tasks": {}})
+
+
+def daily_budget(base: Path | None) -> float:
+    """Dollars a day: SPIKEBOT_AI_DAILY_USD (.env, then the environment), else `ai.daily_usd` in
+    config.json, else DAILY_USD. 0 = no limit."""
+    raw = None
+    if base is not None:
+        raw = _dotenv(Path(base) / ".env").get("SPIKEBOT_AI_DAILY_USD")
+    raw = raw or os.environ.get("SPIKEBOT_AI_DAILY_USD")
+    if raw is None and base is not None:
+        try:
+            raw = (json.loads((Path(base) / "config.json").read_text(encoding="utf-8")).get("ai") or {}).get("daily_usd")
+        except (OSError, ValueError, AttributeError):
+            raw = None
+    try:
+        return max(0.0, float(raw)) if raw is not None else DAILY_USD
+    except (TypeError, ValueError):
+        return DAILY_USD
+
+
+def check_budget(base: Path | None, task: str, now: float | None = None) -> None:
+    """Raise AIError when today's spend has reached this task's share of the daily budget."""
+    tier = TASKS.get(task, TASKS["study"])[2]
+    if base is None or tier == "tim":
+        return
+    cap = daily_budget(base)
+    if cap <= 0:
+        return
+    limit = cap * (BACKGROUND_SHARE if tier == "background" else 1.0)
+    spent = float(usage_on(base, uk_day(now)).get("usd") or 0.0)
+    if spent >= limit:
+        raise AIError(f"today's AI budget is used up (${spent:.2f} of ${limit:.2f} for {tier} work);"
+                      " it resets at midnight UK time")
+
+
+def usage_line(base: Path | None, day: str | None = None) -> str:
+    """One line for #daily-summary: today's spend, the budget and the biggest tasks."""
+    u = usage_on(base, day)
+    cap = daily_budget(base)
+    tasks = sorted((u.get("tasks") or {}).items(), key=lambda kv: -kv[1].get("usd", 0))
+    bits = [f"{TASK_NAMES.get(t, t)} {r['calls']}× ${r['usd']:.2f}" for t, r in tasks[:5]]
+    head = f"🤖 **Claude API**: ${float(u.get('usd') or 0):.2f} today" + (f" of ${cap:.2f} budget" if cap else "")
+    return head + (" · " + " · ".join(bits) if bits else " · no requests")
+
+
+TASK_NAMES = {"study": "#inspiration", "feedback": "feedback", "rules": "rule compiler", "copy": "titles",
+              "voice": "voiceover lines", "impact": "impact checks", "speakers": "speaker checks",
+              "labels": "shot labels", "compare_labels": "GTA 5 vs 6 labels"}
 
 
 # --------------------------------------------------------------------------
@@ -132,7 +293,8 @@ def settings_menu() -> str:
         " the whole frame so nothing is cut off, over a blurred copy of itself)",
         "smart_fill (custom): 0 or 1  (Tokyo Girl and trend edits: 1 = a close-up of one person goes full screen and"
         " every crop is centred on the subject; default 1)",
-        "media: clips, mixed  (Tokyo Girl and trend edits only: clips = real trailer video only, never screenshots)",
+        "media: clips  (Tokyo Girl and trend edits: always real trailer video, never screenshots; there is no other"
+        " value)",
         "text_level: none, minimal, full, plain  (none = no captions/hook/text at all; minimal = short "
         "opening hook and captions only around the payoff (Lacy) / only the opening card (Tokyo Girl); "
         "full = every spoken word captioned (Lacy) / every story card (Tokyo Girl); plain = Tokyo Girl and trend edits only:"
@@ -157,7 +319,8 @@ def settings_menu() -> str:
     lines.append("grain: film grain strength (0 = off, 6-12 subtle); vignette: 1 = on, 0 = off; "
                  "letterbox: 1 = cinema bars (Tokyo Girl only)")
     lines.append("hook_s: seconds the opening hook stays on screen; payoff: where the peak lands (0.2-0.9)")
-    lines.append("Tokyo Girl timing: max_s = longest a Tokyo Girl edit may be, intro included (e.g. 24; trending-"
+    lines.append("Tokyo Girl timing: max_s = longest a Tokyo Girl edit may be, logo intro included but not the"
+                 " Rockstar Games Presents opening, which is added on top (e.g. 24; trending-"
                  "sound edits ignore it and only stop before their sound ends); hold_beats ="
                  " fewest beats each clip is held (2+ keeps a clip's action intact, fewer cuts); logo_s = seconds"
                  " the logo builds before the drop; logo_size = the logo's largest width as a share of the screen"
@@ -176,6 +339,8 @@ def settings_menu() -> str:
                  " default 1; end_fade_s 0-6 = the last seconds fade slowly to black, default 3")
     lines.append("sharpen 0-1: sharpening / clarity on every kind of edit (the TikTok '4K' look; 0 = off, 0.5 ="
                  " clear, 1 = strong)")
+    lines.append("text_box 0-1: every kind: how dark the see-through box behind text that sits over the picture is"
+                 " (0 = no box, white text with an outline only; default 0.55; text on a black band never gets one)")
     lines.append("Stream clips (lacy) only: lead_in_s 0-5 = seconds added before the clip's start, then snapped"
                  " back to the start of the sentence so the first words are never cut; require_facecam = skip a"
                  " clip whose top panel doesn't show the streamer's real face (e.g. a 'facecam' that is really"
@@ -387,30 +552,42 @@ def study_reference(frames: list[tuple[float, bytes]], measured: dict, note: str
     if note.strip():
         content.append({"type": "text", "text": "The creator's note about why they sent it: " + note.strip()[:800]})
     return ask_json(ART_SYSTEM.format(menu=settings_menu()), content, ART_SCHEMA, base=base,
-                    max_tokens=6000, client=client, effort="high")
+                    max_tokens=6000, client=client, effort="medium", task="study")
 
 
 # --------------------------------------------------------------------------
 # Stream clips: YouTube title + post caption written from what was said
 # --------------------------------------------------------------------------
-CLIP_COPY_SYSTEM = """You write the YouTube Shorts title and the TikTok/Instagram caption for a short clip of a
-streamer playing GTA. You get the streamer's name, the game, chat's reaction words and the transcript of
-what was said in the clip. Write like a real clipper account that people actually follow, not like a bot:
-- Describe what actually happens or is said in THIS clip, specifically. Use the transcript; never invent
-  events that aren't in it. If the transcript is vague, keep it simple ("{name} loses it at this GTA 6 moment").
+CLIP_COPY_SYSTEM = """You write the YouTube Shorts title, the TikTok/Instagram caption and the on-screen hook for a
+short clip of a streamer playing GTA. You get the streamer's name, the game, chat's reaction words and the
+transcript of what was said. Your only job is to make a stranger scrolling past STOP and watch. Write like the
+best clipper accounts, not like a bot summarising the clip.
+
+What makes people stop (use the transcript for the specific detail; never invent events):
+- A curiosity gap: set up a situation and hold back how it ends ("Lacy's security job lasted 40 seconds",
+  "Kai trusted the NPC with the getaway car").
+- Stakes or tension: something about to go wrong, a risk, a rule being broken, a plan that can't work.
+- A contradiction or a surprising specific detail: an odd number, a weird place, an unexpected person,
+  a promise he's about to break ("Adin swore he'd drive carefully this time").
+- A short line he actually said that's funny or dramatic on its own, as part of the title (in quotes only
+  if it is word for word from the transcript, at most 6 quoted words).
+Flat and banned: a plain summary of the activity ("Lacy takes on another security job in GTA 6", "Adin plays
+GTA 6", "Kai explores Vice City"), "{name} does X in GTA 6" with nothing at stake, filler endings like "in GTA 6"
+when they add nothing, and generic hype ("funny moment", "best clip", "you have to see this").
 - title: 25-70 characters, must contain the streamer's name exactly as given, plain English, sentence case,
-  no hashtags, no emojis, no ALL CAPS words except GTA, no quotes around the whole thing.
+  no hashtags, no emojis, no ALL CAPS words except GTA, never quotes around the whole title.
 - caption: 15-80 characters, casual and lowercase is fine, must contain the streamer's name, at most one emoji,
-  no hashtags (they are added later), must not repeat the title word for word.
-- hook: the text on screen for the first seconds, the single most important line: 3-8 words, at most 42
-  characters, must contain the streamer's name, sentence case, no emojis, no hashtags. It is the SETUP that
-  makes someone stay to see the moment: a specific situation or stakes from the transcript ("Kai tries to
-  rob the jewellery store", "Lacy's first police chase in GTA 6"), a promise ("Adin finds the secret
-  room"), or tension ("Clix trusts the wrong NPC"). Never give away the outcome or punchline, never
-  generic ("funny moment", "best clip", "you have to see this"), never a call to follow anyone.
+  no hashtags (they are added later), a different angle from the title (not a copy of it).
+- hook: the text on screen for the first seconds: 3-8 words, at most 42 characters, must contain the streamer's
+  name, sentence case, no emojis, no hashtags. The SETUP that makes someone stay for the moment ("Kai tries to
+  rob the jewellery store", "Lacy's first shift as a guard"); never the outcome or punchline, never a call to
+  follow anyone.
 - Never: insults, mocking, drama, negativity about the streamer, "you won't believe", "insane", "crazy",
   "wait for it", "watch till the end", "POV", "theory", questions to farm comments, story spoilers.
-Give exactly the number of options asked for, each clearly different in angle."""
+If the transcript is vague, build the hook on chat's reaction and what is clearly going on, still with tension
+("Chat saw this coming before {name} did").
+Give exactly the number of options asked for, each a clearly different angle (e.g. one curiosity gap, one
+stakes, one built on what he said), best first."""
 
 CLIP_COPY_SCHEMA = {
     "type": "object", "additionalProperties": False,
@@ -434,7 +611,7 @@ def write_clip_copy(name: str, game: str, transcript: str, vibe: list[str] | Non
     content = (f"Streamer: {name} ({pronouns})\nGame: {game}\nChat reaction: {', '.join((vibe or [])[:8]) or 'none'}\n"
                f"Options wanted: {n}\nTranscript:\n{transcript.strip()[:3000] or '(no clear speech)'}")
     out = ask_json(CLIP_COPY_SYSTEM.replace("{name}", name) + pronoun_rule(name, pronouns), content, CLIP_COPY_SCHEMA, base,
-                   max_tokens=1500, client=client, effort="low", task="feedback")
+                   max_tokens=2500, client=client, effort="low", task="copy")
     return [o for o in out.get("options") or [] if o.get("title") and o.get("caption")]
 
 
@@ -466,7 +643,7 @@ def write_voice_hook(name: str, game: str, transcript: str, vibe: list[str] | No
     content = (f"Streamer: {name} ({pronouns})\nGame: {game}\nChat reaction: {', '.join((vibe or [])[:8]) or 'none'}\n"
                f"Transcript:\n{transcript.strip()[:3000] or '(no clear speech)'}")
     out = ask_json(VOICE_HOOK_SYSTEM.replace("{name}", name) + pronoun_rule(name, pronouns), content, VOICE_HOOK_SCHEMA, base,
-                   max_tokens=400, client=client, effort="low", task="feedback")
+                   max_tokens=1200, client=client, effort="low", task="voice")
     return str(out.get("line") or "").strip()
 
 
@@ -490,7 +667,7 @@ def game_lines(name: str, game: str, lines: list[tuple[float, float, str]], base
     """Indices of transcript lines that are game audio, not the streamer. Raises AIError."""
     text = "\n".join(f"{i}. [{a:.1f}-{b:.1f}s] {t}" for i, (a, b, t) in enumerate(lines))
     out = ask_json(SPEAKER_SYSTEM, f"Streamer: {name}\nGame: {game}\nTranscript:\n{text[:6000]}", SPEAKER_SCHEMA,
-                   base, max_tokens=600, client=client, effort="low", task="feedback")
+                   base, max_tokens=2000, client=client, effort="low", task="speakers")
     return sorted({int(i) for i in out.get("game") or [] if isinstance(i, int) and 0 <= i < len(lines)})
 
 
@@ -537,5 +714,5 @@ def rate_impact(name: str, game: str, timeline: str, chat: dict, loud: float,
                f"Chat ({chat.get('source')}): most common messages {json.dumps(chat.get('messages') or [])[:600]};"
                f" hype words {json.dumps(chat.get('hype words') or [])}\n"
                f"Transcript (seconds from chat's peak):\n{timeline.strip()[:3500] or '(no clear speech)'}")
-    return ask_json(IMPACT_SYSTEM, content, IMPACT_SCHEMA, base, max_tokens=400, client=client,
-                    effort="low", task="feedback")
+    return ask_json(IMPACT_SYSTEM, content, IMPACT_SCHEMA, base, max_tokens=1500, client=client,
+                    effort="low", task="impact")

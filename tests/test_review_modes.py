@@ -103,16 +103,23 @@ def test_lacy_job_becomes_three_reviewed_variants(tmp_path):
     assert not (d / "segment.mp4").exists() and jobs.load(job["id"])["status"] == "rejected"
 
 
+def trailer_clips(media: Path, n: int, seconds: int = 10) -> None:
+    """n short moving test videos standing in for official trailers."""
+    ff = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y"]
+    for i in range(n):
+        subprocess.run(ff + ["-f", "lavfi", "-i", f"gradients=s=640x360:seed={i}:speed=0.02", "-t", str(seconds),
+                             "-r", "25", "-pix_fmt", "yuv420p", str(media / f"vice_city_{i}.mp4")], check=True)
+
+
 # ---- Tokyo Girl end to end ------------------------------------------------------------------
 @needs_ffmpeg
 def test_tokyo_girl_review_items_are_silent_and_different(tmp_path):
     media = tmp_path / "data/rockstar_media"
     media.mkdir(parents=True)
     ff = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y"]
-    for i in range(3):
-        subprocess.run(ff + ["-f", "lavfi", "-i", f"gradients=s=1920x1080:seed={i}", "-frames:v", "1",
-                             str(media / f"vice_city_{i}.jpg")], check=True)
-    s = TG.settings({"tokyo_girl": {"min_s": 8, "max_s": 16, "per_day": 1}, "data_dir": "data"}, tmp_path)
+    trailer_clips(media, 3)   # trailer edits never use stills
+    s = TG.settings({"tokyo_girl": {"min_s": 8, "max_s": 16, "per_day": 1, "trailer_head_s": 0, "trailer_tail_s": 0, "min_luma": 0}, "data_dir": "data"},
+                    tmp_path)
     assert s["review"] is True
     now = datetime(2026, 11, 16, 6, 50, tzinfo=TG.UK).timestamp()
     TG.save_state(Path(s["state_file"]), {"last_fetch": now})
@@ -147,10 +154,8 @@ def test_trending_sound_edits_use_each_sound_and_not_tokyo_girl(tmp_path):
     media = tmp_path / "data/rockstar_media"
     media.mkdir(parents=True)
     ff = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y"]
-    for i in range(3):
-        subprocess.run(ff + ["-f", "lavfi", "-i", f"gradients=s=1920x1080:seed={i}", "-frames:v", "1",
-                             str(media / f"vice_city_{i}.jpg")], check=True)
-    s = TG.settings({"tokyo_girl": {"min_s": 8, "max_s": 16}, "data_dir": "data"}, tmp_path)
+    trailer_clips(media, 3)   # trailer edits never use stills
+    s = TG.settings({"tokyo_girl": {"min_s": 8, "max_s": 16, "trailer_head_s": 0, "trailer_tail_s": 0, "min_luma": 0}, "data_dir": "data"}, tmp_path)
     lib = M.Library(s["music_dir"])
     lib.add(song(tmp_path / "tg.wav", seconds=30), "Tokyo Girl", replace=True)
     trend = lib.add(song(tmp_path / "t.wav", drop=8.0, seconds=12), "original sound - someone")
@@ -183,10 +188,8 @@ def test_tokyo_girl_feedback_keeps_the_clips_and_switches_the_sound(tmp_path, mo
     media = tmp_path / "data/rockstar_media"
     media.mkdir(parents=True)
     ff = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y"]
-    for i in range(8):
-        subprocess.run(ff + ["-f", "lavfi", "-i", f"gradients=s=1920x1080:seed={i}", "-frames:v", "1",
-                             str(media / f"vice_city_{i}.jpg")], check=True)
-    cfg = {"tokyo_girl": {"min_s": 8, "max_s": 16, "per_day": 1}, "data_dir": "data"}
+    trailer_clips(media, 8)   # trailer edits never use stills
+    cfg = {"tokyo_girl": {"min_s": 8, "max_s": 16, "per_day": 1, "trailer_head_s": 0, "trailer_tail_s": 0, "min_luma": 0}, "data_dir": "data"}
     s = TG.settings(cfg, tmp_path)
     lib = M.Library(s["music_dir"])
     lib.add(song(tmp_path / "tg.wav", seconds=30), "Tokyo Girl", replace=True)
