@@ -382,5 +382,11 @@
   "date": "2026-11-25",
   "title": "Rule builds: no more failed runs",
   "text": "Rule requests only build by themselves with a Claude plan token, never on API credits. Without it they're skipped."
+ },
+ {
+  "id": "2026-11-25-tiktok-inbox-fallback",
+  "date": "2026-11-25",
+  "title": "TikTok: drafts until the app is audited",
+  "text": "TikTok refused public posts because the app isn't audited yet. Approved clips now go to your TikTok inbox: tap the notification and post."
  }
 ]

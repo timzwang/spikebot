@@ -16,8 +16,9 @@ class Resp:
 
 
 class FakeHTTP:
-    def __init__(self, privacy=("PUBLIC_TO_EVERYONE", "SELF_ONLY"), statuses=("PROCESSING_UPLOAD", "PUBLISH_COMPLETE")):
-        self.calls, self.puts = [], []
+    def __init__(self, privacy=("PUBLIC_TO_EVERYONE", "SELF_ONLY"), statuses=("PROCESSING_UPLOAD", "PUBLISH_COMPLETE"),
+                 unaudited=False):
+        self.calls, self.puts, self.unaudited = [], [], unaudited
         self.privacy, self.statuses = list(privacy), list(statuses)
 
     def post(self, url, data=None, headers=None, timeout=None):
@@ -28,6 +29,9 @@ class FakeHTTP:
         if url.endswith("/creator_info/query/"):
             return Resp(200, {"data": {"privacy_level_options": self.privacy, "creator_username": "gta6clipped"},
                               "error": {"code": "ok"}})
+        if url.endswith("/publish/video/init/") and self.unaudited:
+            return Resp(403, {"error": {"code": "unaudited_client_can_only_post_to_private_accounts",
+                                        "message": "Please review our integration guidelines"}})
         if url.endswith("/video/init/"):
             return Resp(200, {"data": {"publish_id": "p1", "upload_url": "https://upload.tiktok/x"}, "error": {"code": "ok"}})
         if url.endswith("/status/fetch/"):
@@ -147,3 +151,30 @@ def test_auth_accepts_a_link_from_an_earlier_run(tmp_path, capsys):
     assert "TIKTOK_REFRESH_TOKEN=RT2" in (tmp_path / ".env").read_text()
     with pytest.raises(SystemExit, match="30 minutes"):
         TT.auth(tmp_path / ".env", cfg, ask=lambda p: f"{cfg['redirect_uri']}?code=abc&state=forged", http=FakeHTTP())
+
+
+def test_unaudited_app_listing_public_falls_back_to_the_inbox(tmp_path):
+    # live 25 Nov: creator_info listed PUBLIC_TO_EVERYONE but Direct Post gave 403 unaudited_client...
+    v = tmp_path / "v.mp4"
+    v.write_bytes(b"x" * 10)
+    http = FakeHTTP(statuses=("SEND_TO_USER_INBOX",), unaudited=True)
+    res = TT.TikTok(dict(CFG), None, http=http, sleep=lambda s: None).post(v, "kai cenat #KaiCenat")
+    assert res["how"] == "inbox" and "inbox" in res["url"]
+    urls = [u for u, _ in http.calls]
+    assert "/v2/post/publish/video/init/" in urls and "/v2/post/publish/inbox/video/init/" in urls
+    assert http.puts == [(10, "bytes 0-9/10")]
+
+
+def test_other_direct_post_errors_still_raise(tmp_path):
+    v = tmp_path / "v.mp4"
+    v.write_bytes(b"x" * 10)
+
+    class Broken(FakeHTTP):
+        def post(self, url, data=None, headers=None, timeout=None):
+            if url.endswith("/publish/video/init/"):
+                self.calls.append((url.replace(TT.API, ""), None))
+                return Resp(400, {"error": {"code": "spam_risk_too_many_posts", "message": "slow down"}})
+            return super().post(url, data, headers, timeout)
+
+    with pytest.raises(TT.TikTokError, match="spam_risk"):
+        TT.TikTok(dict(CFG), None, http=Broken(), sleep=lambda s: None).post(v, "x")

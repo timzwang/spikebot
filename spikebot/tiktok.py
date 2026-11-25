@@ -2,7 +2,8 @@
 
 Two ways in (TikTok's own rules decide which one works):
   * direct  - posted straight to the profile (scope video.publish). Until TikTok has audited
-              the app, the API only allows private posts; then this falls back to the inbox.
+              the app, the API only allows private posts (HTTP 403 unaudited_client..., even
+              though creator_info lists PUBLIC_TO_EVERYONE); then this falls back to the inbox.
   * inbox   - sent to the TikTok app as a draft notification (scope video.upload): open
               TikTok, tap the notification, add the sound, post. Silent edits (Tokyo Girl,
               trending sounds) always go this way: the sound must be added in the app for the
@@ -42,7 +43,14 @@ DONE = {"PUBLISH_COMPLETE", "SEND_TO_USER_INBOX"}
 
 
 class TikTokError(RuntimeError):
-    pass
+    def __init__(self, msg: str, code: str | None = None):
+        super().__init__(msg)
+        self.code = code or ""
+
+
+# An unaudited app still lists PUBLIC_TO_EVERYONE in creator_info, but Direct Post then fails
+# with this code (unless the account itself is private). The inbox route works without the audit.
+UNAUDITED = "unaudited_client"
 
 
 def _http():
@@ -110,7 +118,8 @@ class TikTok:
         j = _json(r)
         err = (j.get("error") or {})
         if r.status_code != 200 or (err.get("code") not in (None, "ok")):
-            raise TikTokError(f"{path}: HTTP {r.status_code} {err.get('code')} {err.get('message', '')[:200]}")
+            raise TikTokError(f"{path}: HTTP {r.status_code} {err.get('code')} {err.get('message', '')[:200]}",
+                              code=str(err.get("code") or ""))
         return j.get("data") or {}
 
     # ---- posting -----------------------------------------------------------------
@@ -156,13 +165,20 @@ class TikTok:
                 # not audited yet (only SELF_ONLY allowed): a private post helps nobody, use the inbox
                 log.info("TikTok direct post can't be %s (allowed: %s): sending to the inbox", privacy, options)
                 how = "inbox"
+        d = None
         if how == "direct":
-            d = self._post("/v2/post/publish/video/init/", {
-                "post_info": {"title": caption[:2200], "privacy_level": privacy, "disable_duet": False,
-                              "disable_comment": False, "disable_stitch": False,
-                              "video_cover_timestamp_ms": 1000},
-                "source_info": source})
-        else:
+            try:
+                d = self._post("/v2/post/publish/video/init/", {
+                    "post_info": {"title": caption[:2200], "privacy_level": privacy, "disable_duet": False,
+                                  "disable_comment": False, "disable_stitch": False,
+                                  "video_cover_timestamp_ms": 1000},
+                    "source_info": source})
+            except TikTokError as e:
+                if not e.code.startswith(UNAUDITED):
+                    raise
+                log.info("TikTok app not audited yet (public Direct Post refused): sending to the inbox")
+                how = "inbox"
+        if d is None:
             d = self._post("/v2/post/publish/inbox/video/init/", {"source_info": source})
         pid, url = d.get("publish_id"), d.get("upload_url")
         if not pid or not url:
@@ -256,8 +272,8 @@ def main(argv: list[str] | None = None) -> int:
         info = tt.creator()
         print(f"OK: @{info.get('creator_username', '?')} · privacy options {info.get('privacy_level_options')}"
               f" · max video {info.get('max_video_post_duration_sec', '?')} s")
-        if "PUBLIC_TO_EVERYONE" not in (info.get("privacy_level_options") or []):
-            print("Public direct posts need TikTok's app audit; until then videos go to your inbox as drafts.")
+        print("Public direct posts also need TikTok's app audit (this list doesn't show it); until then"
+              " videos go to your TikTok inbox as drafts.")
         return 0
     res = tt.post(Path(args.video), args.caption, inbox=args.inbox)
     print(json.dumps(res, indent=1))
