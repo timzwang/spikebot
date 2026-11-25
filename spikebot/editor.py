@@ -615,15 +615,17 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         hook_end = ass_time(min(duration, lead + MINIMAL_HOOK_S + CAPTION_HOLD_S))
     else:
         hook_end = end
-    lines = [f"Dialogue: 1,{ass_time(lead)},{hook_end},Hook,,0,0,0,,{ass_escape(hook)}"] if hook.strip() else []
+    lines = [f"Dialogue: 1,{ass_time(lead)},{hook_end},Hook,,0,0,0,,{ass_escape(censor(hook))}"] if hook.strip() else []
     if lead > 0 and lead_text.strip():
-        lines.append(f"Dialogue: 1,{ass_time(0)},{ass_time(lead)},Hook,,0,0,0,,{ass_escape(lead_text)}")
+        lines.append(f"Dialogue: 1,{ass_time(0)},{ass_time(lead)},Hook,,0,0,0,,{ass_escape(censor(lead_text))}")
     if watermark:
         lines.append(f"Dialogue: 1,{ass_time(0)},{end},Mark,,0,0,0,,{ass_escape(watermark)}")
     ending = END_TEXT.get(r.get("ending") or "")
     end_at = max(0.0, duration - 2.5) if ending else duration
     if ending:
         lines.append(f"Dialogue: 2,{ass_time(end_at)},{end},End,,0,0,0,,{ass_escape(ending)}")
+    words = tidy_punctuation(words)
+    spoken = words                    # every word, for "does this caption start a sentence?"
     if level == "minimal":
         words = [w for w in words if focus and focus[0] <= w.start <= focus[1]]
     # captions only when they add value: none at all if the lines are just reactions,
@@ -635,23 +637,81 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
     # Every caption sits at exactly the same spot: a fixed \\pos (libass never shifts positioned
     # lines), one line only (groups are short and wrapping is off), and no two captions on screen
     # at once (each ends when the next starts).
+    at = {id(w): i for i, w in enumerate(spoken)}
+    shown = False
     for g, (a, b) in zip(groups, caption_times(groups, end_at)):
         if b - a < 0.02:
             continue
-        text = sentence_case(" ".join(ass_escape(w.text.strip()) for w in g))
+        i = at.get(id(g[0]), 0)
+        # a capital only where a sentence starts (the first caption, or after . ! ?), never on
+        # every caption: the lines read as one sentence split over the screen
+        start = not shown or i == 0 or spoken[i - 1].text.strip().endswith(SENTENCE_END)
+        text = censor(sentence_case(" ".join(ass_escape(w.text.strip()) for w in g), start))
+        shown = True
         lines.append(f"Dialogue: 0,{ass_time(a)},{ass_time(b)},Cap,,0,0,0,,{pos}{text}")
     return head + "\n".join(lines) + "\n"
 
 
-def sentence_case(text: str) -> str:
-    """TikTok-style caption case: as said, first letter capitalised, shouting kept only for
-    short words already in capitals ("NO WAY" stays loud)."""
+SENTENCE_END = (".", "!", "?")
+# words a sentence can't end on: a full stop after one is Whisper cutting the line at a pause
+NO_END = {"a", "an", "the", "and", "but", "or", "because", "cause", "cuz", "my", "your", "their", "our", "its",
+          "i", "i'm", "i'll", "i've", "i'd", "we're", "you're", "they're", "he's", "she's", "gonna", "wanna",
+          "gotta", "than", "very"}
+_I_WORD = re.compile(r"^i(?:'(?:m|ll|ve|d))?\b", re.I)
+
+
+def keeps_capital(word: str) -> bool:
+    """A capital that stays mid-sentence: "I" / "I'm", or a word shouted in capitals ("NO")."""
+    w = word.strip().strip("\"'(")
+    return bool(_I_WORD.match(w)) or (len(w) > 1 and w.isupper())
+
+
+def tidy_punctuation(words: list[Word]) -> list[Word]:
+    """Whisper ends a line with a full stop wherever the streamer pauses, even mid-sentence
+    ("I'm gonna. Get the car."). A full stop after a word no sentence ends on is dropped and the
+    next word goes back to lower case, so the captions read as one sentence. Pure."""
+    out = list(words)
+    for i in range(len(out) - 1):
+        t = out[i].text.strip()
+        if t.endswith(".") and not t.endswith("..") and _norm(t) in NO_END:
+            out[i] = Word(out[i].start, out[i].end, t[:-1])
+            n = out[i + 1].text.strip()
+            if n[:1].isupper() and not keeps_capital(n):
+                out[i + 1] = Word(out[i + 1].start, out[i + 1].end, n[0].lower() + n[1:])
+    return out
+
+
+# Swear words and slurs are starred out on screen (Tim, 25 Nov): first and last letter kept, f**k /
+# s**t / n***a; endings stay readable (f**king, b***hes). Only at a word start (or after a common
+# prefix: mother-, bull-, dip-, horse-), so "Scunthorpe" or "class" are never touched.
+SWEARS = ("fuck", "shit", "bitch", "cunt", "nigga", "nigger", "pussy", "whore", "slut", "faggot", "fag",
+          "retard", "twat", "wanker", "dick", "cock", "bastard", "motherfucker")
+_SWEAR_RE = re.compile(r"(?<![A-Za-z])((?:mother|bull|dip|horse|ape)?)(" + "|".join(
+    sorted(SWEARS, key=len, reverse=True)) + r")", re.I)
+_WHOLE_ONLY = {"fag", "dick", "cock", "twat"}   # also the start of ordinary words (fagin, dickens, cockpit)
+
+
+def censor(text: str) -> str:
+    """`text` with swear words starred out (keeps first + last letter of the swear itself). Pure."""
+    def star(m: re.Match) -> str:
+        pre, w = m.group(1), m.group(2)
+        nxt = text[m.end():m.end() + 1]
+        if w.lower() in _WHOLE_ONLY and nxt.isalpha() and not text[m.end():].lower().startswith(("s", "head")):
+            return m.group(0)
+        return pre + w[0] + "*" * (len(w) - 2) + w[-1]
+    return _SWEAR_RE.sub(star, text)
+
+
+def sentence_case(text: str, start: bool = True) -> str:
+    """TikTok-style caption case: as said, shouting kept only for short words already in capitals
+    ("NO WAY" stays loud). A capital first letter only when the caption starts a sentence: a
+    caption carrying on the sentence before it stays lower case ("needs to get away")."""
     t = text.strip()
     if not t:
         return t
     if t.isupper() and len(t) > 12:
-        t = t.lower()
-    return t[0].upper() + t[1:]
+        t = re.sub(r"\bi\b", "I", t.lower())
+    return t[0].upper() + t[1:] if start else t
 
 
 # --------------------------------------------------------------------------

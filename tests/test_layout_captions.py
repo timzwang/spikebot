@@ -152,3 +152,77 @@ def test_sponsor_logo_top_right_for_the_whole_clip(tmp_path):
     for t in (0.2, 2.8):                                   # the sign's black body, top right, start to end
         r, g, b = pixel(t, 1080 - E.LOGO_INSET - 300, E.LOGO_INSET + 20)
         assert r < 60 and g < 60 and b < 60
+
+
+# ---- captions read as sentences: capitals only at a sentence start, no full stop at every pause -------
+def _caps(ass: str) -> list[str]:
+    return [line.split("\\q2}", 1)[1] for line in ass.splitlines() if ",Cap,," in line]
+
+
+def test_captions_capitalise_only_where_a_sentence_starts():
+    W = E.Word
+    ws = [W(0.0, 0.3, "Kai"), W(0.35, 0.6, "really"), W(0.65, 0.9, "needs"), W(0.95, 1.2, "to"),
+          W(1.25, 1.5, "get"), W(1.55, 1.8, "away"), W(1.85, 2.1, "fast."), W(2.6, 2.9, "Oh"),
+          W(2.95, 3.2, "my"), W(3.25, 3.6, "gosh."), W(4.2, 4.5, "where"), W(4.55, 4.8, "is"),
+          W(4.85, 5.1, "the"), W(5.15, 5.4, "car?")]
+    caps = _caps(E.build_ass(ws, "", 8.0, 640))
+    assert caps == ["Kai really needs", "to get away", "fast.", "Oh my gosh.", "Where is the", "car?"]
+
+
+def test_stray_full_stops_from_pauses_are_dropped():
+    W = E.Word
+    ws = [W(0.0, 0.3, "I'm"), W(0.35, 0.6, "gonna."), W(1.4, 1.7, "Steal"), W(1.75, 2.0, "the."),
+          W(2.6, 2.9, "Car"), W(2.95, 3.2, "and."), W(3.9, 4.2, "I"), W(4.25, 4.5, "drive.")]
+    out = [w.text for w in E.tidy_punctuation(ws)]
+    assert out == ["I'm", "gonna", "steal", "the", "car", "and", "I", "drive."]
+    caps = _caps(E.build_ass(ws, "", 6.0, 640))
+    assert " ".join(caps) == "I'm gonna steal the car and I drive." and caps[1][0].islower()
+    assert E.sentence_case("NO WAY") == "NO WAY" and E.sentence_case("WHAT ARE YOU DOING I SAID") == \
+        "What are you doing I said"
+    assert E.sentence_case("get away", start=False) == "get away"
+
+
+def test_ai_punctuation_only_changes_punctuation_and_capitals(tmp_path, monkeypatch):
+    from spikebot import ai, lacy as L
+    W = E.Word
+    ws = [W(0.0, 0.3, "Bro"), W(0.35, 0.6, "look."), W(1.4, 1.7, "At"), W(1.75, 2.0, "that.")]
+    calls = []
+
+    def fake(words, base=None, client=None):
+        calls.append(words)
+        return ["Bro,", "look", "at", "THIS!"]          # "THIS" is a different word: Whisper's kept
+    monkeypatch.setattr(ai, "available", lambda base=None: True)
+    monkeypatch.setattr(ai, "punctuate", fake)
+    ad = L.ReviewAdapter({}, tmp_path, lcfg={"channel": "lacy"})
+    job = {"id": "lacy-1", "channel": "lacy"}
+    assert [w.text for w in ad.punctuated(job, tmp_path, ws)] == ["Bro,", "look", "at", "that."]
+    assert [w.text for w in ad.punctuated(job, tmp_path, ws)] == ["Bro,", "look", "at", "that."]
+    assert len(calls) == 1                                # cached in punct.json
+    monkeypatch.setattr(ai, "punctuate", lambda words, base=None, client=None: ["one"])
+    assert ad.punctuated(job, tmp_path / "x", ws) == ws   # wrong word count: Whisper's words
+    monkeypatch.setattr(ai, "available", lambda base=None: False)
+    assert ad.punctuated(job, tmp_path / "y", ws) == ws   # no key: unchanged
+
+
+def test_two_webcams_of_a_similar_size_means_no_facecam_panel():
+    from spikebot import safety as SF
+    size = (1920, 1080)
+    host = {"class": "FACE_MALE", "score": 0.9, "box": [60, 380, 90, 90]}       # streamer's cam, left
+    guest = {"class": "FACE_MALE", "score": 0.9, "box": [1700, 420, 85, 85]}    # co-streamer shown on the overlay
+    assert SF.facecam_from_faces([([host, guest], size)] * 8) is None
+    big = {"class": "FACE_MALE", "score": 0.9, "box": [1650, 40, 200, 200]}     # clearly the main webcam
+    box = SF.facecam_from_faces([([guest | {"box": [60, 380, 90, 90]}, big], size)] * 8)
+    assert box and box["x"] > 0.6          # the big one, not the small cam on the left
+
+
+def test_swear_words_are_starred_out_on_screen():
+    assert E.censor("what the fuck") == "what the f**k"
+    assert E.censor("Shit. Nigga, that's crazy") == "S**t. N***a, that's crazy"
+    assert E.censor("fucking motherfucker bullshit bitches") == "f**king motherf**ker bulls**t b***hes"
+    assert E.censor("Scunthorpe class cockpit Dickens scrap shitake") == "Scunthorpe class cockpit Dickens scrap s**take"
+    assert E.censor("you dick") == "you d**k"
+    W = E.Word
+    ws = [W(0.0, 0.3, "Somebody"), W(0.35, 0.6, "stole"), W(0.65, 0.9, "my"), W(0.95, 1.2, "fucking"),
+          W(1.25, 1.5, "car.")]
+    assert _caps(E.build_ass(ws, "Lacy said what the fuck", 3.0, 640)) == ["Somebody stole my", "f**king car."]
+    assert "what the f**k" in E.build_ass(ws, "Lacy said what the fuck", 3.0, 640)

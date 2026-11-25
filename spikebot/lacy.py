@@ -875,6 +875,40 @@ class ReviewAdapter:
         drop = {i for g in game if 0 <= g < len(lines) for i in lines[g]}
         return [w for i, w in enumerate(words) if i not in drop]
 
+    def punctuated(self, job: dict, d: Path, words: list) -> list:
+        """The transcript with sentence punctuation fixed by Claude (Whisper puts a full stop at every
+        pause), made once per clip and kept in punct.json. Only punctuation and capitals may change:
+        a word whose letters differ keeps Whisper's version; a wrong word count = Whisper's words.
+        Without a key (or on a failure) the words stay as they are (editor.tidy_punctuation still
+        drops the obvious stray full stops)."""
+        texts = [w.text.strip() for w in words]
+        f = d / "punct.json"
+        fixed: list[str] | None = None
+        try:
+            saved = json.loads(f.read_text(encoding="utf-8"))
+            if saved.get("n") == len(words):
+                fixed = saved["words"]
+        except (OSError, ValueError, KeyError):
+            pass
+        if fixed is None:
+            from . import ai
+            if not ai.available(self.base) or not texts:
+                return words
+            try:
+                fixed = ai.punctuate(texts, base=self.base)
+            except ai.AIError as e:
+                log.info("clip %s: caption punctuation unavailable (%s)", job["id"], e)
+                return words
+            if len(fixed) != len(texts):
+                log.info("clip %s: punctuation reply has %d words, not %d: kept Whisper's", job["id"],
+                         len(fixed), len(texts))
+                fixed = texts
+            with contextlib.suppress(OSError):   # no cache = asked again next round, never a failed render
+                f.write_text(json.dumps({"n": len(words), "words": fixed}, ensure_ascii=False), encoding="utf-8")
+        same = lambda a, b: re.sub(r"[^\w']", "", a.lower()) == re.sub(r"[^\w']", "", b.lower())  # noqa: E731
+        return [editor.Word(w.start, w.end, new.strip()) if new.strip() and same(new, old) else w
+                for w, old, new in zip(words, texts, fixed)]
+
     def voice_line(self, job: dict, d: Path, words: list, title: str) -> str:
         """The spoken teaser hook (Claude, from what was said), made once per clip and kept in
         voice.json. Falls back to the clip's title, which always passes the title rules."""
@@ -947,6 +981,7 @@ class ReviewAdapter:
         if not seg.exists():
             raise editor.EditError("the source segment is gone (clip closed or disk cleaned)")
         words = [editor.Word(a, b, t) for a, b, t in json.loads((d / "words.json").read_text(encoding="utf-8"))]
+        words = self.punctuated(job, d, words)   # proper sentences, not a full stop at every pause
         w, h = int(job["src_w"]), int(job["src_h"])
         fps = job.get("src_fps") or editor.probe(seg).get("fps")   # jobs from before #39 lack it
         lay = editor.layout(w, h, clip_facecam(job, self.lcfg), src_fps=fps)
