@@ -36,7 +36,7 @@ def vid_shot(name: str, start: float, end: float, tags: list[str]) -> TG.Shot:
 def test_settings_defaults_env_and_paths(tmp_path):
     from spikebot.main import apply_env
     s = TG.settings({})
-    assert s["per_day"] == 4 and s["bpm"] == 120 and (s["min_s"], s["max_s"]) == (15, 30)
+    assert s["per_day"] == 1 and s["compare_per_day"] == 0 and s["bpm"] == 120 and (s["min_s"], s["max_s"]) == (15, 30)
     assert s["enabled"] is True
     c = apply_env({"tokyo_girl": {"per_day": 5}}, [], {"TOKYO_GIRL_PER_DAY": "3", "TOKYO_GIRL_MODE": "false"})
     s = TG.settings(c, tmp_path)

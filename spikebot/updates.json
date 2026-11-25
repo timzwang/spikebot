@@ -358,5 +358,29 @@
   "date": "2026-11-25",
   "title": "GTA 5 vs 6: no fade at the end",
   "text": "Comparison videos play to the last frame instead of fading to black."
+ },
+ {
+  "id": "2026-11-25-four-clips",
+  "date": "2026-11-25",
+  "title": "4 best clips per streamer a day",
+  "text": "Was 10. Only the day's 4 best-rated moments per streamer become clips, so less to review and lower costs."
+ },
+ {
+  "id": "2026-11-25-fewer-edits",
+  "date": "2026-11-25",
+  "title": "Fewer trailer edits",
+  "text": "1 Tokyo Girl edit and 1 trending-sound edit a day (was 4 + 4). GTA 5 vs 6 only when you run /compare."
+ },
+ {
+  "id": "2026-11-25-clips-first",
+  "date": "2026-11-25",
+  "title": "Stream clips at the top",
+  "text": "#ready-to-post lists stream clips above trailer edits."
+ },
+ {
+  "id": "2026-11-25-rule-builds",
+  "date": "2026-11-25",
+  "title": "Rule builds: no more failed runs",
+  "text": "Rule requests only build by themselves with a Claude plan token, never on API credits. Without it they're skipped."
  }
 ]

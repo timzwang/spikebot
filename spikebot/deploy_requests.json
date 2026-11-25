@@ -50,5 +50,28 @@
   "count": 1,
   "until": "2026-11-23T12:00:00+00:00",
   "why": "Tim: make the GTA 5 vs GTA 6 work (shorter shots, merged themes, more GTA 5 footage)"
+ },
+ {
+  "id": "config-2026-11-25-stream-clips-first",
+  "action": "config",
+  "until": "2026-12-02T00:00:00+00:00",
+  "set": {
+   "clips.max_renders_per_day": 4,
+   "lacy.max_renders_per_day": 4,
+   "impact.min_score": 5,
+   "tokyo_girl.per_day": 1,
+   "tokyo_girl.compare_per_day": 0,
+   "review.trend.times": [
+    "18:40"
+   ]
+  },
+  "why": "Tim: 4 clips per streamer a day, fewer trailer edits (1 Tokyo Girl + 1 trend a day, GTA 5 vs 6 on demand), impact bar 5"
+ },
+ {
+  "id": "announce-2026-11-25-stream-clips-first",
+  "action": "announce",
+  "until": "2026-11-27T00:00:00+00:00",
+  "text": "🎯 **Stream clips first** (deployed)\n• Clips: the best **4 per streamer a day** (was 10), and only moments rated 5/10 or more\n• Trailer edits: **1 Tokyo Girl + 1 trending-sound edit a day** (was 4 + 4); GTA 5 vs 6 only when you run /compare\n• #ready-to-post lists stream clips above edits\n• Rule requests are only built automatically with a Claude plan token, never on API credits",
+  "why": "Tim: what changed with 'stream clips first'"
  }
 ]

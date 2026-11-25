@@ -282,9 +282,10 @@ The same pipeline as Lacy mode, for **every campaign above** and every channel i
 On by default; `CLIPS_MODE=false` in `.env` switches it off. Any other `"programme": null`
 channel (and auto-watch channels) never gets clips.
 
-- **Only the day's best**: each streamer gets at most **10 clips a UK day** (`max_renders_per_day`),
-  and they are the best-rated moments of the day, not the first ten (`spikebot/picker.py`). A moment
-  that clears the streamer's usual top-10 score (from the last 7 days) is made straight away; weaker
+- **Only the day's best**: each streamer gets at most **4 clips a UK day** (`max_renders_per_day`; it was
+  10 until 25 Nov: more than anyone can review, and every clip costs API calls and CPU), and they are the
+  best-rated moments of the day, not the first four (`spikebot/picker.py`). A moment
+  that clears the streamer's usual top-4 score (from the last 7 days) is made straight away; weaker
   ones wait (`standby`) and fill the slots left when the stream ends or after 23:00 UK, best first.
   Without history yet, a moment waits 20 min for better ones first.
 
@@ -511,7 +512,8 @@ cut speed, grade, text style) for approval (see "Approval in Discord"). Approved
 add the official sound in the app.
 
 **When**: `spikebot-tokyo-girl.timer` runs at 06:47 UK and tops up to `per_day` edits for
-that UK day (running it again the same day does nothing). The auto-update installs the
+that UK day (running it again the same day does nothing). Since 25 Nov `per_day` is **1** (it was 4 in
+launch week): stream clips earn the money, trailer edits are the side line. The auto-update installs the
 timer by itself; `install.sh` does too.
 
 **Footage** lives in `/opt/spikebot/data/rockstar_media/`, a shared library of official
@@ -570,7 +572,7 @@ Every clip from every mode (Lacy, Tokyo Girl, and the stream-clip editor later) 
 your approval. **Nothing is posted anywhere until you press Approve.**
 
 **What you see in #ready-to-post**: **one board message** listing every video waiting for review
-(soonest to expire first). When a new video arrives and other messages have pushed the board up,
+(stream clips first, then trailer edits; soonest to expire first within each). When a new video arrives and other messages have pushed the board up,
 it is re-sent at the bottom (so you see it and get a notification). Under its title a small line
 says what happened to the last 24 h of stream clips, e.g. `Clips (24 h): 2 made · 1 on the way ·
 9 not used: low impact ×5, 🔞 nudity on screen ×2, BRB/away ×2`. Old failed/skipped progress
@@ -626,8 +628,9 @@ cut to fit inside the sound (a short sound gives a shorter edit, keeping the hoo
 question). On the server: `python -m spikebot.tokyo_girl trend [--song NAME] [-n N]`.
 Approved ones are also copied to `exports/trend/`.
 
-**Automatic:** the bot also makes one trending-sound edit at **07:20, 15:50 and 19:40 UK**
-every day (`review.trend.times`; `review.trend.enabled: false` turns it off), rotating through
+**Automatic:** the bot also makes one trending-sound edit at **18:40 UK**
+every day (`review.trend.times`, a list of UK times; it was four a day until 25 Nov;
+`review.trend.enabled: false` turns it off), rotating through
 your sounds (least used first, newest wins ties). If the bot was down, only the latest
 missed slot runs. These never count towards the Tokyo Girl daily edits.
 
@@ -719,9 +722,12 @@ it stays on, marked _needs new editor code_, goes into `data/rules/needs_code.js
 GitHub issue labelled `rule-request`. Filing it starts the **Build rule request** GitHub Action
 (`.github/workflows/rule-request.yml`) at once: Claude Code builds the rule as a real setting, runs
 the tests and pushes to `main`, which deploys in 1-2 minutes, and the bot then switches the rule on by
-itself. The Action needs one repository secret: `CLAUDE_CODE_OAUTH_TOKEN` (run `claude setup-token`,
-uses your Claude plan) or `ANTHROPIC_API_KEY` (pay per use). It only runs for issues your own account
-opened. Re-run one by hand: Actions > Build rule request > Run workflow > issue number. Each verdict
+itself. It **only builds by itself with the repository secret `CLAUDE_CODE_OAUTH_TOKEN`** (run
+`claude setup-token` on your computer, then GitHub > Settings > Secrets and variables > Actions > New
+repository secret): that runs on your Claude plan, not API credits. Without it each new issue gets a
+quick green "check" that skips the build (no failure emails). `ANTHROPIC_API_KEY` (pay per use) is
+only used for a run you start by hand. It only runs for issues your own account opened. Run one by
+hand: Actions > Build rule request > Run workflow > issue number. Each verdict
 is stamped with a hash of the settings menu (`ai.settings_menu()`) and `style.BUILT_IN`, so when new
 code adds a setting every open note is read again and switches itself on. #status gets one line per
 rule handled.
@@ -797,7 +803,7 @@ YouTube channel (default: *Grand Theft Auto VI: An Extended Look*, lots of cinem
 shots; its animal part from 7:44 is tagged `animals` for the wildlife story). A new source is
 fetched on the next daily run instead of waiting for the weekly refetch.
 
-**GTA 5 vs GTA 6 (`/compare [count]`, and `compare_per_day`, default 1, in `daily`)**: the same
+**GTA 5 vs GTA 6 (`/compare [count]`; `compare_per_day` in `daily` is 0 = on demand only since 25 Nov)**: the same
 kind of shot from both games, side by side. GTA 5 footage is Rockstar's original 2013 trailers and
 gameplay video (never the PS5 remaster), kept in `data/rockstar_media/.gta5/` so GTA 6 edits never
 use it. Each shot is labelled once by Claude from one frame (theme such as beaches, faces, night

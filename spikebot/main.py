@@ -1024,6 +1024,122 @@ def apply_env(cfg: dict, env_files: list[Path], environ: dict[str, str]) -> dict
     return cfg
 
 
+# One-off settings changes shipped with a deploy (spikebot/deploy_requests.json, action "config",
+# {"set": {"clips.max_renders_per_day": 4, ...}}). Deploys never touch config.json or .env, so a
+# request writes these whitelisted values into them ONCE, before the bot reads its config (done ids
+# are shared with ReviewBot.run_deploy_requests in data/deploy_requests.json). Anything else is ignored.
+CONFIG_KEYS = {   # dotted key -> (type, min, max); "times" = a list of "HH:MM" (UK)
+    "clips.max_renders_per_day": (int, 1, 20),
+    "lacy.max_renders_per_day": (int, 1, 20),
+    "impact.min_score": (int, 0, 10),
+    "tokyo_girl.per_day": (int, 0, 10),
+    "tokyo_girl.compare_per_day": (int, 0, 5),
+    "ai.daily_usd": (float, 0.0, 20.0),
+    "review.trend.times": ("times", 0, 12),
+}
+# a value .env also sets (it wins over config.json) is changed there too
+CONFIG_ENV = {"tokyo_girl.per_day": "TOKYO_GIRL_PER_DAY"}
+
+
+def config_value(key: str, value):
+    """The checked value for a whitelisted key. Raises KeyError / ValueError / TypeError."""
+    kind, lo, hi = CONFIG_KEYS[key]
+    if kind == "times":
+        if not isinstance(value, list) or len(value) > hi:
+            raise ValueError(f"{key} must be a list of at most {hi} times")
+        out = []
+        for t in value:
+            hh, _, mm = str(t).partition(":")
+            if not (hh.isdigit() and mm.isdigit() and 0 <= int(hh) < 24 and 0 <= int(mm) < 60 and len(mm) == 2):
+                raise ValueError(f"{t!r} is not HH:MM")
+            out.append(f"{int(hh):02d}:{mm}")
+        return out
+    v = kind(value)
+    if not lo <= v <= hi:
+        raise ValueError(f"{key} must be {lo} to {hi}")
+    return v
+
+
+def set_path(cfg: dict, dotted: str, value) -> None:
+    d = cfg
+    parts = dotted.split(".")
+    for p in parts[:-1]:
+        if not isinstance(d.get(p), dict):
+            d[p] = {}
+        d = d[p]
+    d[parts[-1]] = value
+
+
+def apply_config_requests(cfg_path: Path, data_dir: Path, path: Path | None = None,
+                          now: float | None = None) -> list[str]:
+    """Run the pending "config" deploy requests on config.json (and .env). Returns "key=value" for each
+    change. Never raises: a bad request is logged and skipped."""
+    path = path or Path(__file__).with_name("deploy_requests.json")
+    state = Path(data_dir) / "deploy_requests.json"
+    now = now or time.time()
+    try:
+        reqs = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    try:
+        done = set(json.loads(state.read_text(encoding="utf-8")))
+    except (OSError, ValueError):
+        done = set()
+    changed: list[str] = []
+    todo = [r for r in reqs if isinstance(r, dict) and r.get("action") == "config" and r.get("id")
+            and str(r["id"]) not in done] if isinstance(reqs, list) else []
+    for r in todo:
+        rid = str(r["id"])
+        done.add(rid)   # once, even if it is stale or fails
+        until = r.get("until")
+        try:
+            if until and now > datetime.fromisoformat(until).timestamp():
+                log.info("config request %s expired", rid)
+                continue
+            cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as e:
+            log.warning("config request %s skipped: %s", rid, e)
+            continue
+        env_path = cfg_path.parent / ".env"
+        env_vals = load_dotenv(env_path)
+        applied = []
+        for key, value in (r.get("set") or {}).items():
+            try:
+                v = config_value(key, value)
+            except (KeyError, ValueError, TypeError) as e:
+                log.warning("config request %s: %s not changed (%s)", rid, key, e)
+                continue
+            set_path(cfg, key, v)
+            applied.append(f"{key}={json.dumps(v)}")
+            env_key = CONFIG_ENV.get(key)
+            if env_key and env_key in env_vals:
+                try:
+                    from .youtube import set_env_value
+                    set_env_value(env_path, env_key, str(v))
+                except OSError as e:
+                    log.warning("config request %s: could not update %s in .env: %s", rid, env_key, e)
+        if not applied:
+            continue
+        try:   # atomic, owner-only like the original (it holds secrets)
+            tmp = cfg_path.with_name(cfg_path.name + ".tmp")
+            tmp.touch(mode=0o600)
+            tmp.chmod(0o600)
+            tmp.write_text(json.dumps(cfg, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+            tmp.replace(cfg_path)
+        except OSError as e:
+            log.warning("config request %s: could not write %s: %s", rid, cfg_path.name, e)
+            continue
+        log.info("config request %s: %s", rid, ", ".join(applied))
+        changed += applied
+    if todo:
+        try:
+            state.parent.mkdir(parents=True, exist_ok=True)
+            state.write_text(json.dumps(sorted(done)), encoding="utf-8")
+        except OSError as e:
+            log.warning("could not save done deploy requests: %s", e)
+    return changed
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", default="config.json")
@@ -1032,6 +1148,8 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     cfg_path = Path(args.config)
     cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+    if not args.check and apply_config_requests(cfg_path, Path(cfg.get("data_dir", "data"))):
+        cfg = json.loads(cfg_path.read_text(encoding="utf-8"))   # the settings a deploy asked for
     # .env next to config.json, then in the working directory
     env_files = list(dict.fromkeys([cfg_path.resolve().parent / ".env", Path.cwd() / ".env"]))
     apply_env(cfg, env_files, dict(os.environ))

@@ -169,7 +169,7 @@ it in sync when behaviour or config changes.
 - `spikebot/picker.py` (pure): **best-of-day** selection: `decide(job, jobs, cap, now, live)` -> go / wait
   (status `standby`, re-checked every `RECHECK_S`) / drop; `bar` = the streamer's usual top-`cap` score from
   the last 7 days; no history = `HOLD_S` wait; stream over / after 23:00 UK = fill best-first. Called in
-  `LacyMode._process` (job `selected`); cap `max_renders_per_day` 10. `Bot` sets `LacyMode.is_live`.
+  `LacyMode._process` (job `selected`); cap `max_renders_per_day` 4 (10 until 25 Nov). `Bot` sets `LacyMode.is_live`.
 - `spikebot/lacy.py`: **Lacy mode** (off unless `LACY_MODE=true` / `lacy.enabled`). For
   `twitch/lacy` only, `Bot.handle()` re-checks the category with Helix Get Streams at the
   spike (`fresh_state`) and, for exactly Grand Theft Auto V/VI, `LacyMode.enqueue()` writes
@@ -352,8 +352,8 @@ it in sync when behaviour or config changes.
   `join_crossfade` (xfade on each beat); `plain_line` / `countdown_line`; the dark "Ask" box only for a
   card ending in "?". Remotion gets the same via props `motion`, `framing`, `fade`, `logo.size/out`.
 - `spikebot/compare.py`: **GTA 5 vs GTA 6** comparison edits (`/compare [count]` -> `ReviewBot.run_compare`
-  -> `tokyo_girl compare -n`; `daily_compare` tops up `compare_per_day`, default 1, counts in
-  `state.compare_days`; `make` labels and dry-runs `fit_pairs` before creating any item, so a run
+  -> `tokyo_girl compare -n`; `daily_compare` tops up `compare_per_day`, counts in
+  `state.compare_days`; default 0 = only `/compare` since 25 Nov; `make` labels and dry-runs `fit_pairs` before creating any item, so a run
   without enough matching themes leaves nothing in #ready-to-post; `fit_pairs` = `pick_pairs` at the wanted
   length, then shorter down to `MIN_PAIR_S` 1.4, then with `GROUPS` (close themes merged); `shortage` = the
   numbers in the error; `label_shots` skips shots < MIN_PAIR_S and survives failed batches; deploy request
@@ -482,13 +482,18 @@ it in sync when behaviour or config changes.
   -> `apply` under `profile_lock` on a fresh profile: verdict settings (new entries, limited to the note's
   kinds, note off "now #N"), built_in (off), needs_code (stays on, `status`/`needs`, `data/rules/needs_code.json`,
   GitHub issue label `rule-request` when `GITHUB_TOKEN` is in .env, retried hourly; the issue starts
-  `.github/workflows/rule-request.yml` = Claude Code builds, tests and pushes to main), not_editor. #status
+  `.github/workflows/rule-request.yml` = Claude Code builds, tests and pushes to main; job `check` runs the
+  build automatically ONLY with the `CLAUDE_CODE_OAUTH_TOKEN` secret (Claude plan), the API key only for a manual
+  run), not_editor. #status
   gets `compile_notice`. **When you build a new editor capability, expose it in `settings_menu` (or add a
   `BUILT_IN` line) so saved notes upgrade themselves.**
 - `spikebot/deploy_requests.json`: one-off actions run once by `ReviewBot.run_deploy_requests` after the
   restart that deploys them (whitelist: `trend`, `feedback`, `repost`, `daily` {per_day} = Tokyo Girl
   top-up now; `until` = expiry; done ids in `data/deploy_requests.json`).
-  Use it when Tim asks for e.g. "/trend after the restart".
+  Use it when Tim asks for e.g. "/trend after the restart". **`config` {set: {dotted key: value}}** changes
+  the LIVE config.json (deploys never do): `main.apply_config_requests` in `main()` before the config is
+  read, only `CONFIG_KEYS` (type + range checked by `config_value`), atomic 0600 write, `CONFIG_ENV` keys
+  also updated in .env when it sets them (env wins over config). Use it when Tim wants a setting changed.
 - `spikebot/feedback.py`: `learn()` (/feedback -> `Profile.add_rule`: entries in the rules list) and
   `for_variant()` (review Feedback button: re-render changes; saved as entries too unless the wording
   is `ONLY_THIS` ("just this one") or the AI says scope this_edit; the round stores `entries` so its
@@ -504,7 +509,8 @@ it in sync when behaviour or config changes.
   `deploy_requests.json` also takes `feedback` {item, round, label, notes} = a Feedback re-render.
 - `spikebot/discord_bot.py`: `ReviewBot` (started by `Bot.run` when the token is set; reconnects,
   never crashes the bot). **#ready-to-post board** (`review.board`, default on): ONE message
-  (`board_payload` / `board_items` / `board_line`, state data/review/board.json) lists every open item;
+  (`board_payload` / `board_items` / `board_line`, state data/review/board.json) lists every open item
+  (stream clips first, then by expiry);
   the drop-down `rv|board|-|0|` expands one in place (previews attached only when the expanded item
   changes, `refresh_board`), `rv|bclose|...` collapses; `scan` -> `board_post` marks ready rounds
   `posted` + `board: True` instead of sending; `say()` without a thread = `board_note` on the line;
@@ -527,7 +533,7 @@ it in sync when behaviour or config changes.
   `flip_rows`) still toggle; /feedback mode adds `trend`; `feedback.for_variant` keeps rows to the clip's
   own kind unless `EVERY` ("all edits") or the kind is named (`_named`); `report_error` + `tree.error` show the real error instead of "interaction failed"), `/cancel [run]`, `/preset apply |
   list | show | rename | edit | delete | combine`. #inspiration `on_message` (approvers only).
-  `trend_loop` (review.trend.times UK, `trend_slots_due`, state data/trend/schedule.json) runs
+  `trend_loop` (review.trend.times UK, default ["18:40"] since 25 Nov, `trend_slots_due`, state data/trend/schedule.json) runs
   `tokyo_girl trend --song auto` (`pick_rotating`, counts in data/trend/used.json).
   `progress_loop` / `progress_tick`: one message per job file in data/progress/ (edited, deleted
   when done or skipped; a failure in #ready-to-post is deleted and sent to #status by `_report_failed`

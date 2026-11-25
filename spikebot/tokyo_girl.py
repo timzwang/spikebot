@@ -58,7 +58,7 @@ W, H, FPS = 1080, 1350, 30   # 4:5 (Tim, 20 Nov: "edits in 4:5, not 9:16"). 30 f
 
 DEFAULTS = {
     "enabled": True,
-    "per_day": 4,                       # edits made per UK day by `daily` (launch week: 4)
+    "per_day": 1,                       # edits made per UK day by `daily` (launch week 4; 1 since 25 Nov: stream clips first)
     "bpm": 120,
     "min_s": 15,
     "max_s": 30,
@@ -84,7 +84,7 @@ DEFAULTS = {
     # Tim, 18 Nov: the Extended Look has lots of cinematic / ambient shots and an animal part
     "searches": ["Grand Theft Auto VI: An Extended Look"],
     "refetch_days": 7,
-    "compare_per_day": 1,               # GTA 5 vs GTA 6 comparison edits made by `daily` (0 = off)
+    "compare_per_day": 0,               # GTA 5 vs GTA 6 edits made by `daily` (0 = only on demand, /compare)
     "trailer_head_s": 6.0,              # skip Rockstar logo intro
     "trailer_tail_s": 15.0,             # skip end cards / logo / release date card
     "min_luma": 28,                     # darker shots (black, title-on-black) are skipped

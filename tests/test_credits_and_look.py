@@ -212,3 +212,53 @@ def test_the_line_steers_footage_choice():
     prefs = TG.Prefs(theme={"night"})
     got = [TG.choose_shot(pool, "city", 2.0, [], {}, random.Random(i), prefs).labels["tags"] for i in range(10)]
     assert all(t == ["night"] for t in got)
+
+
+# ---- one-off settings requests (Tim, 25 Nov: 4 clips a streamer, stream clips first) ---------------
+def test_config_request_writes_whitelisted_settings_once(tmp_path):
+    import os
+    from spikebot import main as M
+    cfg_path = tmp_path / "config.json"
+    cfg_path.write_text(json.dumps({"discord_webhook_url": "secret", "clips": {"max_renders_per_day": 10},
+                                    "tokyo_girl": {"per_day": 4}}))
+    os.chmod(cfg_path, 0o600)
+    (tmp_path / ".env").write_text("DISCORD_BOT_TOKEN=x\nTOKYO_GIRL_PER_DAY=4\n")
+    reqs = tmp_path / "reqs.json"
+    reqs.write_text(json.dumps([
+        {"id": "c1", "action": "config", "set": {"clips.max_renders_per_day": 4, "tokyo_girl.per_day": 1,
+                                                 "review.trend.times": ["18:40"], "discord_webhook_url": "evil",
+                                                 "impact.min_score": 99}},
+        {"id": "old", "action": "config", "until": "2026-01-01T00:00:00+00:00", "set": {"ai.daily_usd": 5}},
+        {"id": "t1", "action": "trend"}]))
+    data = tmp_path / "data"
+    got = M.apply_config_requests(cfg_path, data, reqs, now=1_800_000_000.0)
+    assert got == ['clips.max_renders_per_day=4', 'tokyo_girl.per_day=1', 'review.trend.times=["18:40"]']
+    cfg = json.loads(cfg_path.read_text())
+    assert cfg["clips"]["max_renders_per_day"] == 4 and cfg["tokyo_girl"]["per_day"] == 1
+    assert cfg["review"]["trend"]["times"] == ["18:40"]
+    assert cfg["discord_webhook_url"] == "secret" and "impact" not in cfg       # not whitelisted / out of range
+    assert "ai" not in cfg                                                      # expired request
+    assert oct(cfg_path.stat().st_mode & 0o777) == "0o600"
+    env = (tmp_path / ".env").read_text()
+    assert "TOKYO_GIRL_PER_DAY=1" in env and "DISCORD_BOT_TOKEN=x" in env       # .env wins over config: updated
+    assert sorted(json.loads((data / "deploy_requests.json").read_text())) == ["c1", "old"]   # trend left for the bot
+    assert M.apply_config_requests(cfg_path, data, reqs, now=1_800_000_000.0) == []         # once only
+
+
+def test_shipped_requests_and_new_defaults():
+    from spikebot import lacy as L, main as M, review as R
+    reqs = json.loads((Path(M.__file__).with_name("deploy_requests.json")).read_text())
+    for r in (r for r in reqs if r.get("action") == "config"):
+        for k, v in r["set"].items():
+            M.config_value(k, v)   # every shipped value passes the whitelist
+    assert L.DEFAULTS["max_renders_per_day"] == 4
+    assert TG.DEFAULTS["per_day"] == 1 and TG.DEFAULTS["compare_per_day"] == 0
+    assert R.DEFAULTS["trend"]["times"] == ["18:40"]
+
+
+def test_board_lists_stream_clips_before_edits():
+    from spikebot import discord_bot as DB
+    rnd = {"n": 1, "status": "posted", "variants": [{"label": "A"}]}
+    items = [{"id": "tg", "mode": "tokyo_girl", "status": "open", "expires": 100, "rounds": [rnd]},
+             {"id": "clip", "mode": "lacy", "status": "open", "expires": 500, "rounds": [rnd]}]
+    assert [it["id"] for it in DB.board_items(items)][0] == "clip"

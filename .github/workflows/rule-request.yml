@@ -6,9 +6,11 @@
 # real setting, runs the tests and pushes to main, which the server auto-deploys; the bot then
 # re-reads the saved rule and switches it on by itself.
 #
-# Needs ONE repository secret (Settings > Secrets and variables > Actions):
-#   CLAUDE_CODE_OAUTH_TOKEN  (from `claude setup-token`: runs on Tim's Claude plan), or
-#   ANTHROPIC_API_KEY        (pay per use on the API).
+# Runs by itself ONLY with this repository secret (Settings > Secrets and variables > Actions):
+#   CLAUDE_CODE_OAUTH_TOKEN  (from `claude setup-token`: runs on Tim's Claude plan, no API credits).
+# Without it, a new rule-request issue just gets a quick "skipped" check (green, no failure email).
+# ANTHROPIC_API_KEY (pay per use) is only ever used for a run started by hand (Actions > Build rule
+# request > Run workflow), never automatically: Tim, 25 Nov, the API credits were running out.
 name: Build rule request
 
 on:
@@ -31,13 +33,33 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  build:
+  check:
     # Only issues Tim's own account opened (the bot files them with his token), never anyone else's.
     if: >-
       github.event_name == 'workflow_dispatch' ||
       (contains(github.event.issue.labels.*.name, 'rule-request') &&
        github.event.issue.user.login == github.repository_owner &&
        github.event.issue.state == 'open')
+    runs-on: ubuntu-latest
+    outputs:
+      run: ${{ steps.token.outputs.run }}
+    steps:
+      - id: token
+        env:
+          PLAN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          API: ${{ secrets.ANTHROPIC_API_KEY }}
+          MANUAL: ${{ github.event_name == 'workflow_dispatch' }}
+        run: |
+          if [ -n "$PLAN" ] || { [ "$MANUAL" = "true" ] && [ -n "$API" ]; }; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Rule request not built: add a CLAUDE_CODE_OAUTH_TOKEN secret (claude setup-token, Claude plan) to build them automatically."
+          fi
+
+  build:
+    needs: check
+    if: needs.check.outputs.run == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
@@ -63,7 +85,8 @@ jobs:
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          # pay-per-use key only for a run started by hand; automatic runs use the plan token only
+          anthropic_api_key: ${{ github.event_name == 'workflow_dispatch' && secrets.ANTHROPIC_API_KEY || '' }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
           claude_args: >-
             --max-turns 120
