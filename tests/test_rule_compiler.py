@@ -163,7 +163,8 @@ def test_deploy_requests_run_once_and_expire(tmp_path):
 def test_shipped_deploy_requests_are_valid():
     from pathlib import Path
     reqs = json.loads((Path(DB.__file__).with_name("deploy_requests.json")).read_text())
-    assert all(r["action"] in ("trend", "feedback", "repost", "daily", "announce", "compare") and r["id"] for r in reqs)
+    assert all(r["action"] in ("trend", "feedback", "repost", "daily", "announce", "compare", "config") and r["id"]
+               for r in reqs)   # config = main.apply_config_requests, before the bot starts
 
 
 def test_deploy_request_queues_a_feedback_rerender(tmp_path):

@@ -689,6 +689,7 @@ def test_trend_schedule_runs_each_slot_once_and_skips_pileups(tmp_path, monkeypa
 
     store = R.Store(tmp_path / "data")
     b, _ = bot_for(tmp_path, store)
+    b.rcfg["trend"] = {"enabled": True, "times": ["07:20", "12:10", "15:50", "19:40"]}   # (default is one slot)
     runs = []
 
     async def run_trend(inter, song, n):

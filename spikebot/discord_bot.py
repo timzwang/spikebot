@@ -186,10 +186,11 @@ def board_rounds(item: dict) -> dict | None:
 
 
 def board_items(items: list[dict]) -> list[dict]:
-    """Items waiting for review (open, with a rendered round), the ones expiring soonest first;
-    re-renders in progress are listed too (marked)."""
+    """Items waiting for review (open, with a rendered round): stream clips first (they earn the money:
+    Tim, 25 Nov), then trailer edits, each the ones expiring soonest first; re-renders in progress are
+    listed too (marked)."""
     out = [it for it in items if it.get("status") == "open" and board_rounds(it)]
-    return sorted(out, key=lambda it: (it.get("expires") or 0, it["id"]))
+    return sorted(out, key=lambda it: (it.get("mode") != "lacy", it.get("expires") or 0, it["id"]))
 
 
 def board_line(item: dict, now: float, opened: bool = False) -> str:
@@ -2536,7 +2537,8 @@ class ReviewBot:
         Only whitelisted actions: `trend`, `daily` (top up today's Tokyo Girl edits), `compare` (GTA 5 vs
         GTA 6 edits now, {count}), and `feedback` (a Feedback re-render of one version,
         as if Tim had pressed the button: {item, round, label, notes}; the result posts in that
-        item's thread in #ready-to-post). Done ids live in data/deploy_requests.json."""
+        item's thread in #ready-to-post). Done ids live in data/deploy_requests.json. `config` requests
+        (settings written into config.json) are run earlier, by main.apply_config_requests."""
         path = path or Path(__file__).with_name("deploy_requests.json")
         state = self.data_dir / "deploy_requests.json"
         now = now or time.time()

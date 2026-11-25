@@ -56,7 +56,7 @@ DEFAULTS = {
     "expire_hours": 48,
     "inspiration_archive_hours": 12,
     # automatic trending-sound edits: one per slot (UK times), rotating through the sounds
-    "trend": {"enabled": True, "times": ["07:20", "12:10", "15:50", "19:40"]},
+    "trend": {"enabled": True, "times": ["18:40"]},   # one a day since 25 Nov (was 4): stream clips first
     # info-only voice channels at the top of the server, checked every minute; each one is
     # renamed at most once per ~5 min (Discord allows 2 renames per channel per 10 min).
     # Needs the bot's Manage Channels permission. social_every_s = how often views/likes/

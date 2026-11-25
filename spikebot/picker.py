@@ -1,7 +1,7 @@
 """Which chat moments become clips: the BEST-rated ones of each streamer's day, not the first ones
 (Tim, 20 Nov: "don't just generate them by order, do the best rated clips of that day").
 
-Each streamer gets `cap` clips per UK day (lacy.max_renders_per_day, 10). A moment's rating is its
+Each streamer gets `cap` clips per UK day (lacy.max_renders_per_day, 4). A moment's rating is its
 spike score (detector: how far chat surged above normal, hype emotes, "clip it" mentions, unique
 chatters). Rather than rendering moments as they come, every job waits in `standby` and is
 released by `decide`:

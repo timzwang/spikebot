@@ -51,7 +51,7 @@
   "clips": {
     "enabled": true,
     "max_uploads_per_day": 3,
-    "max_renders_per_day": 10,
+    "max_renders_per_day": 4,
     "streamers": {
       "adinross": {"name": "Adin Ross", "facecam": {"x": 0.0, "y": 0.0, "w": 0.25, "h": 0.30}},
       "sealstats": {"name": "Seal", "facecam": {"x": 0.0, "y": 0.0, "w": 0.25, "h": 0.30}}
@@ -60,7 +60,8 @@
 
   "tokyo_girl": {
     "enabled": true,
-    "per_day": 4,
+    "per_day": 1,
+    "compare_per_day": 0,
     "bpm": 120,
     "min_s": 15,
     "max_s": 30,

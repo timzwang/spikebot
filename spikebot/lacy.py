@@ -43,7 +43,7 @@ DEFAULTS = {
     "channel": "lacy",                       # twitch.tv/lacy
     "allowed_categories": ["Grand Theft Auto V", "Grand Theft Auto VI"],
     "max_uploads_per_day": 3,                # UK calendar day
-    "max_renders_per_day": 10,               # clips made per streamer a day (the best-scored ones, Tim 20 Nov)
+    "max_renders_per_day": 4,                # clips made per streamer a day (the best-scored ones; 10 -> 4, Tim 25 Nov)
     "auto_upload": False,                    # ignored: Tim approves every clip in Discord
     "min_score": None,                       # None = use min_score_to_alert
     "vod_delay_s": 300,                      # wait for the VOD to contain the moment
@@ -1404,7 +1404,7 @@ class LacyMode:
                 self.jobs.save(job)
                 return
             prof = self.profile(job_key(job)) or self.cfg
-            verdict, why = picker.decide(job, self.jobs.all(), int(prof.get("max_renders_per_day", 10)),
+            verdict, why = picker.decide(job, self.jobs.all(), int(prof.get("max_renders_per_day", 4)),
                                          time.time(), self.is_live(job_key(job)))
             if verdict == "wait":
                 if job.get("status") != "standby" or job.get("reason") != why:
