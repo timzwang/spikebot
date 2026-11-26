@@ -402,7 +402,7 @@ it in sync when behaviour or config changes.
   `VIDEOS_GCS_BUCKET` bucket under `instagram/` with a 60 min V4 signed link (`GCSHost`), REELS
   container > poll `status_code` until FINISHED > `media_publish`, deletes the object in a
   `finally`. Caption hook from `HOOKS` (never the YouTube title, `lacy.BANNED` applies) +
-  GTA hashtags. Cap `max_per_day` (3, `IG_MAX_REELS_PER_DAY`) per UK day from
+  GTA hashtags (`cap_hashtags`: <= 5, campaign tags kept via `campaigns.keep_tags`, also in `post_reel`). Cap `max_per_day` (3, `IG_MAX_REELS_PER_DAY`) per UK day from
   `logs/instagram_posts.csv`; over cap = `instagram_status: waiting`, failures retried up to
   `max_attempts`; `Bot.instagram_loop()` runs hourly (`retry_pending` + `maybe_refresh`).
   Token: `Token` reads `.env` before the process env (systemd's copy goes stale). Host by

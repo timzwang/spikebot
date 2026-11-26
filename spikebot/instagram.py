@@ -36,6 +36,7 @@ import hashlib
 import json
 import logging
 import random
+import re
 import shutil
 import time
 from datetime import timedelta
@@ -337,9 +338,10 @@ def host_from_config(cfg: dict, base: Path | None, icfg: dict):
 
 
 def post_reel(ig: Instagram, host, path: Path, caption: str, icfg: dict,
-              sleep=time.sleep, clock=time.monotonic) -> dict:
+              sleep=time.sleep, clock=time.monotonic, keep=()) -> dict:
     """Upload -> container -> wait for FINISHED -> publish. The public copy is
-    always deleted afterwards."""
+    always deleted afterwards. The caption is capped at MAX_HASHTAGS (`keep` = required tags)."""
+    caption = cap_hashtags(caption, keep)
     url, delete = host.put(path, path.name)
     try:
         cid = ig.create_reel(url, caption, icfg["share_to_feed"])
@@ -391,11 +393,43 @@ HOOKS = {
                 "Save this {name} clip for later 🎮"],
 }
 HASHTAGS = {
-    "GTA 6": {"instagram": "#GTA6 #GTA6Gameplay #GTAVI #GrandTheftAuto6 #GTA6Clips #{tag} #GamingReels #Reels",
+    # Instagram allows 5 hashtags per Reel (since Dec 2025): streamer first, generic ones last so
+    # `cap_hashtags` drops those when a campaign adds its own required tags.
+    "GTA 6": {"instagram": "#{tag} #GTA6 #GTAVI #GTA6Clips #GTA6Gameplay",
               "tiktok": "#GTA6 #GTA6Gameplay #GTA6Clips #{tag} #gaming #fyp"},
-    "GTA 5": {"instagram": "#GTA5 #GTAV #GrandTheftAuto #GTAClips #{tag} #GamingReels #Reels",
+    "GTA 5": {"instagram": "#{tag} #GTA5 #GTAV #GTAClips #GrandTheftAuto",
               "tiktok": "#GTA5 #GTAV #GTAClips #{tag} #gaming #fyp"},
 }
+
+
+MAX_HASHTAGS = 5
+_TAG = re.compile(r"(?<![\w&/])#\w+")
+
+
+def cap_hashtags(text: str, keep=(), limit: int = MAX_HASHTAGS) -> str:
+    """At most `limit` hashtags: repeats (any case) go first, then the last tags not in `keep`.
+    `keep` = campaign-required tags; they are never dropped, even past the limit."""
+    must = {t.lower() for t in keep if t.startswith("#")}
+    seen: set[str] = set()
+    drop: list[re.Match] = []
+    tags = []
+    for m in _TAG.finditer(text or ""):
+        low = m.group(0).lower()
+        (drop if low in seen else tags).append(m)
+        seen.add(low)
+    extra = len(tags) - limit
+    for m in reversed(tags):
+        if extra <= 0:
+            break
+        if m.group(0).lower() not in must:
+            drop.append(m)
+            extra -= 1
+    if not drop:
+        return text
+    for m in sorted(drop, key=lambda m: m.start(), reverse=True):
+        text = text[:m.start()] + text[m.end():]
+    text = re.sub(r"[ \t]{2,}", " ", text)
+    return "\n".join(line.rstrip() for line in text.split("\n")).strip()
 
 
 def hook_ok(hook: str, youtube_title: str, name: str = "Lacy") -> bool:

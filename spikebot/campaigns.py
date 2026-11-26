@@ -296,6 +296,15 @@ def required_tags(c: dict | None) -> list[str]:
     return [t for t in (c or {}).get("hashtags") or [] if t.strip()]
 
 
+def keep_tags(cfg: dict | None, channel: str | None, overlay: str | None = None) -> list[str]:
+    """Hashtags a caption must keep for this streamer's campaign (+ the sponsor overlay's, by name)."""
+    out = required_tags(for_channel(cfg or {}, channel or "lacy"))
+    if overlay:
+        ov = next((o for o in overlays(cfg).values() if o.get("name") == overlay), None)
+        out += required_tags(ov)
+    return out
+
+
 def _missing(text: str, tags: list[str]) -> list[str]:
     low = text.lower()
     return [t for t in tags if t.lower() not in low]

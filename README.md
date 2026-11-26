@@ -392,8 +392,8 @@ set to auto-post Instagram:
      (or failing);
    - container (`media_type=REELS`) > wait until `FINISHED` > `media_publish`;
    - the caption uses a **different hook from the YouTube title** (`HOOKS` in
-     `spikebot/instagram.py`, same banned-word rules as titles) plus GTA hashtags
-     (`#GTA6 #GTAVI #GrandTheftAuto6 #GTA6Clips #Lacy ...`; GTA V clips get `#GTA5` ones);
+     `spikebot/instagram.py`, same banned-word rules as titles) plus GTA hashtags (5 at most, Instagram's limit; campaign-required tags are always kept)
+     (`#Lacy #GTA6 #GTAVI #GTA6Clips #GTA6Gameplay`; GTA V clips get `#GTA5` ones);
    - **max 3 Reels a UK day** (`IG_MAX_REELS_PER_DAY`) inside the Instagram posting window.
      Over the cap, the Reel waits and the bot posts it when the cap and window allow. A failed post is retried hourly, up
      to 3 tries, with an alert in #status;

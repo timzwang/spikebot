@@ -328,3 +328,25 @@ def test_unified_login_token_is_checked_daily_not_refreshed(tmp_path):
     res = I.check_token(ic, tok, state, bad, T + 86400)  # can't read that account
     assert res.startswith("failed") and FB not in res and state.load()["last_error"]
     assert I.host_for(TOKEN) == "https://graph.instagram.com" and I.host_for(FB) == "https://graph.facebook.com"
+
+
+def test_instagram_caption_has_at_most_five_hashtags():
+    job = {"id": "20261119-060001", "title": "t", "category": "Grand Theft Auto VI", "channel": "lacy"}
+    cap = I.captions(job, "Lacy x")["instagram"]
+    assert len(I._TAG.findall(cap)) == 5 and "#Reels" not in cap
+
+
+def test_cap_hashtags_keeps_required_and_drops_generic_last():
+    text = "Hook #wow\n\nWatch live.\n\n#BobbyVanriper #GTA6 #GTAVI #GTA6Clips #GTA6Gameplay #twitchclips #Clipup"
+    out = I.cap_hashtags(text, keep=["#bobbyvanriper", "#gta6", "#gtavi", "#twitchclips", "#Clipup"])
+    tags = I._TAG.findall(out)
+    assert len(tags) == 5 and {"#twitchclips", "#Clipup", "#BobbyVanriper", "#GTA6", "#GTAVI"} == set(tags)
+    assert out.startswith("Hook\n\nWatch live.\n\n#BobbyVanriper")
+    # repeats in any case go first; nothing to drop = unchanged
+    assert I._TAG.findall(I.cap_hashtags("a #GTA6 #gta6 #x")) == ["#GTA6", "#x"]
+    assert I.cap_hashtags("plain #a #b") == "plain #a #b"
+    # required tags are never dropped, even past the limit
+    many = " ".join(f"#t{i}" for i in range(7))
+    assert len(I._TAG.findall(I.cap_hashtags(many, keep=[f"#t{i}" for i in range(7)]))) == 7
+    # URLs and &#38; entities are not hashtags
+    assert I.cap_hashtags("see x.com/#a &#38; #b") == "see x.com/#a &#38; #b"

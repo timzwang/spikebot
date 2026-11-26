@@ -1078,6 +1078,9 @@ class ReviewAdapter:
             if overlay:   # the sponsor's own hashtags too (#gta6 #Clipup)
                 caps = {k: campaigns.finish_caption(t, overlay | {"cta": ""}) for k, t in caps.items()}
                 desc = campaigns.finish_caption(desc, overlay | {"cta": ""}, limit=4900)
+            if caps.get("instagram"):   # Instagram: 5 hashtags at most, required ones kept
+                caps["instagram"] = instagram.cap_hashtags(
+                    caps["instagram"], campaigns.required_tags(camp) + campaigns.required_tags(overlay))
             out.append({"label": spec["label"], "style": spec["style"], "preset": spec.get("preset"),
                         "experimental": spec.get("experimental", False), "title": title,
                         "description": desc, "frame": "4:5" if lay.cam is None else "9:16", "screen_hook": screen,

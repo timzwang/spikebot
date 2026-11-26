@@ -774,8 +774,11 @@ class Publisher:
 
     def _instagram_post(self, item: dict, v: dict, path: Path, now: float) -> dict:
         from . import instagram
+        from . import campaigns
+        keep = campaigns.keep_tags(self.cfg, (item.get("source") or {}).get("channel"), v.get("overlay")) \
+            if item["mode"] == "lacy" else []
         res = instagram.post_reel(self.ig.ig_factory(), self.ig.host_factory(), path,
-                                  v["captions"]["instagram"], self.ig.icfg)
+                                  v["captions"]["instagram"], self.ig.icfg, keep=keep)
         self.ig.posts.append({"posted_uk": instagram._uk(now), "status": "published", "job_id": item["id"],
                               "mode": item["mode"], "instagram_url": res["permalink"],
                               "media_id": res["media_id"], "hook": v.get("hook")})

@@ -382,5 +382,11 @@
   "date": "2026-11-25",
   "title": "Rule builds: no more failed runs",
   "text": "Rule requests only build by themselves with a Claude plan token, never on API credits. Without it they're skipped."
+ },
+ {
+  "id": "2026-11-26-ig-hashtags",
+  "date": "2026-11-26",
+  "title": "Instagram: 5 hashtags max",
+  "text": "Reels captions now carry at most 5 hashtags (Instagram's limit). Campaign tags are always kept; #Reels and #GamingReels are gone."
  }
 ]
