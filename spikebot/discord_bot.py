@@ -792,6 +792,14 @@ def stale_threads(threads, bot_id: int, now: float, hours: float) -> list:
 # --------------------------------------------------------------------------
 # The bot
 # --------------------------------------------------------------------------
+def inbox_text(row: dict) -> str:
+    """The thread message for a TikTok inbox draft: what to do and the caption to paste."""
+    cap = (row.get("caption") or "").replace("`" * 3, "'" * 3)
+    out = ("📥 **TikTok**: draft sent to your TikTok inbox. Open TikTok, tap the notification,"
+           " paste this caption and post:")
+    return out + (f"\n```\n{cap}\n```" if cap else "")
+
+
 class ReviewBot:
     def __init__(self, cfg: dict, config_path: str | Path, notifier=None):
         self.cfg = cfg
@@ -1320,7 +1328,12 @@ class ReviewBot:
             row = await asyncio.to_thread(self.publisher.publish, item_id, platform, now)
             item = self.store.load(item_id)
             name = review.NAMES[platform]
-            if row["status"] == "done":
+            if row["status"] == "done" and row.get("how") == "inbox":
+                await self.say(item, inbox_text(row))
+                await self.announce(f"live:{item_id}:{platform}",
+                                    f"📥 {mode_label(item)[0]} `{item_id}` is a draft in your **TikTok inbox**:"
+                                    " open TikTok, tap the notification, paste the caption and post")
+            elif row["status"] == "done":
                 extra = f" ({row['note']})" if row.get("note") else ""
                 await self.say(item, f"✅ **{name}** is live: {row.get('url')}{extra}")
                 await self.announce(f"live:{item_id}:{platform}",

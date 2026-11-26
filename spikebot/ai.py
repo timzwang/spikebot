@@ -59,6 +59,7 @@ TASKS = {
     "voice": ("SPIKEBOT_COPY_MODEL", COPY_MODEL, "clip"),
     "impact": ("SPIKEBOT_CHEAP_MODEL", CHEAP_MODEL, "clip"),
     "speakers": ("SPIKEBOT_CHEAP_MODEL", CHEAP_MODEL, "clip"),
+    "punctuation": ("SPIKEBOT_CHEAP_MODEL", CHEAP_MODEL, "clip"),
     "labels": ("SPIKEBOT_CHEAP_MODEL", CHEAP_MODEL, "background"),
     "compare_labels": ("SPIKEBOT_CHEAP_MODEL", CHEAP_MODEL, "background"),
 }
@@ -269,6 +270,7 @@ def usage_line(base: Path | None, day: str | None = None) -> str:
 
 TASK_NAMES = {"study": "#inspiration", "feedback": "feedback", "rules": "rule compiler", "copy": "titles",
               "voice": "voiceover lines", "impact": "impact checks", "speakers": "speaker checks",
+              "punctuation": "caption punctuation",
               "labels": "shot labels", "compare_labels": "GTA 5 vs 6 labels"}
 
 
@@ -669,6 +671,29 @@ def game_lines(name: str, game: str, lines: list[tuple[float, float, str]], base
     out = ask_json(SPEAKER_SYSTEM, f"Streamer: {name}\nGame: {game}\nTranscript:\n{text[:6000]}", SPEAKER_SCHEMA,
                    base, max_tokens=2000, client=client, effort="low", task="speakers")
     return sorted({int(i) for i in out.get("game") or [] if isinstance(i, int) and 0 <= i < len(lines)})
+
+
+# --------------------------------------------------------------------------
+# Stream clips: caption punctuation (speech-to-text puts a full stop at every pause)
+# --------------------------------------------------------------------------
+PUNCT_SYSTEM = """You get the words of a short live-stream transcript from speech-to-text, one numbered word per
+line. Speech-to-text puts a full stop wherever the speaker pauses, even mid-sentence, and capitalises the word
+after it. Fix ONLY punctuation and capital letters so the words read as proper sentences or phrases: a full stop,
+question mark or exclamation mark only where a sentence or phrase really ends, commas where natural, and a
+capital letter only at the start of a sentence, for "I" and for names. Words shouted in capitals stay in capitals.
+Never add, remove, merge, split, reorder or re-spell a word. Return exactly one entry per input word, in order."""
+
+PUNCT_SCHEMA = {"type": "object", "additionalProperties": False,
+                "properties": {"words": {"type": "array", "items": {"type": "string"}}},
+                "required": ["words"]}
+
+
+def punctuate(words: list[str], base: Path | None = None, client=None) -> list[str]:
+    """The same words with sentence punctuation and capitals fixed. Raises AIError."""
+    text = "\n".join(f"{i}. {w}" for i, w in enumerate(words))
+    out = ask_json(PUNCT_SYSTEM, f"Words:\n{text[:8000]}", PUNCT_SCHEMA, base,
+                   max_tokens=4000, client=client, effort="low", task="punctuation")
+    return [str(w) for w in out.get("words") or []]
 
 
 # --------------------------------------------------------------------------

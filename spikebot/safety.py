@@ -258,8 +258,25 @@ def facecam_from_faces(per_frame: list[tuple[list[dict], tuple[int, int]]], min_
         near = [f for f in found if abs(f[0] - cx) < 0.04 and abs(f[1] - cy) < 0.06]
         if len(near) > len(best):
             best = near
-    if len(best) < max(2, min_share * len(per_frame)):
+    need = max(2, min_share * len(per_frame))
+    if len(best) < need:
         return None
+    # A second steady face elsewhere (a co-streamer's cam the streamer shows on their overlay):
+    # the clearly bigger one is the streamer's own webcam; two of a similar size = no telling
+    # whose it is, so no facecam panel (the whole frame in 4:5) rather than the guest on top.
+    bx, by = sorted(f[0] for f in best)[len(best) // 2], sorted(f[1] for f in best)[len(best) // 2]
+    rest = [f for f in found if abs(f[0] - bx) >= 0.08 or abs(f[1] - by) >= 0.12]
+    other = []
+    for cx, cy, _, _ in rest:
+        near = [f for f in rest if abs(f[0] - cx) < 0.04 and abs(f[1] - cy) < 0.06]
+        if len(near) > len(other):
+            other = near
+    if len(other) >= need:
+        area = lambda g: sorted(f[2] * f[3] for f in g)[len(g) // 2]   # noqa: E731
+        if area(other) >= 1.5 * area(best):
+            best = other
+        elif area(best) < 1.5 * area(other):
+            return None
     cx = sorted(f[0] for f in best)[len(best) // 2]
     cy = sorted(f[1] for f in best)[len(best) // 2]
     fw = sorted(f[2] for f in best)[len(best) // 2]

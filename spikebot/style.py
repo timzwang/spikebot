@@ -172,6 +172,9 @@ BUILT_IN = (
     " box whenever they sit over the picture (text_box sets how dark; on a black band just a thin outline), the"
     " hook / question as black text on a white box; nothing moves, pops or fades, a line just disappears, and"
     " each stays 1.5 s longer (the hook too) so it can be read",
+    "Stream-clip captions read as proper sentences: a capital letter only where a sentence starts (not on every"
+    " caption), full stops only where a sentence or phrase ends (not at every pause), and swear words and slurs"
+    " starred out on screen (f**k, s**t, n***a) in captions, the hook and the teaser line",
     "Stream clips are never darker than the stream: no grade lowers the brightness or pushes contrast past 1.12,"
     " no vignette, and dark footage (night, dark rooms) is measured and brightened automatically",
     "Tokyo Girl / trend / GTA 5 vs 6: trailer video only, never screenshots or still images",

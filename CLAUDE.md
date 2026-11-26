@@ -5,6 +5,14 @@
 Automated GTA 6 Shorts channel (gta-6-clipped-yt). Tim runs everything. The goal is
 revenue on a budget of about £20/month. Give all times in UK time.
 
+## Talking to Tim
+
+- **Main point first.** The decision or action goes at the top of every message, in bold or as
+  numbered steps, never buried in explanation.
+- **Full commands every time.** Give the complete, paste-ready command in its own code block,
+  every time it's needed, even if it was given earlier. Never say "run auth", "the step 2 command"
+  or "as before".
+
 ## Hard rules
 
 - Main income is clipping programmes: Adin Ross, Seal (via Content Rewards) and Lacy
@@ -203,7 +211,8 @@ it in sync when behaviour or config changes.
   `review._render_round`, deletes blocked files; all blocked = item failed "🔞 blocked"),
   `Publisher.safety_check` (re-scan unless `safety: ok`; unavailable = not posted), Tokyo Girl
   `nudity_scan` -> library entry `nsfw` times -> `build_shots` skips those shots. Also
-  `find_facecam` / `facecam_from_faces` (the face that stays put = the webcam) for clip profiles
+  `find_facecam` / `facecam_from_faces` (the face that stays put = the webcam; two steady faces
+  (collab overlay) = the clearly bigger one, similar sizes = None, i.e. 4:5) for clip profiles
   with `facecam_auto` (no box in config); the job stores `facecam`.
 - **Rule-request settings (#40-#84)**: `style.CUSTOM_KEYS` + `TG_CUSTOM` / `LACY_CUSTOM` (stream clips only) /
   `CUSTOM_DEFAULTS`, read by `resolve`: `logo_fade_s`, `end_fade_s` (3), `intro_mix`, `unique_clips` (1),
@@ -291,7 +300,11 @@ it in sync when behaviour or config changes.
   TikTok Sans bundled in `spikebot/fonts` via `ass_filter` fontsdir, static, `caption_times` hold
   `CAPTION_HOLD_S` 1.5 s, hook +1.5 s, `sentence_case`, no `cta` end card); no SFX (`sfx_cues=None`); output `out_fps` = source rate capped at 60 (#39, unknown = 30), final encodes `CRF` 18 (also Tokyo Girl/Remotion); captions only when
   `worth_captioning` (>= 3 meaningful words, `FILLER`), filler-only caption groups cut,
-  `preview` (size-budgeted), `render`, `review_copy`, `pick_thumbnail` (dHash vs.
+  caption text: `tidy_punctuation` (drops Whisper's full stop after a word no sentence ends on, `NO_END`),
+  `sentence_case(text, start)` = a capital only where a sentence starts (first caption or after . ! ?),
+  `censor` stars out swears/slurs on screen (`SWEARS`: f**k, s**t, n***a; captions, hook and teaser line);
+  stream clips also get `ReviewAdapter.punctuated` (Claude `ai.punctuate`, cheap model, cached `punct.json`,
+  only punctuation/capitals may change per word), `preview` (size-budgeted), `render`, `review_copy`, `pick_thumbnail` (dHash vs.
   `data/lacy/thumbnails.json`), `transcribe` (faster-whisper, lazy import).
 - `spikebot/youtube.py`: YouTube Data API upload (resumable), `set_thumbnail`, and the
   one-time `python -m spikebot.youtube auth --env .env` that saves `YOUTUBE_REFRESH_TOKEN`.
