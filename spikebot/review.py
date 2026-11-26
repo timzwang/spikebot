@@ -766,6 +766,7 @@ class Publisher:
         out = {"url": res["url"], "how": res["how"], "publish_id": res["publish_id"]}
         if res["how"] == "inbox":
             out["note"] = "draft in your TikTok inbox: add the sound and post"
+            out["caption"] = caption   # inbox drafts carry no caption: shown in Discord to paste
         if item["mode"] == "lacy" and res["url"].startswith("https://"):
             from . import lacy
             job_id = item["source"].get("job_id") or item["id"]

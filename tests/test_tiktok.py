@@ -178,3 +178,24 @@ def test_other_direct_post_errors_still_raise(tmp_path):
 
     with pytest.raises(TT.TikTokError, match="spam_risk"):
         TT.TikTok(dict(CFG), None, http=Broken(), sleep=lambda s: None).post(v, "x")
+
+
+def test_inbox_draft_keeps_the_caption_and_the_thread_shows_it(tmp_path):
+    from spikebot import discord_bot
+    from tests.test_review import approved, publisher, T
+    store, item = approved(tmp_path)
+    pub, _ = publisher(tmp_path, store)
+
+    class InboxTT:
+        def post(self, path, caption, inbox=False):
+            return {"status": "SEND_TO_USER_INBOX", "publish_id": "p", "how": "inbox",
+                    "url": "sent to your TikTok inbox: open TikTok, tap the notification, add the sound and post"}
+    pub.tiktok_factory = lambda: InboxTT()
+    pub.tiktok_cfg = lambda: dict(CFG)
+    with store.edit(item["id"]) as it:
+        it["publish"]["tiktok"] = {"status": "queued", "attempts": 0}
+    row = pub.publish(item["id"], "tiktok", T)
+    assert row["status"] == "done" and row["how"] == "inbox" and "#GTA6" in row["caption"]
+    text = discord_bot.inbox_text(row)
+    assert "TikTok inbox" in text and "is live" not in text and row["caption"] in text
+    assert discord_bot.inbox_text({"caption": "a ``` b"}).count("```") == 2   # caption can't break the block

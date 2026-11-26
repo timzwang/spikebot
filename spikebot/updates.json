@@ -388,5 +388,11 @@
   "date": "2026-11-25",
   "title": "TikTok: drafts until the app is audited",
   "text": "TikTok refused public posts because the app isn't audited yet. Approved clips now go to your TikTok inbox: tap the notification and post."
+ },
+ {
+  "id": "2026-11-26-tiktok-inbox-caption",
+  "date": "2026-11-26",
+  "title": "TikTok drafts: caption to paste",
+  "text": "When a clip goes to your TikTok inbox, its thread now says so (not 'is live') and shows the caption to copy into TikTok."
  }
 ]
