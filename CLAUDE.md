@@ -5,6 +5,14 @@
 Automated GTA 6 Shorts channel (gta-6-clipped-yt). Tim runs everything. The goal is
 revenue on a budget of about £20/month. Give all times in UK time.
 
+## Talking to Tim
+
+- **Main point first.** The decision or action goes at the top of every message, in bold or as
+  numbered steps, never buried in explanation.
+- **Full commands every time.** Give the complete, paste-ready command in its own code block,
+  every time it's needed, even if it was given earlier. Never say "run auth", "the step 2 command"
+  or "as before".
+
 ## Hard rules
 
 - Main income is clipping programmes: Adin Ross, Seal (via Content Rewards) and Lacy
